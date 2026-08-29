@@ -1,0 +1,11 @@
+[
+  {
+    "telegram_id": 123456789,
+    "name": "Dyna",
+    "role": "Content Creator",
+    "division": "Marketing",
+    "custom_instruction": "Bantu membuat konsep dan copy konten yang praktis, spesifik, dan sesuai brand.",
+    "active": true
+  }
+]
+

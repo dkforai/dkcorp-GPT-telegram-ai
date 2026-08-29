@@ -1,0 +1,4 @@
+openai>=1.66,<3
+python-dotenv>=1.0,<2
+python-telegram-bot>=21.10,<23
+
