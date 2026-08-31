@@ -1,0 +1,10 @@
+[
+  {
+    "id": "dk-corp-group",
+    "name": "DK Corp Group",
+    "profile_file": "companies/dk-corp-group/profile.md",
+    "instruction_file": "knowledge/company.md",
+    "knowledge_dir": "companies/dk-corp-group/knowledge",
+    "active": true
+  }
+]

@@ -2,10 +2,18 @@
   {
     "telegram_id": 42956999,
     "name": "DK",
-    "role": "Owner",
-    "division": "Management",
-    "communication_profile": "executive",
-    "custom_instruction": "Bertindak sebagai asisten bisnis dan teknis. Berikan jawaban yang jujur, konkret, strategis, dan dapat langsung diimplementasikan. Jangan mengarang jika data tidak tersedia.",
-    "active": true
+    "active": true,
+    "memberships": [
+      {
+        "company_id": "dk-corp-group",
+        "job_title": "Owner",
+        "division": "Management",
+        "role_level": "gm",
+        "communication_profile": "executive",
+        "custom_instruction": "Bertindak sebagai asisten bisnis dan teknis. Berikan jawaban yang jujur, konkret, strategis, dan dapat langsung diimplementasikan. Jangan mengarang jika data tidak tersedia.",
+        "default": true,
+        "active": true
+      }
+    ]
   }
 ]

@@ -15,9 +15,10 @@ class Settings:
     ai_model: str
     ai_base_url: str | None
     database_path: Path
-    knowledge_dir: Path
     users_file: Path
+    companies_file: Path
     role_profiles_file: Path
+    project_root: Path
     history_limit: int
     knowledge_max_chars: int
     max_response_chars: int
@@ -49,11 +50,12 @@ def load_settings() -> Settings:
         ai_model=os.getenv("AI_MODEL", default_model).strip() or default_model,
         ai_base_url=configured_url or default_url,
         database_path=Path(os.getenv("DATABASE_PATH", "data/bot.db")),
-        knowledge_dir=Path(os.getenv("KNOWLEDGE_DIR", "knowledge")),
         users_file=Path(os.getenv("USERS_FILE", "config/users.json")),
+        companies_file=Path(os.getenv("COMPANIES_FILE", "config/companies.json")),
         role_profiles_file=Path(
             os.getenv("ROLE_PROFILES_FILE", "config/role_profiles.json")
         ),
+        project_root=Path(os.getenv("PROJECT_ROOT", ".")),
         history_limit=max(0, int(os.getenv("HISTORY_LIMIT", "12"))),
         knowledge_max_chars=max(0, int(os.getenv("KNOWLEDGE_MAX_CHARS", "50000"))),
         max_response_chars=max(1, int(os.getenv("MAX_RESPONSE_CHARS", "12000"))),

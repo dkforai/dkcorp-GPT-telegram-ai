@@ -5,7 +5,7 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 0.3 |
+| Versi | 0.6 |
 | Terakhir diperbarui | 31 Agustus 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
@@ -30,8 +30,9 @@ Tujuan utama:
 2. Jabatan tidak menentukan gaya secara hardcoded. User mempunyai `communication_profile` tersendiri.
 3. Informasi yang tidak tersedia tidak boleh dikarang.
 4. Knowledge merupakan referensi data, bukan instruksi yang boleh mengambil alih system prompt.
-5. Perubahan konfigurasi dilakukan melalui file yang dapat diaudit di Git.
+5. Pada fase transisi, perubahan konfigurasi dilakukan melalui file yang dapat diaudit di Git. Target final memakai database versioned melalui admin control plane.
 6. MVP memakai komponen minimum yang cukup untuk satu instance.
+7. Sinkronisasi konfigurasi bersifat fail-closed: entry yang hilang dari source of truth dinonaktifkan di database.
 
 ## 3. Arsitektur logis
 
@@ -44,10 +45,16 @@ Authentication
 Whitelist Telegram ID
     ↓
 User Context
-name, role, division, communication_profile
+user identity + active company membership
     ↓
 Authorization Policy
-knowledge dan fungsi yang boleh diakses
+company, module, dan knowledge yang boleh diakses
+    ↓
+Company Context
+company instruction + business knowledge
+    ↓
+Active Module
+AI Module Playbook + module-scoped knowledge
     ↓
 Communication Profile
     ├── executive → strategic
@@ -85,20 +92,248 @@ Jawaban ke user
 |---|---|---|
 | Telegram Bot | Sudah | Long polling dan respons HTML terformat |
 | Authentication | Sudah | Whitelist Telegram ID |
-| User Context | Sudah | Name, role, division, communication profile |
-| Communication Profile | Sudah | Config terpusat dengan override per user |
-| Custom Instruction | Sudah | Field per user |
-| Knowledge Loader | Sudah | Semua `.md` di folder `knowledge/` |
-| Chat History | Sudah | SQLite per user |
+| User Context | Sudah | Identity global dan membership per perusahaan |
+| Communication Profile | Sudah | Config terpusat dengan override per membership |
+| Custom Instruction | Sudah | Field global user dan field per membership |
+| Knowledge Loader | Sudah | Folder knowledge ditentukan oleh company aktif |
+| Chat History | Sudah | SQLite dipisahkan per user dan perusahaan |
 | Provider Abstraction | Sudah | OpenAI dan DeepSeek compatible API |
 | Telegram Response Renderer | Sudah | Safe HTML, split, link preview off, dan fallback plain text |
 | Conversation Delivery Policy | Belum | Akan mengatur panjang, ritme, dan progressive disclosure |
-| Authorization per knowledge | Belum | Semua knowledge masih dapat dipakai semua user aktif |
+| Multi-company membership | Sudah | Tabel membership dan konfigurasi JSON |
+| Company router dan active context | Sudah | Command `/company` dan session active company |
+| Company-scoped instruction | Sudah | File profile, instruction, dan knowledge ditentukan per company |
+| Authorization per knowledge | Sebagian | Sudah company-scoped; module, division, dan clearance belum |
 | Response Validator | Sebagian | Batas panjang, split, escape HTML, dan fallback; belum ada policy classifier |
 | Admin Panel | Belum | User dikelola melalui JSON dan Git |
 | Retrieval/RAG | Belum | Seluruh knowledge dimuat sampai batas karakter |
 
-## 5. Pemisahan konsep user
+## 5. Target arsitektur multi-company
+
+DK Corp memakai satu bot dan satu codebase untuk seluruh perusahaan. Perusahaan, membership user, modul, instruction, dan knowledge diperlakukan sebagai data terpisah. Sistem tidak membuat satu bot untuk setiap perusahaan.
+
+```text
+Telegram ID
+    ↓
+User
+    ↓
+User–Company Membership
+company + job title + division + role level
+    ↓
+Active Company Context
+    ├── Company Profile
+    ├── Company Instruction
+    ├── Business Knowledge
+    └── Modules yang diizinkan
+            ↓
+        Active Module
+        AI Module Playbook
+            ↓
+Communication Profile
+executive / manager / staff
+    ↓
+Conversation Delivery Policy
+    ↓
+AI Provider
+    ↓
+Telegram Response Renderer
+```
+
+### 5.1 User dan membership
+
+Identitas user bersifat global, tetapi jabatan, divisi, role level, dan akses bersifat per perusahaan.
+
+```json
+{
+  "user": {
+    "telegram_id": 123456789,
+    "name": "Tiko",
+    "active": true
+  },
+  "memberships": [
+    {
+      "company_id": "lapis-malang",
+      "job_title": "General Manager",
+      "division": "Management",
+      "role_level": "gm",
+      "communication_profile": "executive",
+      "allowed_modules": ["funnel-coach", "sales-performance"]
+    },
+    {
+      "company_id": "malang-strudel",
+      "job_title": "Advisor",
+      "division": "Management",
+      "role_level": "manager",
+      "communication_profile": "manager",
+      "allowed_modules": ["read-only-insight"]
+    }
+  ]
+}
+```
+
+Satu user dapat mempunyai level berbeda pada perusahaan berbeda. Karena itu `role` tidak boleh tetap menjadi atribut tunggal pada tabel user.
+
+### 5.2 Domain perusahaan
+
+Setiap perusahaan mempunyai empat sumber konteks yang terpisah:
+
+| Sumber | Fungsi | Bersifat instruksi? |
+|---|---|---|
+| Company Profile | Identitas, positioning, istilah, struktur, KPI | Sebagian konteks |
+| Company Instruction | Aturan AI khusus perusahaan | Ya |
+| Business Knowledge | Fakta, SOP, produk, data, dan dokumen | Tidak |
+| Module Catalog | Daftar pekerjaan AI yang tersedia | Konfigurasi |
+
+Company Instruction tidak boleh dicampur ke Business Knowledge. Knowledge diperlakukan sebagai bukti atau referensi, sedangkan instruction menentukan perilaku AI.
+
+### 5.3 Modul dan playbook
+
+Modul adalah pekerjaan AI yang dipilih dalam company context, misalnya Funnel Coach, Complaint Assistant, Sales Performance, atau Product Brainstorming.
+
+Setiap modul mempunyai:
+
+- tujuan;
+- AI Module Playbook;
+- input yang diperlukan;
+- knowledge scope;
+- output contract;
+- akses user;
+- memory atau state modul bila diperlukan.
+
+Framework modul dapat digunakan bersama, tetapi instance perusahaan tetap mempunyai instruction, target, istilah, dan knowledge sendiri.
+
+### 5.4 Tiga cara berkomunikasi
+
+Communication Profile tetap bersifat global agar standar GM, manager, dan staff konsisten di seluruh grup. Company dapat memberi override terbatas untuk istilah atau tone, tetapi tidak menduplikasi seluruh profile.
+
+| Role level membership | Profile | Orientasi jawaban |
+|---|---|---|
+| GM / executive | `executive` | Keputusan, prioritas, risiko, opsi, dan trade-off |
+| Manager | `manager` | Rencana taktis, resource, timeline, KPI, dan koordinasi |
+| Staff | `staff` | Langkah kerja, checklist, contoh, standar selesai, dan eskalasi |
+
+Pesan pendek tidak berarti analisis dangkal. Model tetap menganalisis konteks lengkap, lalu Conversation Delivery Policy menentukan bagian yang perlu disampaikan sekarang.
+
+### 5.5 Resolusi konteks aktif
+
+1. Jika user hanya mempunyai satu company membership, perusahaan dipilih otomatis.
+2. Jika user mempunyai lebih dari satu membership, bot meminta user memilih perusahaan atau memakai company aktif dari sesi terakhir.
+3. Bot hanya menampilkan modul yang diizinkan pada membership tersebut.
+4. Session menyimpan `active_company_id` dan `active_module_id`.
+5. Semua instruction, knowledge, memory, dan audit berikutnya wajib memakai context aktif tersebut.
+
+### 5.6 Komposisi konteks AI
+
+```text
+1. Global system dan security policy
+2. Identity dan authorization result
+3. Company Instruction
+4. AI Module Playbook
+5. Communication Profile membership
+6. User-specific instruction yang diizinkan
+7. Retrieved Business Knowledge yang sudah difilter
+8. Session memory
+9. Pertanyaan terbaru
+10. Technical markup contract
+```
+
+Urutan prioritas bila terjadi konflik:
+
+```text
+Global security
+> authorization
+> company policy
+> module playbook
+> communication profile
+> user-specific preference
+> knowledge content
+```
+
+Knowledge tidak pernah mempunyai hak untuk mengubah instruksi pada lapisan di atasnya.
+
+### 5.7 Struktur file fase transisi
+
+Sebelum memakai database dan RAG penuh, struktur file dapat dibuat:
+
+```text
+companies/
+  lapis-malang/
+    profile.md
+    company_instruction.md
+    knowledge/
+      products.md
+      sop.md
+      business-facts.md
+    modules/
+      funnel-coach/
+        playbook.md
+        module_knowledge.md
+  malang-strudel/
+    profile.md
+    company_instruction.md
+    knowledge/
+    modules/
+```
+
+Folder adalah bentuk transisi yang mudah diaudit. Target produksi skala lanjut menggunakan metadata `company_id`, `module_id`, dan access level pada database/retrieval layer.
+
+### 5.8 Entitas data target
+
+| Entitas | Fungsi |
+|---|---|
+| `users` | Identitas Telegram global |
+| `companies` | Master perusahaan |
+| `user_company_memberships` | Jabatan, divisi, level, dan profile per perusahaan |
+| `modules` | Modul milik atau aktif pada perusahaan |
+| `module_access` | Hak membership terhadap modul |
+| `company_instructions` | Instruction versioned per perusahaan |
+| `module_playbooks` | Playbook versioned per modul |
+| `knowledge_documents` | Dokumen dengan scope perusahaan/modul |
+| `chat_sessions` | Active company, active module, dan summary |
+| `messages` | Audit percakapan |
+
+Semua query knowledge wajib memiliki filter `company_id`. Filter `module_id` ditambahkan ketika modul mempunyai knowledge khusus.
+
+### 5.9 Target admin control plane
+
+Admin panel akan menjadi control plane sederhana di atas service dan data model yang sama dengan bot. Target antarmuka memakai HTML server-rendered, bukan SPA terpisah. Setelah migrasi selesai, database menjadi source of truth dan file JSON hanya dipakai untuk bootstrap, import, atau recovery terkontrol.
+
+Empat area utama:
+
+1. Dashboard ringkas;
+2. Companies: profile, instruction, knowledge, dan modules;
+3. Users & Access: identity dan company membership;
+4. Activity: perubahan konfigurasi, versi, dan error operasional.
+
+Instruction dan knowledge memakai alur Draft → Preview → Publish → Rollback agar edit admin tidak langsung memengaruhi bot produksi. Implementasi admin panel dilakukan setelah fondasi company, membership, dan company-scoped context stabil.
+
+### 5.10 Target persistence multi-tenant
+
+Target final menggunakan database multi-tenant dengan `company_id` sebagai tenant boundary utama. Semua entitas yang membawa data perusahaan wajib mempunyai scope company secara langsung atau melalui relasi yang tidak ambigu.
+
+Data yang menjadi source of truth database:
+
+- company;
+- user dan company membership;
+- role level dan access policy;
+- instruction beserta draft, published version, dan revision history;
+- module dan module playbook;
+- metadata knowledge document;
+- session dan message scope;
+- audit event administratif.
+
+Isi file knowledge dapat tetap berada di object/file storage, tetapi metadata, ownership, status publish, version, checksum, dan access scope disimpan di database. Bot tidak boleh mengambil instruction atau knowledge hanya berdasarkan path; query harus melewati authorization dan filter tenant.
+
+Implementasi dilakukan bertahap:
+
+1. SQLite dan JSON tetap menjalankan bot selama migrasi;
+2. schema database multi-tenant dan repository/service layer disiapkan;
+3. data JSON diimpor secara idempotent;
+4. admin panel menulis draft dan published records ke database;
+5. runtime bot membaca database sebagai source of truth;
+6. JSON diturunkan menjadi bootstrap/recovery, lalu PostgreSQL menjadi target deployment ketika bot dan admin dipisahkan menjadi service berbeda.
+
+## 6. Pemisahan konsep user
 
 Contoh satu user:
 
@@ -126,9 +361,9 @@ Makna field:
 | `custom_instruction` | Kebutuhan khusus individual |
 | `active` | Status akses bot |
 
-## 6. Communication Profile
+## 7. Communication Profile
 
-### 6.1 Executive
+### 7.1 Executive
 
 Target user: owner, director, general manager, dan pimpinan setara.
 
@@ -150,7 +385,7 @@ Executive summary
 → keputusan atau next step
 ```
 
-### 6.2 Manager
+### 7.2 Manager
 
 Target user: manager, head, supervisor senior, dan project lead.
 
@@ -171,7 +406,7 @@ Tujuan
 → KPI dan checkpoint
 ```
 
-### 6.3 Staff
+### 7.3 Staff
 
 Target user: staff, officer, analyst, creator, crew, dan pelaksana.
 
@@ -192,11 +427,11 @@ Tujuan tugas
 → hal yang harus dieskalasikan
 ```
 
-### 6.4 Default
+### 7.4 Default
 
 Dipakai ketika profile tidak dikenali. Jawaban bersifat seimbang, praktis, dan tidak mengasumsikan senioritas user.
 
-## 7. Resolusi profile dan prioritas instruksi
+## 8. Resolusi profile dan prioritas instruksi
 
 Pemilihan profile:
 
@@ -224,7 +459,7 @@ Chat history dan pertanyaan terbaru
 
 Aturan dengan prioritas lebih rendah tidak boleh menonaktifkan aturan keamanan pada lapisan di atasnya.
 
-## 8. Telegram Response Renderer
+## 9. Telegram Response Renderer
 
 Telegram Response Renderer adalah lapisan teknis di Python. Lapisan ini tidak menentukan apakah jawaban harus strategis, taktis, atau operasional. Tugasnya hanya memastikan draft respons tampil konsisten dan aman di Telegram.
 
@@ -242,7 +477,7 @@ Kirim dengan parse_mode=HTML
 Fallback ke plain text
 ```
 
-### 8.1 Format input yang didukung
+### 9.1 Format input yang didukung
 
 | Input AI | Hasil Telegram HTML | Fungsi |
 |---|---|---|
@@ -257,7 +492,7 @@ Fallback ke plain text
 
 Heading Markdown diubah menjadi bold. Tabel, raw HTML, nested formatting, dan skema URL selain HTTP/HTTPS tidak menjadi bagian kontrak MVP.
 
-### 8.2 Security boundary
+### 9.2 Security boundary
 
 - Semua `<`, `>`, dan `&` dari output model di-escape.
 - Model tidak boleh mengirim HTML mentah.
@@ -267,32 +502,37 @@ Heading Markdown diubah menjadi bold. Tabel, raw HTML, nested formatting, dan sk
 - Jika Telegram menolak HTML, sistem mencatat warning tanpa isi pesan dan mengirim chunk yang sama sebagai plain text.
 - Link preview dinonaktifkan untuk respons AI.
 
-### 8.3 Batas tanggung jawab
+### 9.3 Batas tanggung jawab
 
 Renderer tidak mengatur panjang ideal, jumlah pilihan, tone, satu pesan satu tujuan, atau progressive disclosure. Semua itu adalah tanggung jawab Conversation Delivery Policy yang akan dibangun terpisah.
 
-## 9. Data dan penyimpanan
+## 10. Data dan penyimpanan
 
-### 9.1 Konfigurasi Git
+### 10.1 Konfigurasi Git
 
 | Lokasi | Isi |
 |---|---|
-| `config/users.json` | Whitelist dan konteks user |
+| `config/companies.json` | Master company dan lokasi content |
+| `config/users.json` | Whitelist dan membership user per company |
 | `config/role_profiles.json` | Aturan communication profile |
-| `knowledge/*.md` | Knowledge perusahaan |
+| `companies/<company-id>/` | Profile, instruction, dan knowledge perusahaan |
+| `knowledge/company.md` | Combined legacy playbook DK Corp Group selama transisi |
 | `docs/architecture.md` | Arsitektur dan keputusan konsep |
 
-### 9.2 SQLite
+### 10.2 SQLite
 
 SQLite menyimpan:
 
 - salinan user hasil sinkronisasi konfigurasi;
-- pesan user dan assistant;
-- timestamp pesan dan pembaruan user.
+- master company;
+- user-company membership;
+- perusahaan aktif per user;
+- pesan user dan assistant dengan `company_id`;
+- timestamp pesan dan pembaruan konfigurasi.
 
 Railway Volume dipasang pada `/app/data` agar database bertahan saat redeploy.
 
-## 10. Deployment
+## 11. Deployment
 
 ```text
 Perubahan lokal
@@ -309,7 +549,7 @@ Telegram long polling
 
 Hanya satu replica boleh berjalan selama database memakai SQLite dan bot memakai long polling.
 
-## 11. Keamanan dan batas akses
+## 12. Keamanan dan batas akses
 
 Sudah diterapkan:
 
@@ -319,6 +559,9 @@ Sudah diterapkan:
 - HTTP client log tidak menampilkan URL Telegram pada level normal;
 - output model di-escape dan dirender melalui safe Telegram HTML;
 - knowledge diperlakukan sebagai referensi, bukan system instruction.
+- membership membatasi perusahaan yang dapat dipilih user;
+- history dan content AI dipisahkan berdasarkan company aktif;
+- path content company harus relatif dan tidak boleh keluar dari project root.
 
 Belum diterapkan:
 
@@ -330,16 +573,18 @@ Belum diterapkan:
 
 Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawaban disampaikan, bukan menentukan informasi yang boleh diakses.
 
-## 12. Batas MVP
+## 13. Batas MVP
 
 - text-only;
 - satu provider aktif untuk seluruh bot;
 - satu instance Railway;
-- seluruh knowledge dimuat sampai `KNOWLEDGE_MAX_CHARS`;
-- user dan profile dikelola lewat JSON;
-- seluruh user aktif masih memakai kumpulan knowledge yang sama.
+- seluruh knowledge company aktif dimuat sampai `KNOWLEDGE_MAX_CHARS`;
+- company, membership, dan profile masih dikelola lewat JSON;
+- modul, module access, dan module-scoped knowledge belum diimplementasikan;
+- combined legacy Funnel Coach masih dipakai sebagai instruction DK Corp Group sampai dokumen dipisahkan;
+- admin panel belum diimplementasikan.
 
-## 13. Roadmap
+## 14. Roadmap
 
 ### Fase 1 — Context-aware MVP
 
@@ -352,6 +597,10 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 
 ### Fase 2 — Organizational Access
 
+- master company dan user-company membership; selesai untuk company scope;
+- active company router; selesai melalui `/company`;
+- company instruction terpisah; selesai secara struktur, migrasi isi legacy belum;
+- active module router dan module playbook;
 - knowledge metadata per division;
 - authorization policy dan clearance;
 - admin command atau admin panel;
@@ -372,7 +621,7 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 - approval workflow;
 - integrasi data bisnis dan tool internal.
 
-## 14. Keputusan arsitektur
+## 15. Keputusan arsitektur
 
 | ID | Keputusan | Alasan |
 |---|---|---|
@@ -384,8 +633,43 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 | ADR-006 | Dokumen arsitektur Markdown sebagai source of truth | Mudah diperbarui bersama source code sebelum dibuat PDF |
 | ADR-007 | Conversation Delivery Policy dipisahkan dari Telegram Renderer | Cara menyampaikan pesan tidak dicampur dengan format teknis channel |
 | ADR-008 | Model menghasilkan subset Markdown, Python menghasilkan safe HTML | Mencegah raw HTML model sekaligus menjaga tampilan Telegram konsisten |
+| ADR-009 | Satu bot dan satu codebase untuk seluruh perusahaan | Menghindari fragmentasi bot, akses, knowledge, dan maintenance |
+| ADR-010 | Jabatan dan profile disimpan pada user-company membership | Satu orang dapat mempunyai peran berbeda pada perusahaan berbeda |
+| ADR-011 | Company Instruction dipisahkan dari Business Knowledge | Instruksi AI tidak boleh bercampur dengan fakta dan dokumen referensi |
+| ADR-012 | Semua retrieval wajib difilter dengan company_id | Mencegah kebocoran konteks antarperusahaan |
+| ADR-013 | Chat history memakai scope user dan company | Pergantian perusahaan tidak boleh membawa konteks percakapan perusahaan lain |
+| ADR-014 | Admin panel dibangun setelah domain model stabil | UI harus mengelola company dan membership model yang benar, bukan struktur user global lama |
+| ADR-015 | Database multi-tenant menjadi source of truth final | Company, membership, access, instruction, knowledge metadata, version, dan audit harus dikelola konsisten melalui admin control plane |
+| ADR-016 | JSON hanya menjadi bootstrap/import setelah migrasi | Runtime tidak boleh memiliki dua source of truth yang dapat saling bertentangan |
+| ADR-017 | PostgreSQL menjadi target saat bot dan admin dipisahkan | SQLite cukup untuk transisi satu process, tetapi bukan storage bersama untuk beberapa service Railway |
 
-## 15. Changelog dokumen
+## 16. Changelog dokumen
+
+### 0.6 — 31 Agustus 2026
+
+- menetapkan database multi-tenant sebagai arsitektur persistence final;
+- menurunkan JSON menjadi bootstrap, import, atau recovery setelah migrasi;
+- menetapkan `company_id` sebagai tenant boundary wajib;
+- menambahkan versioning instruction, metadata knowledge, access policy, dan audit sebagai data database;
+- menetapkan PostgreSQL sebagai target ketika bot dan admin berjalan sebagai service berbeda.
+
+### 0.5 — 31 Agustus 2026
+
+- mengimplementasikan master company dan user-company membership;
+- menambahkan active company session dan command `/company`;
+- memisahkan history berdasarkan user dan company;
+- menambahkan company-scoped profile, instruction, dan knowledge loader;
+- memigrasikan history lama ke company default ketika resolusinya tidak ambigu;
+- menetapkan target admin control plane sederhana;
+- mencatat combined legacy Funnel Coach sebagai pekerjaan migrasi, bukan arsitektur final.
+
+### 0.4 — 31 Agustus 2026
+
+- menetapkan target arsitektur satu bot multi-company;
+- mengganti role global menjadi user-company membership;
+- memisahkan Company Instruction, Business Knowledge, dan AI Module Playbook;
+- menetapkan tiga Communication Profile pada level membership;
+- menambahkan active company/module context, struktur file transisi, entitas data target, dan filter knowledge wajib.
 
 ### 0.3 — 31 Agustus 2026
 

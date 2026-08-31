@@ -1,0 +1,10 @@
+[
+  {
+    "id": "contoh-perusahaan",
+    "name": "Contoh Perusahaan",
+    "profile_file": "companies/contoh-perusahaan/profile.md",
+    "instruction_file": "companies/contoh-perusahaan/company_instruction.md",
+    "knowledge_dir": "companies/contoh-perusahaan/knowledge",
+    "active": true
+  }
+]
