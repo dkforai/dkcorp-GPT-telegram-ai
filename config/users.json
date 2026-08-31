@@ -4,8 +4,8 @@
     "name": "DK",
     "role": "Owner",
     "division": "Management",
+    "communication_profile": "executive",
     "custom_instruction": "Bertindak sebagai asisten bisnis dan teknis. Berikan jawaban yang jujur, konkret, strategis, dan dapat langsung diimplementasikan. Jangan mengarang jika data tidak tersedia.",
     "active": true
   }
 ]
-

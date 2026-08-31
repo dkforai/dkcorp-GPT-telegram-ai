@@ -5,7 +5,6 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable
 
 
 @dataclass(frozen=True)
@@ -14,6 +13,7 @@ class User:
     name: str
     role: str
     division: str
+    communication_profile: str
     custom_instruction: str
     active: bool
 
@@ -38,6 +38,7 @@ class Database:
                     name TEXT NOT NULL,
                     role TEXT NOT NULL DEFAULT '',
                     division TEXT NOT NULL DEFAULT '',
+                    communication_profile TEXT NOT NULL DEFAULT '',
                     custom_instruction TEXT NOT NULL DEFAULT '',
                     active INTEGER NOT NULL DEFAULT 1,
                     updated_at TEXT NOT NULL
@@ -56,6 +57,17 @@ class Database:
                 ON messages(telegram_id, id DESC);
                 """
             )
+            columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(users)").fetchall()
+            }
+            if "communication_profile" not in columns:
+                connection.execute(
+                    """
+                    ALTER TABLE users
+                    ADD COLUMN communication_profile TEXT NOT NULL DEFAULT ''
+                    """
+                )
 
     def sync_users(self, users_file: Path) -> int:
         if not users_file.exists():
@@ -73,6 +85,7 @@ class Database:
                     str(item["name"]).strip(),
                     str(item.get("role", "")).strip(),
                     str(item.get("division", "")).strip(),
+                    str(item.get("communication_profile", "")).strip(),
                     str(item.get("custom_instruction", "")).strip(),
                     int(bool(item.get("active", True))),
                     now,
@@ -84,12 +97,13 @@ class Database:
                 """
                 INSERT INTO users (
                     telegram_id, name, role, division,
-                    custom_instruction, active, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    communication_profile, custom_instruction, active, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(telegram_id) DO UPDATE SET
                     name=excluded.name,
                     role=excluded.role,
                     division=excluded.division,
+                    communication_profile=excluded.communication_profile,
                     custom_instruction=excluded.custom_instruction,
                     active=excluded.active,
                     updated_at=excluded.updated_at
@@ -111,6 +125,7 @@ class Database:
             name=row["name"],
             role=row["role"],
             division=row["division"],
+            communication_profile=row["communication_profile"],
             custom_instruction=row["custom_instruction"],
             active=bool(row["active"]),
         )
@@ -157,4 +172,3 @@ class Database:
                 """,
                 (telegram_id, telegram_id, keep),
             )
-

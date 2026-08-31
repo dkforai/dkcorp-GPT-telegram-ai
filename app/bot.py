@@ -4,13 +4,17 @@ import logging
 
 from telegram import Update
 from telegram.constants import ChatAction
+from telegram.constants import ParseMode
+from telegram.error import BadRequest
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from app.config import Settings
-from app.database import Database
+from app.database import Database, User
 from app.knowledge import load_knowledge
 from app.prompts import build_system_prompt
 from app.providers import AIProvider
+from app.role_profiles import load_role_profiles, resolve_communication_profile
+from app.telegram_renderer import markdown_to_telegram_html
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +39,12 @@ class InternalBot:
         if telegram_user is None:
             return None
         return self.database.get_user(telegram_user.id)
+
+    def _communication_profile(self, user: User):
+        profiles = load_role_profiles(self.settings.role_profiles_file)
+        return resolve_communication_profile(
+            user.communication_profile, user.role, profiles
+        )
 
     async def _reject(self, update: Update) -> None:
         telegram_id = update.effective_user.id if update.effective_user else "unknown"
@@ -69,8 +79,12 @@ class InternalBot:
         if not user:
             await self._reject(update)
             return
+        profile = self._communication_profile(user)
         await update.effective_message.reply_text(
-            f"Nama: {user.name}\nRole: {user.role or '-'}\nDivision: {user.division or '-'}"
+            f"Nama: {user.name}\n"
+            f"Role: {user.role or '-'}\n"
+            f"Division: {user.division or '-'}\n"
+            f"Communication profile: {profile.label}"
         )
 
     async def reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -97,7 +111,8 @@ class InternalBot:
         knowledge = load_knowledge(
             self.settings.knowledge_dir, self.settings.knowledge_max_chars
         )
-        system_prompt = build_system_prompt(user, knowledge)
+        communication_profile = self._communication_profile(user)
+        system_prompt = build_system_prompt(user, knowledge, communication_profile)
 
         try:
             answer = await self.provider.generate(system_prompt, history, user_text)
@@ -105,8 +120,23 @@ class InternalBot:
             self.database.add_message(user.telegram_id, "user", user_text)
             self.database.add_message(user.telegram_id, "assistant", answer)
             self.database.prune_history(user.telegram_id)
-            for chunk in _split_message(answer):
-                await message.reply_text(chunk)
+            for chunk in _split_message(answer, size=3500):
+                rendered = markdown_to_telegram_html(chunk)
+                try:
+                    await message.reply_text(
+                        rendered,
+                        parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=True,
+                    )
+                except BadRequest:
+                    logger.warning(
+                        "Format HTML ditolak Telegram untuk user %s; fallback plain text",
+                        user.telegram_id,
+                    )
+                    await message.reply_text(
+                        chunk,
+                        disable_web_page_preview=True,
+                    )
         except Exception:
             logger.exception("Gagal memproses chat untuk Telegram ID %s", user.telegram_id)
             await message.reply_text(
@@ -126,4 +156,3 @@ def _split_message(text: str, size: int = 4000) -> list[str]:
     if remaining:
         chunks.append(remaining)
     return chunks
-

@@ -17,6 +17,7 @@ class Settings:
     database_path: Path
     knowledge_dir: Path
     users_file: Path
+    role_profiles_file: Path
     history_limit: int
     knowledge_max_chars: int
     max_response_chars: int
@@ -50,9 +51,11 @@ def load_settings() -> Settings:
         database_path=Path(os.getenv("DATABASE_PATH", "data/bot.db")),
         knowledge_dir=Path(os.getenv("KNOWLEDGE_DIR", "knowledge")),
         users_file=Path(os.getenv("USERS_FILE", "config/users.json")),
+        role_profiles_file=Path(
+            os.getenv("ROLE_PROFILES_FILE", "config/role_profiles.json")
+        ),
         history_limit=max(0, int(os.getenv("HISTORY_LIMIT", "12"))),
         knowledge_max_chars=max(0, int(os.getenv("KNOWLEDGE_MAX_CHARS", "50000"))),
         max_response_chars=max(1, int(os.getenv("MAX_RESPONSE_CHARS", "12000"))),
         log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
     )
-

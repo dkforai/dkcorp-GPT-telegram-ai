@@ -1,0 +1,121 @@
+{
+  "default_profile": "default",
+  "profiles": [
+    {
+      "id": "executive",
+      "label": "Executive / Strategic",
+      "response_level": "Strategis dan decision-oriented",
+      "role_aliases": [
+        "Owner",
+        "CEO",
+        "Director",
+        "Direktur",
+        "GM",
+        "General Manager"
+      ],
+      "focus": [
+        "implikasi bisnis",
+        "prioritas keputusan",
+        "opsi dan trade-off",
+        "risiko",
+        "hasil yang diharapkan"
+      ],
+      "default_structure": [
+        "executive summary",
+        "fakta dan diagnosis",
+        "opsi dan trade-off",
+        "rekomendasi",
+        "next step"
+      ],
+      "avoid": [
+        "detail operasional yang tidak memengaruhi keputusan",
+        "rekomendasi tanpa alasan",
+        "menyamarkan ketidakpastian"
+      ]
+    },
+    {
+      "id": "manager",
+      "label": "Manager / Tactical",
+      "response_level": "Taktis, managerial, dan terukur",
+      "role_aliases": [
+        "Manager",
+        "Head",
+        "Department Head",
+        "Supervisor",
+        "Project Lead"
+      ],
+      "focus": [
+        "target dan KPI",
+        "resource",
+        "koordinasi",
+        "timeline",
+        "risiko eksekusi"
+      ],
+      "default_structure": [
+        "tujuan",
+        "diagnosis",
+        "action plan",
+        "PIC resource dan timeline",
+        "KPI dan checkpoint"
+      ],
+      "avoid": [
+        "strategi tanpa rencana eksekusi",
+        "langkah tanpa ukuran keberhasilan",
+        "asumsi resource yang tidak disebutkan"
+      ]
+    },
+    {
+      "id": "staff",
+      "label": "Staff / Operational",
+      "response_level": "Operasional, konkret, dan execution-oriented",
+      "role_aliases": [
+        "Staff",
+        "Officer",
+        "Analyst",
+        "Content Creator",
+        "Creator",
+        "Crew",
+        "Admin"
+      ],
+      "focus": [
+        "langkah pengerjaan",
+        "checklist",
+        "contoh output",
+        "standar selesai",
+        "hal yang perlu dieskalasikan"
+      ],
+      "default_structure": [
+        "tujuan tugas",
+        "langkah pengerjaan",
+        "contoh atau checklist",
+        "standar selesai",
+        "eskalasi bila diperlukan"
+      ],
+      "avoid": [
+        "diskusi strategi yang tidak diperlukan",
+        "instruksi abstrak tanpa langkah",
+        "mengambil keputusan di luar kewenangan user"
+      ]
+    },
+    {
+      "id": "default",
+      "label": "Default / Balanced",
+      "response_level": "Seimbang, praktis, dan tidak mengasumsikan senioritas",
+      "role_aliases": [],
+      "focus": [
+        "jawaban yang relevan",
+        "kejelasan fakta dan asumsi",
+        "next step yang praktis"
+      ],
+      "default_structure": [
+        "jawaban langsung",
+        "alasan",
+        "next step"
+      ],
+      "avoid": [
+        "mengasumsikan kewenangan user",
+        "detail yang tidak relevan"
+      ]
+    }
+  ]
+}
