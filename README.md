@@ -287,7 +287,7 @@ Conversation Delivery Policy seperti batas kata, satu pesan satu tujuan, dan pro
 - Controlled concurrency dibatasi maksimal 16 dan default 4
 - Knowledge sudah dipisahkan per company, tetapi belum per module/division/clearance
 - Upload knowledge belum mendukung OCR, PDF scan, dan Word `.doc` lama
-- Admin writable untuk Company, user, membership, Company Instruction, dan Knowledge; Modules dan Activity masih tahap berikutnya
+- Admin writable untuk Company, user, membership, Company Instruction, dan Knowledge; Activity menampilkan audit administratif read-only; Modules masih tahap berikutnya
 - History dibatasi untuk konteks dan dipangkas menjadi 100 pesan per user-company
 
 ## Struktur

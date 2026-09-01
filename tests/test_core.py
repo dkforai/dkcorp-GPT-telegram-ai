@@ -526,6 +526,53 @@ def test_server_generated_identifiers_and_collision_suffixes(tmp_path):
     assert second_document["document_key"] == "target-omzet-2026-2"
 
 
+def test_admin_activity_is_read_only_filterable_and_content_safe(tmp_path):
+    companies_file = tmp_path / "companies.json"
+    companies_file.write_text("[]", encoding="utf-8")
+    users_file = tmp_path / "users.json"
+    users_file.write_text("[]", encoding="utf-8")
+    database = Database(tmp_path / "activity.db")
+    database.initialize()
+    database.create_company("company-a", "Company A", actor="admin")
+    database.create_knowledge_document(
+        "company-a",
+        "private-plan",
+        "Private Plan",
+        "RAHASIA-ISI-DOKUMEN",
+        actor="admin",
+    )
+    database.publish_knowledge_document(
+        "company-a", "private-plan", actor="admin"
+    )
+    settings = _test_settings(
+        tmp_path,
+        users_file,
+        companies_file,
+        database_path=tmp_path / "activity.db",
+    )
+    app = create_admin_app(settings, database)
+
+    with TestClient(app) as client:
+        assert client.get("/admin/activity", follow_redirects=False).status_code == 303
+        assert client.post(
+            "/admin/login",
+            data={"username": "admin", "password": "strong-password"},
+            follow_redirects=False,
+        ).status_code == 303
+        response = client.get("/admin/activity")
+        assert response.status_code == 200
+        assert "Audit aktivitas" in response.text
+        assert "Knowledge dipublikasikan" in response.text
+        assert "company-a:private-plan" in response.text
+        assert "RAHASIA-ISI-DOKUMEN" not in response.text
+        assert "WIB" in response.text
+
+        company_only = client.get("/admin/activity?category=company")
+        assert company_only.status_code == 200
+        assert "Company dibuat" in company_only.text
+        assert "Knowledge dipublikasikan" not in company_only.text
+
+
 def test_admin_user_and_membership_management(tmp_path):
     companies_file = tmp_path / "companies.json"
     companies_file.write_text(

@@ -5,7 +5,7 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 1.5 |
+| Versi | 1.6 |
 | Terakhir diperbarui | 1 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
@@ -109,7 +109,7 @@ Jawaban ke user
 | Company-scoped instruction | Sudah | Draft dan versi publish tersimpan di SQLite; file company menjadi fallback transisi |
 | Authorization per knowledge | Sebagian | Sudah company-scoped; module, division, dan clearance belum |
 | Response Validator | Sebagian | Batas panjang, split, escape HTML, dan fallback; belum ada policy classifier |
-| Admin Panel | Sebagian | Company, user, membership, Instruction, dan Knowledge writable; Modules dan Activity menyusul |
+| Admin Panel | Sebagian | Company, user, membership, Instruction, dan Knowledge writable; Activity read-only; Modules menyusul |
 | Retrieval/RAG | Belum | Seluruh knowledge dimuat sampai batas karakter |
 
 ## 5. Target arsitektur multi-company
@@ -325,7 +325,8 @@ Versi admin saat ini menyediakan:
 - halaman Knowledge untuk membuat dokumen per company, menyimpan draft, preview, publish, aktivasi/nonaktivasi, dan riwayat versi;
 - form Knowledge menerima teks langsung atau upload PDF, DOCX, TXT, dan Markdown maksimal 10 MB;
 - restore versi lama ke draft agar selalu melewati preview sebelum dipublikasikan kembali;
-- placeholder navigasi Modules dan Activity;
+- placeholder navigasi Modules;
+- halaman Activity read-only untuk 100 audit event terbaru dengan filter kategori;
 - security headers dan health endpoint.
 - CSRF token untuk seluruh mutasi Company;
 - audit event untuk create, update, activate, dan deactivate Company.
@@ -672,7 +673,6 @@ Sudah diterapkan:
 Belum diterapkan:
 
 - knowledge access per division atau clearance;
-- tampilan Activity untuk audit log administratif;
 - enkripsi field aplikasi pada database;
 - klasifikasi data sensitif pada jawaban;
 - admin approval untuk perubahan akses.
@@ -689,7 +689,7 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 - Company, user, membership, communication profile, Company Instruction, dan Knowledge dikelola melalui admin;
 - modul, module access, dan module-scoped knowledge belum diimplementasikan;
 - combined legacy Funnel Coach masih dipakai sebagai instruction DK Corp Group sampai dokumen dipisahkan;
-- Company Instruction dan Knowledge sudah writable dan versioned; Modules dan Activity masih tahap berikutnya.
+- Company Instruction dan Knowledge sudah writable dan versioned; Activity menampilkan audit administratif; Modules masih tahap berikutnya.
 - concurrency masih berada dalam satu process dan belum memakai durable application queue terpisah.
 
 ## 14. Roadmap
@@ -777,8 +777,19 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 | ADR-041 | Source upload menyimpan metadata dan SHA-256, bukan file asli | Provenance dan audit tersedia tanpa memperbesar SQLite dengan binary document |
 | ADR-042 | Company ID dan document key dibuat server dari nama atau judul | Admin tidak perlu memahami slug teknis dan request yang dimanipulasi tidak dapat menentukan tenant key |
 | ADR-043 | Collision identifier memakai suffix numerik deterministik | Nama yang sama tetap dapat dibuat tanpa meminta admin menyusun key manual |
+| ADR-044 | Activity hanya membaca audit event dan tidak mempunyai mutasi | Riwayat administratif tidak boleh menjadi jalur untuk mengubah atau menghapus state produksi |
+| ADR-045 | Activity tidak menampilkan isi instruction atau knowledge | Audit cukup menyimpan metadata, ukuran, versi, dan checksum tanpa membuka konten sensitif |
 
 ## 16. Changelog dokumen
+
+### 1.6 — 1 September 2026
+
+- membuka halaman Activity sebagai audit log administratif read-only;
+- menampilkan 100 event terbaru dalam waktu WIB dengan filter Company, User, Membership, Instruction, dan Knowledge;
+- menerjemahkan action dan metadata audit menjadi label yang dapat dibaca admin;
+- memendekkan checksum dan tidak menampilkan isi instruction, custom instruction, atau knowledge;
+- menambahkan pengujian login, filter kategori, dan pencegahan kebocoran isi knowledge melalui Activity;
+- memperbarui status admin, security boundary, batas MVP, dan keputusan arsitektur.
 
 ### 1.5 — 1 September 2026
 

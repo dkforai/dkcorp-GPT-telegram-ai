@@ -4,10 +4,12 @@ import base64
 import binascii
 import hashlib
 import hmac
+import json
 import logging
 import threading
 import time
 from collections import defaultdict, deque
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlencode
 
@@ -1119,6 +1121,41 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             notice="Versi lama dipulihkan sebagai draft. Preview sebelum publish.",
         )
 
+    @app.get("/admin/activity", response_class=HTMLResponse)
+    async def activity(request: Request):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        category = str(request.query_params.get("category", "all")).strip()
+        categories = {
+            "all": "Semua",
+            "company": "Company",
+            "user": "User",
+            "membership": "Membership",
+            "instruction": "Instruction",
+            "knowledge": "Knowledge",
+        }
+        if category not in categories:
+            category = "all"
+        events = [
+            _activity_event_view(row)
+            for row in database.list_admin_audit_events(limit=500)
+        ]
+        if category != "all":
+            events = [event for event in events if event["category"] == category]
+        events = events[:100]
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/activity.html",
+            context={
+                "active_page": "activity",
+                "admin_username": settings.admin_username,
+                "categories": categories,
+                "selected_category": category,
+                "events": events,
+            },
+        )
+
     @app.get("/admin/{section}", response_class=HTMLResponse)
     async def placeholder(request: Request, section: str):
         redirect = _login_redirect(request, settings)
@@ -1126,7 +1163,6 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             return redirect
         labels = {
             "modules": "Modules",
-            "activity": "Activity",
         }
         label = labels.get(section)
         if label is None:
@@ -1414,6 +1450,116 @@ def _knowledge_document_redirect(
         f"/admin/knowledge/{company_id}/{document_key}{suffix}",
         status_code=303,
     )
+
+
+_ACTIVITY_ACTION_LABELS = {
+    "company.created": "Company dibuat",
+    "company.updated": "Company diperbarui",
+    "company.activated": "Company diaktifkan",
+    "company.deactivated": "Company dinonaktifkan",
+    "user.created": "User dibuat",
+    "user.updated": "User diperbarui",
+    "user.activated": "User diaktifkan",
+    "user.deactivated": "User dinonaktifkan",
+    "membership.created": "Membership dibuat",
+    "membership.updated": "Membership diperbarui",
+    "membership.activated": "Membership diaktifkan",
+    "membership.deactivated": "Membership dinonaktifkan",
+    "company_instruction.draft_saved": "Draft instruction disimpan",
+    "company_instruction.published": "Instruction dipublikasikan",
+    "company_instruction.version_restored_to_draft": "Versi instruction dipulihkan",
+    "knowledge_document.created": "Knowledge dibuat",
+    "knowledge_document.draft_saved": "Draft knowledge disimpan",
+    "knowledge_document.published": "Knowledge dipublikasikan",
+    "knowledge_document.activated": "Knowledge diaktifkan",
+    "knowledge_document.deactivated": "Knowledge dinonaktifkan",
+    "knowledge_document.version_restored_to_draft": "Versi knowledge dipulihkan",
+}
+
+_ACTIVITY_DETAIL_LABELS = {
+    "active": "Aktif",
+    "character_count": "Karakter",
+    "communication_profile": "Profil komunikasi",
+    "company_id": "Company",
+    "content_sha256": "Checksum konten",
+    "division": "Divisi",
+    "has_custom_instruction": "Custom instruction",
+    "is_default": "Default",
+    "job_title": "Jabatan",
+    "name": "Nama",
+    "name_after": "Nama baru",
+    "name_before": "Nama sebelumnya",
+    "role_level": "Role",
+    "source_filename": "File sumber",
+    "source_media_type": "Media type",
+    "source_sha256": "Checksum file",
+    "source_size_bytes": "Ukuran file",
+    "source_version_number": "Versi sumber",
+    "title": "Judul",
+    "version_number": "Versi",
+}
+
+
+def _activity_event_view(row: dict[str, object]) -> dict[str, object]:
+    action = str(row.get("action", ""))
+    entity_type = str(row.get("entity_type", ""))
+    category = {
+        "company": "company",
+        "user": "user",
+        "membership": "membership",
+        "company_instruction": "instruction",
+        "knowledge_document": "knowledge",
+    }.get(entity_type, "all")
+    try:
+        raw_details = json.loads(str(row.get("details_json", "{}")))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        raw_details = {}
+    if not isinstance(raw_details, dict):
+        raw_details = {}
+    details = [
+        {
+            "label": _ACTIVITY_DETAIL_LABELS[str(key)],
+            "value": _activity_detail_value(str(key), value),
+        }
+        for key, value in raw_details.items()
+        if str(key) in _ACTIVITY_DETAIL_LABELS
+    ]
+    return {
+        "action": action,
+        "label": _ACTIVITY_ACTION_LABELS.get(
+            action, action.replace("_", " ").replace(".", " · ").title()
+        ),
+        "category": category,
+        "entity_id": str(row.get("entity_id", "")),
+        "actor": str(row.get("actor", "")),
+        "created_at": _format_activity_time(row.get("created_at", "")),
+        "details": details,
+    }
+
+
+def _activity_detail_value(key: str, value: object) -> str:
+    if isinstance(value, bool):
+        return "Ya" if value else "Tidak"
+    if key == "source_size_bytes":
+        try:
+            return f"{int(value) / 1024:.1f} KB"
+        except (TypeError, ValueError):
+            return str(value)
+    if key.endswith("sha256"):
+        checksum = str(value)
+        return f"{checksum[:12]}…" if len(checksum) > 12 else checksum
+    return str(value)
+
+
+def _format_activity_time(value: object) -> str:
+    try:
+        timestamp = datetime.fromisoformat(str(value))
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        wib = timezone(timedelta(hours=7))
+        return timestamp.astimezone(wib).strftime("%d/%m/%Y %H:%M WIB")
+    except ValueError:
+        return str(value)
 
 
 def _user_form_values(form) -> dict[str, str]:

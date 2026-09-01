@@ -1,0 +1,48 @@
+{% extends "admin/base.html" %}
+{% block title %}Activity · DK Corp AI Admin{% endblock %}
+{% block page_title %}Activity{% endblock %}
+{% block content %}
+  <div class="page-lead">
+    <div>
+      <h2>Audit aktivitas</h2>
+      <p>Jejak perubahan administratif terbaru. Data ini bersifat read-only.</p>
+    </div>
+    <span class="mode-badge">100 aktivitas terbaru</span>
+  </div>
+
+  <nav class="filter-tabs" aria-label="Filter aktivitas">
+    {% for key, label in categories.items() %}
+      <a class="filter-tab {% if selected_category == key %}active{% endif %}" href="/admin/activity?category={{ key }}">{{ label }}</a>
+    {% endfor %}
+  </nav>
+
+  <div class="activity-list">
+    {% for event in events %}
+      <article class="panel activity-card">
+        <div class="activity-marker {{ event.category }}"></div>
+        <div class="activity-main">
+          <div class="activity-heading">
+            <div>
+              <span class="activity-category">{{ event.category }}</span>
+              <h3>{{ event.label }}</h3>
+            </div>
+            <time>{{ event.created_at }}</time>
+          </div>
+          <div class="activity-meta">
+            <span><strong>Target</strong><code>{{ event.entity_id }}</code></span>
+            <span><strong>Admin</strong>{{ event.actor }}</span>
+          </div>
+          {% if event.details %}
+            <dl class="activity-details">
+              {% for detail in event.details %}
+                <div><dt>{{ detail.label }}</dt><dd>{{ detail.value }}</dd></div>
+              {% endfor %}
+            </dl>
+          {% endif %}
+        </div>
+      </article>
+    {% else %}
+      <div class="panel empty-state">Belum ada aktivitas pada kategori ini.</div>
+    {% endfor %}
+  </div>
+{% endblock %}

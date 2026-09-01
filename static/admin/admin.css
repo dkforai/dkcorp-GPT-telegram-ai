@@ -253,6 +253,31 @@ tbody tr:hover { background: #fcfcfe; }
 .publish-bar strong { font-size: 12px; }
 .publish-bar small { margin-top: 3px; color: var(--muted); font-size: 10px; }
 .publish-bar form { margin: 0; }
+.filter-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+.filter-tab { padding: 8px 11px; color: #697386; background: white; border: 1px solid var(--line); border-radius: 9px; font-size: 10px; font-weight: 700; }
+.filter-tab:hover { color: #6246d9; border-color: #d8d0ff; }
+.filter-tab.active { color: #6246d9; background: var(--purple-soft); border-color: #d8d0ff; }
+.activity-list { display: grid; gap: 11px; }
+.activity-card { position: relative; display: grid; grid-template-columns: 4px 1fr; overflow: hidden; }
+.activity-marker { background: #9299a7; }
+.activity-marker.company { background: var(--purple); }
+.activity-marker.user { background: var(--blue); }
+.activity-marker.membership { background: var(--green); }
+.activity-marker.instruction { background: var(--orange); }
+.activity-marker.knowledge { background: #b254a7; }
+.activity-main { min-width: 0; padding: 17px 19px; }
+.activity-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.activity-heading h3 { margin: 2px 0 0; font-size: 13px; }
+.activity-heading time { flex: 0 0 auto; color: #8b93a3; font-size: 9px; }
+.activity-category { color: #8b93a3; font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.activity-meta { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 11px; color: #60697a; font-size: 10px; }
+.activity-meta span { display: flex; align-items: center; gap: 6px; }
+.activity-meta strong { color: #8b93a3; font-size: 8px; letter-spacing: .06em; text-transform: uppercase; }
+.activity-meta code { color: #555e70; font-size: 9px; overflow-wrap: anywhere; }
+.activity-details { display: flex; flex-wrap: wrap; gap: 7px; margin: 13px 0 0; padding-top: 12px; border-top: 1px solid #f0f1f5; }
+.activity-details div { display: flex; gap: 5px; padding: 5px 8px; background: #f7f8fa; border-radius: 7px; font-size: 9px; }
+.activity-details dt { color: #8b93a3; }
+.activity-details dd { margin: 0; color: #4f5869; font-weight: 650; overflow-wrap: anywhere; }
 
 @media (max-width: 960px) {
   .shell { grid-template-columns: 205px 1fr; }
@@ -285,4 +310,5 @@ tbody tr:hover { background: #fcfcfe; }
   .upload-field p { grid-column: auto; }
   .publish-bar, .split-actions { align-items: stretch; flex-direction: column; }
   .split-actions > div { justify-content: flex-end; }
+  .activity-heading { align-items: flex-start; flex-direction: column; gap: 6px; }
 }
