@@ -15,12 +15,17 @@ class CompanyContent:
 
 
 def load_company_content(
-    company: Company, project_root: Path, max_chars: int
+    company: Company,
+    project_root: Path,
+    max_chars: int,
+    published_instruction: str | None = None,
 ) -> CompanyContent:
     root = project_root.resolve()
     profile = _read_scoped_file(root, company.profile_file, max_chars=10_000)
-    instruction = _read_scoped_file(
-        root, company.instruction_file, max_chars=max_chars
+    instruction = (
+        published_instruction.strip()[:max_chars]
+        if published_instruction is not None
+        else _read_scoped_file(root, company.instruction_file, max_chars=max_chars)
     )
     knowledge_dir = _scoped_path(root, company.knowledge_dir)
     knowledge = (

@@ -5,7 +5,7 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 1.1 |
+| Versi | 1.2 |
 | Terakhir diperbarui | 1 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
@@ -33,6 +33,7 @@ Tujuan utama:
 5. SQLite menjadi source of truth runtime pada fase satu-container. JSON hanya dipakai untuk bootstrap ketika registry database masih kosong.
 6. MVP memakai komponen minimum yang cukup untuk satu instance.
 7. Mutasi administratif harus tervalidasi, dilindungi CSRF, dan dicatat sebagai audit event.
+8. Draft instruction tidak boleh memengaruhi bot. Runtime hanya membaca versi database yang sudah dipublikasikan atau file transisi bila belum ada versi database.
 
 ## 3. Arsitektur logis
 
@@ -103,10 +104,10 @@ Jawaban ke user
 | Conversation Delivery Policy | Belum | Akan mengatur panjang, ritme, dan progressive disclosure |
 | Multi-company membership | Sudah | Tabel membership SQLite; JSON hanya bootstrap awal |
 | Company router dan active context | Sudah | Command `/company` dan session active company |
-| Company-scoped instruction | Sudah | File profile, instruction, dan knowledge ditentukan per company |
+| Company-scoped instruction | Sudah | Draft dan versi publish tersimpan di SQLite; file company menjadi fallback transisi |
 | Authorization per knowledge | Sebagian | Sudah company-scoped; module, division, dan clearance belum |
 | Response Validator | Sebagian | Batas panjang, split, escape HTML, dan fallback; belum ada policy classifier |
-| Admin Panel | Sebagian | Company, user whitelist, dan membership writable; AI Context menyusul |
+| Admin Panel | Sebagian | Company, user, membership, dan Company Instruction writable; Knowledge, Modules, dan Activity menyusul |
 | Retrieval/RAG | Belum | Seluruh knowledge dimuat sampai batas karakter |
 
 ## 5. Target arsitektur multi-company
@@ -287,7 +288,8 @@ Folder adalah bentuk transisi yang mudah diaudit. Target produksi skala lanjut m
 | `user_company_memberships` | Jabatan, divisi, level, dan profile per perusahaan |
 | `modules` | Modul milik atau aktif pada perusahaan |
 | `module_access` | Hak membership terhadap modul |
-| `company_instructions` | Instruction versioned per perusahaan |
+| `company_instruction_state` | Draft aktif dan pointer versi live per perusahaan |
+| `company_instruction_versions` | Versi publish immutable per perusahaan |
 | `module_playbooks` | Playbook versioned per modul |
 | `knowledge_documents` | Dokumen dengan scope perusahaan/modul |
 | `chat_sessions` | Active company, active module, dan summary |
@@ -306,7 +308,7 @@ Empat area utama:
 3. Users & Access: identity dan company membership;
 4. Activity: perubahan konfigurasi, versi, dan error operasional.
 
-Instruction dan knowledge memakai alur Draft → Preview → Publish → Rollback agar edit admin tidak langsung memengaruhi bot produksi.
+Instruction memakai alur Draft → Preview → Publish → Restore to Draft. Knowledge akan mengikuti pola publish yang setara ketika modulnya dibangun. Edit draft tidak langsung memengaruhi bot produksi.
 
 Versi admin saat ini menyediakan:
 
@@ -316,14 +318,35 @@ Versi admin saat ini menyediakan:
 - dashboard statistik company, user, membership, dan message;
 - halaman Companies untuk tambah, ubah nama, aktivasi, dan nonaktivasi;
 - halaman Users & Access untuk tambah/ubah user, status whitelist, serta membership;
+- halaman Company Instructions untuk menyimpan draft, preview, publish, dan riwayat versi;
+- restore versi lama ke draft agar selalu melewati preview sebelum dipublikasikan kembali;
 - placeholder navigasi Knowledge, Modules, dan Activity;
 - security headers dan health endpoint.
 - CSRF token untuk seluruh mutasi Company;
 - audit event untuk create, update, activate, dan deactivate Company.
 - tambah user selalu membuat membership pertama sebagai company default;
 - membership tambahan dapat mengatur jabatan, divisi, role level, communication profile, custom instruction, status, dan default.
+- bot hanya membaca `published_version_id`; draft tersimpan terpisah dan tidak masuk ke system prompt.
+- file instruction tetap dibaca sebagai fallback selama suatu company belum mempunyai versi database yang dipublikasikan.
 
 Admin dan bot sementara berjalan dalam satu container dan memakai SQLite yang sama. SQLite menjadi source of truth runtime. `config/companies.json` dan `config/users.json` hanya diimpor ketika tabel terkait masih kosong, sehingga restart atau redeploy tidak menimpa perubahan admin.
+
+### 5.9.1 Lifecycle Company Instruction
+
+```text
+Editor admin
+    ↓ Simpan draft
+company_instruction_state.draft_content
+    ↓ Preview
+Tampilan read-only, belum dibaca bot
+    ↓ Publish dalam satu transaksi
+company_instruction_versions versi baru
+    + update published_version_id
+    ↓
+Bot memakai versi live pada pesan berikutnya
+```
+
+Setiap publish selalu menambah `version_number`; versi lama tidak diubah atau dihapus. Aksi restore hanya menyalin isi versi yang dipilih ke draft. Admin wajib melakukan preview dan publish untuk menjadikannya live. Jika `published_version_id` belum tersedia, runtime memakai `companies.instruction_file` sebagai fallback transisi. Nilai draft tidak pernah menjadi fallback runtime.
 
 ### 5.10 Target persistence multi-tenant
 
@@ -347,8 +370,8 @@ Implementasi dilakukan bertahap:
 1. schema database multi-tenant dan repository/service layer disiapkan — selesai untuk company, user, membership, session, message, dan audit event;
 2. data JSON diimpor hanya saat registry database kosong — selesai;
 3. runtime bot membaca SQLite sebagai source of truth — selesai;
-4. admin panel menulis entitas secara bertahap ke database — Company, user, dan membership selesai;
-5. instruction dan knowledge memakai draft, publish, version, dan rollback — belum;
+4. admin panel menulis entitas secara bertahap ke database — Company, user, membership, dan Company Instruction selesai;
+5. instruction memakai draft, preview, immutable published version, dan restore-to-draft — selesai; knowledge belum;
 6. PostgreSQL menjadi target ketika bot dan admin dipisahkan menjadi service berbeda — belum.
 
 ## 6. Pemisahan konsep user
@@ -548,6 +571,8 @@ SQLite menjadi source of truth runtime dan menyimpan:
 - pesan user dan assistant dengan `company_id`;
 - timestamp pesan dan pembaruan konfigurasi;
 - audit event perubahan administratif.
+- draft Company Instruction dan pointer versi yang sedang live;
+- versi Company Instruction yang sudah dipublikasikan dan bersifat immutable.
 
 Railway Volume dipasang pada `/app/data` agar database bertahan saat redeploy.
 
@@ -598,6 +623,10 @@ Sudah diterapkan:
 - user hanya memiliki satu membership default aktif;
 - membership default tidak dapat dinonaktifkan selama masih ada membership aktif lain sebelum default dipindahkan;
 - mutasi user dan membership memakai CSRF serta dicatat pada audit event.
+- draft Company Instruction tidak pernah dibaca runtime;
+- publish instruction membuat versi immutable baru dan mengubah pointer live secara atomik;
+- restore versi lama hanya menyalin isinya ke draft, sehingga tetap harus dipreview dan dipublikasikan kembali;
+- mutasi instruction memakai CSRF dan audit event tanpa menyimpan isi instruction ke audit details.
 
 Belum diterapkan:
 
@@ -615,10 +644,10 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 - satu provider aktif untuk seluruh bot;
 - satu instance Railway;
 - seluruh knowledge company aktif dimuat sampai `KNOWLEDGE_MAX_CHARS`;
-- Company, user, membership, dan communication profile per membership dikelola melalui admin;
+- Company, user, membership, communication profile, dan Company Instruction dikelola melalui admin;
 - modul, module access, dan module-scoped knowledge belum diimplementasikan;
 - combined legacy Funnel Coach masih dipakai sebagai instruction DK Corp Group sampai dokumen dipisahkan;
-- mutasi admin tersedia untuk Company, user whitelist, dan membership; AI Context masih read-only.
+- Company Instruction sudah writable dan versioned; Knowledge, Modules, dan Activity masih tahap berikutnya.
 - concurrency masih berada dalam satu process dan belum memakai durable application queue terpisah.
 
 ## 14. Roadmap
@@ -636,7 +665,7 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 
 - master company dan user-company membership; selesai untuk company scope;
 - active company router; selesai melalui `/company`;
-- company instruction terpisah; selesai secara struktur, migrasi isi legacy belum;
+- company instruction terpisah dan versioned; selesai, migrasi isi legacy per company dilakukan melalui editor admin;
 - active module router dan module playbook;
 - knowledge metadata per division;
 - authorization policy dan clearance;
@@ -691,8 +720,22 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 | ADR-027 | Telegram ID immutable | Telegram ID adalah identity key whitelist dan relasi history, sehingga koreksi dilakukan dengan membuat user yang benar, bukan mengganti primary key |
 | ADR-028 | Membership pertama otomatis default | User baru harus langsung memiliki active company context yang tidak ambigu |
 | ADR-029 | Perpindahan default mendahului deactivation | Membership default tidak boleh dinonaktifkan ketika akses aktif lain masih ada karena fallback company akan menjadi ambigu |
+| ADR-030 | Draft Company Instruction dipisahkan dari versi live | Edit admin tidak boleh langsung mengubah perilaku bot produksi |
+| ADR-031 | Publish membuat versi immutable baru | Riwayat perubahan tetap dapat diaudit dan versi lama tidak ditimpa |
+| ADR-032 | Restore menyalin versi lama ke draft | Rollback tetap melewati preview dan publish, bukan mengganti runtime secara diam-diam |
+| ADR-033 | Database instruction mengalahkan file transisi hanya setelah publish | Company lama tetap berjalan sebelum migrasi, sedangkan draft baru aman dari runtime |
 
 ## 16. Changelog dokumen
+
+### 1.2 — 1 September 2026
+
+- membuka Company Instruction Management pada admin;
+- menambahkan tabel draft state dan immutable published versions per company;
+- menambahkan alur save draft, preview, publish, riwayat versi, serta restore-to-draft;
+- memastikan draft tidak pernah masuk ke system prompt;
+- menjadikan versi database yang dipublikasikan sebagai sumber runtime dengan file instruction sebagai fallback transisi;
+- menambahkan CSRF, audit event tanpa isi sensitif, validasi 50.000 karakter, dan pengujian workflow;
+- memperbarui status implementasi, persistence, security boundary, batas MVP, roadmap, dan keputusan arsitektur.
 
 ### 1.1 — 1 September 2026
 

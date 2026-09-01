@@ -37,7 +37,10 @@
               </td>
               <td>{{ company.member_count }}</td>
               <td><strong>{{ company.knowledge_count }}</strong><small class="block">Markdown file</small></td>
-              <td><span class="path-text">{{ company.instruction_file or '-' }}</span></td>
+              <td>
+                <a class="secondary-link" href="/admin/instructions/{{ company.company_id }}">Kelola instruction</a>
+                <small class="block path-text">{{ company.instruction_file or '-' }}</small>
+              </td>
               <td>
                 {% if company.active %}<span class="status-badge active">Active</span>{% else %}<span class="status-badge">Inactive</span>{% endif %}
               </td>

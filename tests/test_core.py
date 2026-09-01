@@ -649,6 +649,135 @@ def test_admin_user_and_membership_management(tmp_path):
     ]
 
 
+def test_company_instruction_draft_publish_and_runtime_override(tmp_path):
+    companies_file = tmp_path / "companies.json"
+    instruction_file = tmp_path / "companies" / "company-a" / "instruction.md"
+    instruction_file.parent.mkdir(parents=True)
+    instruction_file.write_text("Instruksi file lama", encoding="utf-8")
+    companies_file.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "company-a",
+                    "name": "Company A",
+                    "instruction_file": "companies/company-a/instruction.md",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    database = Database(tmp_path / "instruction.db")
+    database.initialize()
+    database.bootstrap_companies(companies_file)
+    company = database.get_company_admin("company-a")
+    assert company is not None
+    assert database.get_published_company_instruction("company-a") is None
+    content = load_company_content(company, tmp_path, 1000)
+    assert content.instruction == "Instruksi file lama"
+
+    database.save_company_instruction_draft(
+        "company-a", "Instruksi database v1", actor="admin"
+    )
+    assert database.get_published_company_instruction("company-a") is None
+    assert database.publish_company_instruction("company-a", actor="admin") == 1
+    published = database.get_published_company_instruction("company-a")
+    assert published == "Instruksi database v1"
+    content = load_company_content(company, tmp_path, 1000, published)
+    assert content.instruction == "Instruksi database v1"
+
+    database.save_company_instruction_draft(
+        "company-a", "Instruksi database v2", actor="admin"
+    )
+    assert database.get_published_company_instruction("company-a") == (
+        "Instruksi database v1"
+    )
+    assert database.publish_company_instruction("company-a", actor="admin") == 2
+    versions = database.list_company_instruction_versions("company-a")
+    assert [row["version_number"] for row in versions] == [2, 1]
+    database.restore_company_instruction_version_to_draft(
+        "company-a", versions[1]["id"], actor="admin"
+    )
+    state = database.get_company_instruction_admin("company-a")
+    assert state is not None
+    assert state["draft_content"] == "Instruksi database v1"
+    assert state["published_content"] == "Instruksi database v2"
+
+
+def test_admin_company_instruction_workflow(tmp_path):
+    companies_file = tmp_path / "companies.json"
+    companies_file.write_text(
+        json.dumps([{"id": "company-a", "name": "Company A"}]),
+        encoding="utf-8",
+    )
+    users_file = tmp_path / "users.json"
+    users_file.write_text("[]", encoding="utf-8")
+    database = Database(tmp_path / "instruction-admin.db")
+    database.initialize()
+    database.bootstrap_companies(companies_file)
+    settings = _test_settings(
+        tmp_path,
+        users_file,
+        companies_file,
+        database_path=tmp_path / "instruction-admin.db",
+        project_root=Path("."),
+    )
+    app = create_admin_app(settings, database)
+    with TestClient(app) as client:
+        response = client.post(
+            "/admin/login",
+            data={"username": "admin", "password": "strong-password"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        response = client.get("/admin/instructions")
+        assert response.status_code == 200
+        assert "Company A" in response.text
+
+        response = client.get("/admin/instructions/company-a")
+        assert response.status_code == 200
+        csrf = re.search(r'name="csrf_token" value="([a-f0-9]+)"', response.text)
+        assert csrf is not None
+        csrf_token = csrf.group(1)
+
+        response = client.post(
+            "/admin/instructions/company-a/draft",
+            data={"content": "Jawab sesuai kebijakan Company A."},
+        )
+        assert response.status_code == 403
+        response = client.post(
+            "/admin/instructions/company-a/draft",
+            data={
+                "csrf_token": csrf_token,
+                "content": "Jawab sesuai kebijakan Company A.",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert database.get_published_company_instruction("company-a") is None
+
+        response = client.get("/admin/instructions/company-a/preview")
+        assert response.status_code == 200
+        assert "Jawab sesuai kebijakan Company A." in response.text
+        response = client.post(
+            "/admin/instructions/company-a/publish",
+            data={"csrf_token": csrf_token},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert database.get_published_company_instruction("company-a") == (
+            "Jawab sesuai kebijakan Company A."
+        )
+        response = client.get("/admin/instructions/company-a")
+        assert "Published v1" in response.text
+        assert "Live" in response.text
+
+    actions = [row["action"] for row in database.list_admin_audit_events()]
+    assert actions[:2] == [
+        "company_instruction.published",
+        "company_instruction.draft_saved",
+    ]
+
+
 def test_bot_serializes_same_user_and_allows_different_users(tmp_path):
     companies_file = tmp_path / "companies.json"
     companies_file.write_text(

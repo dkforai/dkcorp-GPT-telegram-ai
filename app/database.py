@@ -12,6 +12,7 @@ COMPANY_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 ROLE_LEVELS = {"gm", "manager", "staff"}
 COMMUNICATION_PROFILES = {"executive", "manager", "staff", "default"}
 MAX_TELEGRAM_ID = 9_007_199_254_740_991
+MAX_COMPANY_INSTRUCTION_CHARS = 50_000
 
 
 @dataclass(frozen=True)
@@ -129,6 +130,28 @@ class Database:
                     details_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS company_instruction_versions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    company_id TEXT NOT NULL,
+                    version_number INTEGER NOT NULL,
+                    content TEXT NOT NULL,
+                    published_by TEXT NOT NULL,
+                    published_at TEXT NOT NULL,
+                    UNIQUE(company_id, version_number),
+                    FOREIGN KEY (company_id) REFERENCES companies(company_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS company_instruction_state (
+                    company_id TEXT PRIMARY KEY,
+                    draft_content TEXT NOT NULL DEFAULT '',
+                    draft_updated_by TEXT NOT NULL DEFAULT '',
+                    draft_updated_at TEXT NOT NULL,
+                    published_version_id INTEGER,
+                    FOREIGN KEY (company_id) REFERENCES companies(company_id),
+                    FOREIGN KEY (published_version_id)
+                        REFERENCES company_instruction_versions(id)
+                );
                 """
             )
             user_columns = {
@@ -165,6 +188,9 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_admin_audit_created
                 ON admin_audit_events(created_at DESC, id DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_instruction_versions_company
+                ON company_instruction_versions(company_id, version_number DESC);
                 """
             )
 
@@ -664,6 +690,231 @@ class Database:
         if company is None:
             raise RuntimeError("Company gagal diperbarui")
         return company
+
+    def get_company_instruction_admin(
+        self, company_id: str
+    ) -> dict[str, object] | None:
+        normalized_id = _validate_company_id(company_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    c.company_id,
+                    c.name AS company_name,
+                    c.active AS company_active,
+                    s.draft_content,
+                    s.draft_updated_by,
+                    s.draft_updated_at,
+                    v.id AS published_version_id,
+                    v.version_number AS published_version_number,
+                    v.content AS published_content,
+                    v.published_by,
+                    v.published_at
+                FROM companies c
+                LEFT JOIN company_instruction_state s
+                    ON s.company_id = c.company_id
+                LEFT JOIN company_instruction_versions v
+                    ON v.id = s.published_version_id
+                WHERE c.company_id = ?
+                """,
+                (normalized_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_company_instructions_admin(self) -> list[dict[str, object]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    c.company_id,
+                    c.name AS company_name,
+                    c.active AS company_active,
+                    c.instruction_file,
+                    s.draft_updated_at,
+                    s.draft_updated_by,
+                    v.version_number AS published_version_number,
+                    v.published_at,
+                    CASE
+                        WHEN s.company_id IS NULL THEN 0
+                        WHEN v.id IS NULL THEN 1
+                        WHEN s.draft_content != v.content THEN 1
+                        ELSE 0
+                    END AS has_unpublished_draft
+                FROM companies c
+                LEFT JOIN company_instruction_state s
+                    ON s.company_id = c.company_id
+                LEFT JOIN company_instruction_versions v
+                    ON v.id = s.published_version_id
+                ORDER BY c.name COLLATE NOCASE
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_company_instruction_versions(
+        self, company_id: str, limit: int = 50
+    ) -> list[dict[str, object]]:
+        normalized_id = _validate_company_id(company_id)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, company_id, version_number, content,
+                       published_by, published_at
+                FROM company_instruction_versions
+                WHERE company_id = ?
+                ORDER BY version_number DESC
+                LIMIT ?
+                """,
+                (normalized_id, max(1, min(limit, 200))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_published_company_instruction(self, company_id: str) -> str | None:
+        normalized_id = _validate_company_id(company_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT v.content
+                FROM company_instruction_state s
+                JOIN company_instruction_versions v
+                    ON v.id = s.published_version_id
+                WHERE s.company_id = ?
+                """,
+                (normalized_id,),
+            ).fetchone()
+        return str(row["content"]) if row else None
+
+    def save_company_instruction_draft(
+        self, company_id: str, content: object, actor: str
+    ) -> None:
+        normalized_id = _validate_company_id(company_id)
+        instruction = _validate_company_instruction(content)
+        now = _now()
+        with self._connect() as connection:
+            if connection.execute(
+                "SELECT 1 FROM companies WHERE company_id = ?", (normalized_id,)
+            ).fetchone() is None:
+                raise ValueError("Company tidak ditemukan")
+            connection.execute(
+                """
+                INSERT INTO company_instruction_state (
+                    company_id, draft_content, draft_updated_by, draft_updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(company_id) DO UPDATE SET
+                    draft_content=excluded.draft_content,
+                    draft_updated_by=excluded.draft_updated_by,
+                    draft_updated_at=excluded.draft_updated_at
+                """,
+                (normalized_id, instruction, actor, now),
+            )
+            _write_audit(
+                connection,
+                actor,
+                "company_instruction.draft_saved",
+                "company_instruction",
+                normalized_id,
+                {"character_count": len(instruction)},
+            )
+
+    def publish_company_instruction(self, company_id: str, actor: str) -> int:
+        normalized_id = _validate_company_id(company_id)
+        now = _now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            state = connection.execute(
+                """
+                SELECT draft_content FROM company_instruction_state
+                WHERE company_id = ?
+                """,
+                (normalized_id,),
+            ).fetchone()
+            if state is None:
+                raise ValueError("Simpan draft sebelum publish")
+            next_version = int(
+                connection.execute(
+                    """
+                    SELECT COALESCE(MAX(version_number), 0) + 1
+                    FROM company_instruction_versions
+                    WHERE company_id = ?
+                    """,
+                    (normalized_id,),
+                ).fetchone()[0]
+            )
+            cursor = connection.execute(
+                """
+                INSERT INTO company_instruction_versions (
+                    company_id, version_number, content, published_by, published_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    normalized_id,
+                    next_version,
+                    state["draft_content"],
+                    actor,
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE company_instruction_state
+                SET published_version_id = ?, draft_updated_by = ?,
+                    draft_updated_at = ?
+                WHERE company_id = ?
+                """,
+                (cursor.lastrowid, actor, now, normalized_id),
+            )
+            _write_audit(
+                connection,
+                actor,
+                "company_instruction.published",
+                "company_instruction",
+                normalized_id,
+                {
+                    "version_number": next_version,
+                    "character_count": len(str(state["draft_content"])),
+                },
+            )
+        return next_version
+
+    def restore_company_instruction_version_to_draft(
+        self, company_id: str, version_id: int, actor: str
+    ) -> None:
+        normalized_id = _validate_company_id(company_id)
+        try:
+            normalized_version_id = int(version_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Versi instruction tidak valid") from exc
+        with self._connect() as connection:
+            version = connection.execute(
+                """
+                SELECT version_number, content
+                FROM company_instruction_versions
+                WHERE id = ? AND company_id = ?
+                """,
+                (normalized_version_id, normalized_id),
+            ).fetchone()
+            if version is None:
+                raise ValueError("Versi instruction tidak ditemukan")
+            now = _now()
+            connection.execute(
+                """
+                INSERT INTO company_instruction_state (
+                    company_id, draft_content, draft_updated_by, draft_updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(company_id) DO UPDATE SET
+                    draft_content=excluded.draft_content,
+                    draft_updated_by=excluded.draft_updated_by,
+                    draft_updated_at=excluded.draft_updated_at
+                """,
+                (normalized_id, version["content"], actor, now),
+            )
+            _write_audit(
+                connection,
+                actor,
+                "company_instruction.version_restored_to_draft",
+                "company_instruction",
+                normalized_id,
+                {"source_version_number": int(version["version_number"])},
+            )
 
     def list_admin_audit_events(self, limit: int = 100) -> list[dict[str, object]]:
         with self._connect() as connection:
@@ -1227,6 +1478,15 @@ def _validate_user_name(value: object) -> str:
     if not 2 <= len(name) <= 100:
         raise ValueError("Nama user harus terdiri dari 2-100 karakter")
     return name
+
+
+def _validate_company_instruction(value: object) -> str:
+    content = str(value or "").strip()
+    if len(content) > MAX_COMPANY_INSTRUCTION_CHARS:
+        raise ValueError(
+            f"Company instruction maksimal {MAX_COMPANY_INSTRUCTION_CHARS:,} karakter"
+        )
+    return content
 
 
 def _validate_membership_fields(

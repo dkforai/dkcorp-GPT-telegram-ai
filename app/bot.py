@@ -215,6 +215,7 @@ class InternalBot:
             company,
             self.settings.project_root,
             self.settings.knowledge_max_chars,
+            self.database.get_published_company_instruction(company.company_id),
         )
         communication_profile = self._communication_profile(user, membership)
         system_prompt = build_system_prompt(

@@ -36,6 +36,7 @@ Pemrosesan update memakai controlled concurrency. User berbeda dapat diproses pa
 - Admin web dengan login, dashboard, company registry, dan user access directory
 - Company Management untuk menambah, mengganti nama, mengaktifkan, dan menonaktifkan tenant
 - Users & Access Management untuk whitelist dan membership per company
+- Company Instruction Management dengan draft, preview, publish, dan riwayat versi
 - Perintah `/start`, `/help`, `/company`, `/whoami`, dan `/reset`
 - Jawaban panjang otomatis dipecah agar muat di Telegram
 
@@ -159,7 +160,9 @@ Setiap company dapat menunjuk tiga sumber berbeda:
 - `instruction_file` untuk aturan AI perusahaan;
 - `knowledge_dir` untuk fakta, SOP, produk, dan referensi.
 
-Bot membaca ulang file pada setiap pertanyaan, sehingga perubahan isi tidak memerlukan restart. Hanya content dari company aktif yang dimasukkan ke prompt. History juga difilter menggunakan company ID yang sama.
+Company Instruction dikelola melalui admin dengan alur **Draft → Preview → Publish**. Draft tidak memengaruhi bot. Setelah publish, bot membaca versi SQLite yang aktif pada pesan berikutnya. File `instruction_file` tetap menjadi fallback transisi selama company belum mempunyai versi database yang dipublikasikan.
+
+Profile dan knowledge berbasis file dibaca ulang pada setiap pertanyaan. Hanya content dari company aktif yang dimasukkan ke prompt. History juga difilter menggunakan company ID yang sama.
 
 MVP ini sengaja belum memakai embeddings/vector database. Seluruh knowledge company aktif dimasukkan ke prompt sampai batas `KNOWLEDGE_MAX_CHARS`. Jika knowledge mulai besar, langkah berikutnya adalah retrieval dengan filter wajib `company_id`, lalu `module_id` bila relevan.
 
@@ -192,9 +195,11 @@ Halaman yang tersedia:
 - `/admin/companies/new` untuk menambah company;
 - `/admin/users` untuk user dan membership;
 - `/admin/users/new` untuk menambah whitelist user dan membership pertama;
+- `/admin/instructions` untuk status instruction semua company;
+- `/admin/instructions/<company-id>` untuk draft, preview, publish, dan riwayat versi;
 - `/health` untuk health check Railway.
 
-Company, user whitelist, dan membership sudah dapat dikelola melalui admin. Company ID serta Telegram ID dikunci setelah dibuat. Instruction dan knowledge belum mempunyai Draft, Publish, dan Rollback.
+Company, user whitelist, membership, dan Company Instruction sudah dapat dikelola melalui admin. Company ID serta Telegram ID dikunci setelah dibuat. Versi instruction lama dapat dipulihkan ke draft, lalu harus dipreview dan dipublikasikan kembali. Knowledge masih berbasis file dan belum mempunyai workflow publish.
 
 ## Deploy ke Railway
 
@@ -211,7 +216,7 @@ Bot dan admin tetap memakai satu replica selama database menggunakan SQLite.
 
 ### Update data di Railway
 
-Company, user, dan membership dikelola dari dashboard admin. Instruction dan knowledge masih melalui tahap transisi yang dijelaskan pada dokumen arsitektur. Database dan history tetap aman selama volume `/app/data` terpasang.
+Company, user, membership, dan Company Instruction dikelola dari dashboard admin. Knowledge masih melalui tahap transisi yang dijelaskan pada dokumen arsitektur. Database, versi instruction, dan history tetap aman selama volume `/app/data` terpasang.
 
 ## Environment variables
 
@@ -273,7 +278,7 @@ Conversation Delivery Policy seperti batas kata, satu pesan satu tujuan, dan pro
 - SQLite cocok untuk satu instance bot; jangan menjalankan beberapa replica
 - Controlled concurrency dibatasi maksimal 16 dan default 4
 - Knowledge sudah dipisahkan per company, tetapi belum per module/division/clearance
-- Admin writable untuk Company, user, dan membership; instruction dan knowledge masih tahap berikutnya
+- Admin writable untuk Company, user, membership, dan Company Instruction; Knowledge, Modules, dan Activity masih tahap berikutnya
 - History dibatasi untuk konteks dan dipangkas menjadi 100 pesan per user-company
 
 ## Struktur

@@ -1,0 +1,83 @@
+{% extends "admin/base.html" %}
+{% block title %}Instruction {{ state.company_name }} · DK Corp AI Admin{% endblock %}
+{% block page_title %}Company Instruction{% endblock %}
+{% block content %}
+  <div class="page-lead">
+    <div>
+      <h2>{{ state.company_name }}</h2>
+      <p>{{ state.company_id }} · Draft tidak memengaruhi bot sampai dipublikasikan.</p>
+    </div>
+    <a class="secondary-link back-link" href="/admin/instructions">Kembali</a>
+  </div>
+
+  {% if notice %}<div class="notice success" role="status">{{ notice }}</div>{% endif %}
+  {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+
+  <div class="instruction-layout">
+    <form class="panel form-panel instruction-editor" method="post" action="/admin/instructions/{{ state.company_id }}/draft">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="form-section-title">
+        <h3>Draft instruction</h3>
+        <p>Sumber editor saat ini: {{ draft_source }}.</p>
+      </div>
+      <label class="full-field no-margin">
+        Instruction
+        <textarea class="instruction-textarea" name="content" maxlength="50000" spellcheck="true">{{ draft_content }}</textarea>
+        <small>Atur tujuan, batasan, prioritas, istilah, dan perilaku AI khusus company ini. Maksimal 50.000 karakter.</small>
+      </label>
+      <div class="form-actions split-actions">
+        <span class="form-status">
+          {% if state.published_version_number %}Published v{{ state.published_version_number }}{% else %}Belum pernah publish{% endif %}
+          {% if has_unpublished_changes %} · Ada perubahan draft{% endif %}
+        </span>
+        <div>
+          {% if state.draft_content is not none %}<a class="secondary-button" href="/admin/instructions/{{ state.company_id }}/preview">Preview</a>{% endif %}
+          <button class="primary-button" type="submit">Simpan draft</button>
+        </div>
+      </div>
+    </form>
+
+    <aside class="panel instruction-guide">
+      <h3>Yang ditulis di sini</h3>
+      <ul>
+        <li>Tujuan dan prioritas AI perusahaan.</li>
+        <li>Aturan keputusan dan batas jawaban.</li>
+        <li>Istilah internal dan hal yang harus dihindari.</li>
+        <li>Kapan AI harus meminta data tambahan.</li>
+      </ul>
+      <p>Fakta produk, SOP, harga, dan dokumen bisnis ditempatkan di Knowledge, bukan di Instruction.</p>
+      {% if legacy_content and not state.published_version_number %}
+        <div class="legacy-note">Isi awal berasal dari file transisi. Simpan sebagai draft lalu preview sebelum publish ke database.</div>
+      {% endif %}
+    </aside>
+  </div>
+
+  <div class="subsection-lead">
+    <h2>Riwayat versi</h2>
+    <p>Versi terbit bersifat immutable. Pulihkan versi lama ke draft untuk meninjaunya kembali.</p>
+  </div>
+  <div class="panel table-panel">
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Version</th><th>Published</th><th>Isi</th><th>Action</th></tr></thead>
+        <tbody>
+          {% for version in versions %}
+            <tr>
+              <td><strong>v{{ version.version_number }}</strong>{% if version.id == state.published_version_id %} <span class="status-badge active">Live</span>{% endif %}</td>
+              <td>{{ version.published_by }}<small class="block">{{ version.published_at }}</small></td>
+              <td>{{ version.content | length }} karakter<small class="block version-excerpt">{{ version.content | truncate(100, true) }}</small></td>
+              <td>
+                <form method="post" action="/admin/instructions/{{ state.company_id }}/versions/{{ version.id }}/restore">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <button class="text-button" type="submit">Pulihkan ke draft</button>
+                </form>
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="4" class="empty-state">Belum ada versi yang dipublikasikan.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}

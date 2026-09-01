@@ -654,6 +654,169 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             notice=f"Membership {membership.company_name} berhasil {status}",
         )
 
+    @app.get("/admin/instructions", response_class=HTMLResponse)
+    async def instructions(request: Request):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        rows = database.list_company_instructions_admin()
+        for row in rows:
+            row["has_legacy_instruction"] = bool(
+                _read_scoped_text(
+                    root,
+                    str(row.get("instruction_file", "")),
+                    max_chars=settings.knowledge_max_chars,
+                )
+            )
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/instructions.html",
+            context={
+                "active_page": "instructions",
+                "instructions": rows,
+                "admin_username": settings.admin_username,
+                "notice": request.query_params.get("notice", ""),
+                "error": request.query_params.get("error", ""),
+            },
+        )
+
+    @app.get(
+        "/admin/instructions/{company_id}", response_class=HTMLResponse
+    )
+    async def edit_instruction(request: Request, company_id: str):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        state = database.get_company_instruction_admin(company_id)
+        if state is None:
+            return HTMLResponse("Company tidak ditemukan.", status_code=404)
+        company = database.get_company_admin(company_id)
+        if company is None:
+            return HTMLResponse("Company tidak ditemukan.", status_code=404)
+        legacy_content = _read_scoped_text(
+            root,
+            company.instruction_file,
+            max_chars=settings.knowledge_max_chars,
+        )
+        if state["draft_content"] is not None:
+            draft_content = str(state["draft_content"])
+            draft_source = "Draft database"
+        elif state["published_content"] is not None:
+            draft_content = str(state["published_content"])
+            draft_source = "Versi terbit"
+        elif legacy_content:
+            draft_content = legacy_content
+            draft_source = "File transisi"
+        else:
+            draft_content = ""
+            draft_source = "Belum ada"
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/instruction_editor.html",
+            context=_instruction_context(
+                request,
+                settings,
+                database,
+                state,
+                draft_content=draft_content,
+                draft_source=draft_source,
+                legacy_content=legacy_content,
+                notice=request.query_params.get("notice", ""),
+                error=request.query_params.get("error", ""),
+            ),
+        )
+
+    @app.post(
+        "/admin/instructions/{company_id}/draft", response_class=HTMLResponse
+    )
+    async def save_instruction_draft(request: Request, company_id: str):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        try:
+            database.save_company_instruction_draft(
+                company_id,
+                form.get("content", ""),
+                actor=settings.admin_username,
+            )
+        except ValueError as exc:
+            return _instruction_redirect(company_id, error=str(exc))
+        return _instruction_redirect(company_id, notice="Draft berhasil disimpan")
+
+    @app.get(
+        "/admin/instructions/{company_id}/preview", response_class=HTMLResponse
+    )
+    async def preview_instruction(request: Request, company_id: str):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        state = database.get_company_instruction_admin(company_id)
+        if state is None:
+            return HTMLResponse("Company tidak ditemukan.", status_code=404)
+        if state["draft_content"] is None:
+            return _instruction_redirect(
+                company_id, error="Simpan draft sebelum membuka preview"
+            )
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/instruction_preview.html",
+            context=_instruction_context(
+                request,
+                settings,
+                database,
+                state,
+                draft_content=str(state["draft_content"]),
+                draft_source="Draft database",
+                legacy_content="",
+                notice=request.query_params.get("notice", ""),
+                error=request.query_params.get("error", ""),
+            ),
+        )
+
+    @app.post("/admin/instructions/{company_id}/publish")
+    async def publish_instruction(request: Request, company_id: str):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        try:
+            version = database.publish_company_instruction(
+                company_id, actor=settings.admin_username
+            )
+        except ValueError as exc:
+            return _instruction_redirect(company_id, error=str(exc))
+        return _instruction_redirect(
+            company_id, notice=f"Instruction versi {version} berhasil dipublikasikan"
+        )
+
+    @app.post(
+        "/admin/instructions/{company_id}/versions/{version_id}/restore"
+    )
+    async def restore_instruction_version(
+        request: Request, company_id: str, version_id: int
+    ):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        try:
+            database.restore_company_instruction_version_to_draft(
+                company_id, version_id, actor=settings.admin_username
+            )
+        except ValueError as exc:
+            return _instruction_redirect(company_id, error=str(exc))
+        return _instruction_redirect(
+            company_id,
+            notice="Versi lama dipulihkan sebagai draft. Preview sebelum publish.",
+        )
+
     @app.get("/admin/{section}", response_class=HTMLResponse)
     async def placeholder(request: Request, section: str):
         redirect = _login_redirect(request, settings)
@@ -820,6 +983,56 @@ def _companies_redirect(
     return RedirectResponse(f"/admin/companies{suffix}", status_code=303)
 
 
+def _instruction_context(
+    request: Request,
+    settings: Settings,
+    database: Database,
+    state: dict[str, object],
+    *,
+    draft_content: str,
+    draft_source: str,
+    legacy_content: str,
+    notice: str = "",
+    error: str = "",
+) -> dict[str, object]:
+    published_content = state.get("published_content")
+    return {
+        "active_page": "instructions",
+        "admin_username": settings.admin_username,
+        "csrf_token": _csrf_token(request, settings),
+        "state": state,
+        "draft_content": draft_content,
+        "draft_source": draft_source,
+        "legacy_content": legacy_content,
+        "has_unpublished_changes": (
+            state.get("draft_content") is not None
+            and (
+                published_content is None
+                or str(state.get("draft_content")) != str(published_content)
+            )
+        ),
+        "versions": database.list_company_instruction_versions(
+            str(state["company_id"])
+        ),
+        "notice": notice,
+        "error": error,
+    }
+
+
+def _instruction_redirect(
+    company_id: str, notice: str = "", *, error: str = ""
+) -> RedirectResponse:
+    values = {
+        key: value
+        for key, value in {"notice": notice, "error": error}.items()
+        if value
+    }
+    suffix = f"?{urlencode(values)}" if values else ""
+    return RedirectResponse(
+        f"/admin/instructions/{company_id}{suffix}", status_code=303
+    )
+
+
 def _user_form_values(form) -> dict[str, str]:
     values = _membership_form_values(form)
     values.update(
@@ -984,3 +1197,12 @@ def _markdown_count(root: Path, configured_path: str) -> int:
     if not path.is_dir():
         return 0
     return sum(1 for item in path.rglob("*.md") if item.is_file())
+
+
+def _read_scoped_text(root: Path, configured_path: str, max_chars: int) -> str:
+    if not configured_path or max_chars <= 0:
+        return ""
+    path = (root / configured_path).resolve()
+    if path == root or root not in path.parents or not path.is_file():
+        return ""
+    return path.read_text(encoding="utf-8").strip()[:max_chars]
