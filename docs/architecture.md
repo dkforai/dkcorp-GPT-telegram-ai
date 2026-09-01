@@ -5,7 +5,7 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 1.0 |
+| Versi | 1.1 |
 | Terakhir diperbarui | 1 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
@@ -106,7 +106,7 @@ Jawaban ke user
 | Company-scoped instruction | Sudah | File profile, instruction, dan knowledge ditentukan per company |
 | Authorization per knowledge | Sebagian | Sudah company-scoped; module, division, dan clearance belum |
 | Response Validator | Sebagian | Batas panjang, split, escape HTML, dan fallback; belum ada policy classifier |
-| Admin Panel | Sebagian | Company Management writable; Users & Access masih read-only |
+| Admin Panel | Sebagian | Company, user whitelist, dan membership writable; AI Context menyusul |
 | Retrieval/RAG | Belum | Seluruh knowledge dimuat sampai batas karakter |
 
 ## 5. Target arsitektur multi-company
@@ -315,11 +315,13 @@ Versi admin saat ini menyediakan:
 - pembatasan lima kegagalan login per lima menit per client;
 - dashboard statistik company, user, membership, dan message;
 - halaman Companies untuk tambah, ubah nama, aktivasi, dan nonaktivasi;
-- halaman Users & Access read-only;
+- halaman Users & Access untuk tambah/ubah user, status whitelist, serta membership;
 - placeholder navigasi Knowledge, Modules, dan Activity;
 - security headers dan health endpoint.
 - CSRF token untuk seluruh mutasi Company;
 - audit event untuk create, update, activate, dan deactivate Company.
+- tambah user selalu membuat membership pertama sebagai company default;
+- membership tambahan dapat mengatur jabatan, divisi, role level, communication profile, custom instruction, status, dan default.
 
 Admin dan bot sementara berjalan dalam satu container dan memakai SQLite yang sama. SQLite menjadi source of truth runtime. `config/companies.json` dan `config/users.json` hanya diimpor ketika tabel terkait masih kosong, sehingga restart atau redeploy tidak menimpa perubahan admin.
 
@@ -345,7 +347,7 @@ Implementasi dilakukan bertahap:
 1. schema database multi-tenant dan repository/service layer disiapkan — selesai untuk company, user, membership, session, message, dan audit event;
 2. data JSON diimpor hanya saat registry database kosong — selesai;
 3. runtime bot membaca SQLite sebagai source of truth — selesai;
-4. admin panel menulis entitas secara bertahap ke database — Company selesai, area lain menyusul;
+4. admin panel menulis entitas secara bertahap ke database — Company, user, dan membership selesai;
 5. instruction dan knowledge memakai draft, publish, version, dan rollback — belum;
 6. PostgreSQL menjadi target ketika bot dan admin dipisahkan menjadi service berbeda — belum.
 
@@ -591,6 +593,11 @@ Sudah diterapkan:
 - Company ID divalidasi dan tidak dapat diubah setelah dibuat;
 - Company dengan membership aktif tidak dapat dinonaktifkan;
 - perubahan Company dicatat pada `admin_audit_events`.
+- Telegram ID divalidasi dan tidak dapat diubah setelah user dibuat;
+- user whitelist dapat dinonaktifkan tanpa menghapus membership atau history;
+- user hanya memiliki satu membership default aktif;
+- membership default tidak dapat dinonaktifkan selama masih ada membership aktif lain sebelum default dipindahkan;
+- mutasi user dan membership memakai CSRF serta dicatat pada audit event.
 
 Belum diterapkan:
 
@@ -608,10 +615,10 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 - satu provider aktif untuk seluruh bot;
 - satu instance Railway;
 - seluruh knowledge company aktif dimuat sampai `KNOWLEDGE_MAX_CHARS`;
-- Company dikelola melalui admin; user, membership, dan profile masih read-only;
+- Company, user, membership, dan communication profile per membership dikelola melalui admin;
 - modul, module access, dan module-scoped knowledge belum diimplementasikan;
 - combined legacy Funnel Coach masih dipakai sebagai instruction DK Corp Group sampai dokumen dipisahkan;
-- mutasi admin baru tersedia untuk Company.
+- mutasi admin tersedia untuk Company, user whitelist, dan membership; AI Context masih read-only.
 - concurrency masih berada dalam satu process dan belum memakai durable application queue terpisah.
 
 ## 14. Roadmap
@@ -681,8 +688,22 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 | ADR-024 | JSON hanya diimpor ketika registry terkait kosong | Menjaga bootstrap deployment baru tanpa menciptakan dua source of truth aktif |
 | ADR-025 | Company ID immutable dan deactivation dijaga | Tenant boundary tidak boleh berubah dan company dengan membership aktif tidak boleh terputus tanpa pemindahan akses |
 | ADR-026 | Mutasi admin memakai CSRF dan audit event | Perubahan state melalui web harus terlindungi serta dapat ditelusuri |
+| ADR-027 | Telegram ID immutable | Telegram ID adalah identity key whitelist dan relasi history, sehingga koreksi dilakukan dengan membuat user yang benar, bukan mengganti primary key |
+| ADR-028 | Membership pertama otomatis default | User baru harus langsung memiliki active company context yang tidak ambigu |
+| ADR-029 | Perpindahan default mendahului deactivation | Membership default tidak boleh dinonaktifkan ketika akses aktif lain masih ada karena fallback company akan menjadi ambigu |
 
 ## 16. Changelog dokumen
+
+### 1.1 — 1 September 2026
+
+- membuka Users & Access Management untuk create, rename, activate, dan deactivate whitelist;
+- membuka membership management per company;
+- menambahkan field jabatan, divisi, role level, communication profile, custom instruction, default, dan status pada formulir membership;
+- mengunci Telegram ID setelah user dibuat;
+- menetapkan membership pertama sebagai company default;
+- menjaga default membership sebelum deactivation;
+- menambahkan CSRF dan audit event untuk mutasi user serta membership;
+- memperbarui status admin, persistence, security boundary, batas MVP, dan keputusan arsitektur.
 
 ### 1.0 — 1 September 2026
 

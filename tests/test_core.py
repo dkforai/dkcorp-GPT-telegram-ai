@@ -489,6 +489,166 @@ def test_admin_company_management_and_csrf(tmp_path):
     assert database.get_company_admin("company-a").name == "Company A"
 
 
+def test_admin_user_and_membership_management(tmp_path):
+    companies_file = tmp_path / "companies.json"
+    companies_file.write_text(
+        json.dumps(
+            [
+                {"id": "company-a", "name": "Company A"},
+                {"id": "company-b", "name": "Company B"},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    users_file = tmp_path / "users.json"
+    users_file.write_text("[]", encoding="utf-8")
+    database = Database(tmp_path / "user-admin.db")
+    database.initialize()
+    database.bootstrap_companies(companies_file)
+    settings = _test_settings(
+        tmp_path,
+        users_file,
+        companies_file,
+        database_path=tmp_path / "user-admin.db",
+    )
+    app = create_admin_app(settings, database)
+    with TestClient(app) as client:
+        response = client.post(
+            "/admin/login",
+            data={"username": "admin", "password": "strong-password"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        response = client.get("/admin/users/new")
+        assert response.status_code == 200
+        csrf = re.search(r'name="csrf_token" value="([a-f0-9]+)"', response.text)
+        assert csrf is not None
+        csrf_token = csrf.group(1)
+
+        user_payload = {
+            "telegram_id": "123456789",
+            "name": "Dyna",
+            "active": "1",
+            "company_id": "company-a",
+            "job_title": "Content Creator",
+            "division": "Marketing",
+            "role_level": "staff",
+            "communication_profile": "staff",
+            "custom_instruction": "Jawab praktis.",
+        }
+        response = client.post("/admin/users", data=user_payload)
+        assert response.status_code == 403
+        response = client.post(
+            "/admin/users",
+            data={"csrf_token": csrf_token, **user_payload},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert database.get_user(123456789).name == "Dyna"
+        membership_a = database.get_membership_admin(123456789, "company-a")
+        assert membership_a is not None
+        assert membership_a.is_default is True
+        assert membership_a.communication_profile == "staff"
+
+        response = client.get("/admin/users/123456789/edit")
+        assert response.status_code == 200
+        assert "Company A" in response.text
+        response = client.get("/admin/users/123456789/memberships/new")
+        assert response.status_code == 200
+        assert "Company B" in response.text
+
+        membership_b_payload = {
+            "csrf_token": csrf_token,
+            "company_id": "company-b",
+            "job_title": "Project Lead",
+            "division": "Growth",
+            "role_level": "manager",
+            "communication_profile": "manager",
+            "custom_instruction": "Fokus KPI.",
+            "is_default": "1",
+        }
+        response = client.post(
+            "/admin/users/123456789/memberships",
+            data=membership_b_payload,
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert database.get_membership_admin(
+            123456789, "company-b"
+        ).is_default is True
+        assert database.get_membership_admin(
+            123456789, "company-a"
+        ).is_default is False
+        response = client.get(
+            "/admin/users/123456789/memberships/company-b/edit"
+        )
+        assert response.status_code == 200
+        assert "Project Lead" in response.text
+
+        response = client.post(
+            "/admin/users/123456789/memberships/company-b/status",
+            data={"csrf_token": csrf_token, "active": "0"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert "membership+lain" in response.headers["location"]
+        assert database.get_membership_admin(123456789, "company-b").active is True
+
+        response = client.post(
+            "/admin/users/123456789/memberships/company-a",
+            data={
+                "csrf_token": csrf_token,
+                "job_title": "Content Creator",
+                "division": "Marketing",
+                "role_level": "staff",
+                "communication_profile": "staff",
+                "custom_instruction": "Jawab praktis.",
+                "is_default": "1",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert database.get_membership_admin(
+            123456789, "company-a"
+        ).is_default is True
+
+        response = client.post(
+            "/admin/users/123456789/memberships/company-b/status",
+            data={"csrf_token": csrf_token, "active": "0"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert database.get_membership_admin(123456789, "company-b").active is False
+
+        response = client.post(
+            "/admin/users/123456789",
+            data={"csrf_token": csrf_token, "name": "Dyna Updated"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert database.get_user_admin(123456789).name == "Dyna Updated"
+
+        response = client.post(
+            "/admin/users/123456789/status",
+            data={"csrf_token": csrf_token, "active": "0"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert database.get_user(123456789) is None
+        assert database.get_user_admin(123456789).active is False
+
+    actions = [row["action"] for row in database.list_admin_audit_events()]
+    assert actions[:7] == [
+        "user.deactivated",
+        "user.updated",
+        "membership.deactivated",
+        "membership.updated",
+        "membership.created",
+        "membership.created",
+        "user.created",
+    ]
+
+
 def test_bot_serializes_same_user_and_allows_different_users(tmp_path):
     companies_file = tmp_path / "companies.json"
     companies_file.write_text(

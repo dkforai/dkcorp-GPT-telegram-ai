@@ -9,6 +9,9 @@ from pathlib import Path
 
 
 COMPANY_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+ROLE_LEVELS = {"gm", "manager", "staff"}
+COMMUNICATION_PROFILES = {"executive", "manager", "staff", "default"}
+MAX_TELEGRAM_ID = 9_007_199_254_740_991
 
 
 @dataclass(frozen=True)
@@ -379,6 +382,148 @@ class Database:
             active=bool(row["active"]),
         )
 
+    def get_user_admin(self, telegram_id: int) -> User | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM users WHERE telegram_id = ?", (telegram_id,)
+            ).fetchone()
+        return _user_from_row(row) if row else None
+
+    def create_user_with_membership(
+        self,
+        telegram_id: object,
+        name: object,
+        company_id: object,
+        job_title: object,
+        division: object,
+        role_level: object,
+        communication_profile: object,
+        custom_instruction: object,
+        actor: str,
+        active: bool = True,
+    ) -> User:
+        normalized_id = _validate_telegram_id(telegram_id)
+        normalized_name = _validate_user_name(name)
+        membership = _validate_membership_fields(
+            company_id,
+            job_title,
+            division,
+            role_level,
+            communication_profile,
+            custom_instruction,
+        )
+        now = _now()
+        try:
+            with self._connect() as connection:
+                _require_active_company(connection, membership["company_id"])
+                connection.execute(
+                    """
+                    INSERT INTO users (
+                        telegram_id, name, role, division, communication_profile,
+                        custom_instruction, active, updated_at
+                    ) VALUES (?, ?, '', '', '', '', ?, ?)
+                    """,
+                    (normalized_id, normalized_name, int(active), now),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO user_company_memberships (
+                        telegram_id, company_id, job_title, division, role_level,
+                        communication_profile, custom_instruction, is_default,
+                        active, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?)
+                    """,
+                    (
+                        normalized_id,
+                        membership["company_id"],
+                        membership["job_title"],
+                        membership["division"],
+                        membership["role_level"],
+                        membership["communication_profile"],
+                        membership["custom_instruction"],
+                        now,
+                    ),
+                )
+                _write_audit(
+                    connection,
+                    actor,
+                    "user.created",
+                    "user",
+                    str(normalized_id),
+                    {"name": normalized_name, "active": active},
+                )
+                _write_audit(
+                    connection,
+                    actor,
+                    "membership.created",
+                    "membership",
+                    f"{normalized_id}:{membership['company_id']}",
+                    _membership_audit_details(membership, is_default=True),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(f"Telegram ID '{normalized_id}' sudah terdaftar") from exc
+        user = self.get_user_admin(normalized_id)
+        if user is None:
+            raise RuntimeError("User gagal disimpan")
+        return user
+
+    def update_user(self, telegram_id: int, name: object, actor: str) -> User:
+        normalized_id = _validate_telegram_id(telegram_id)
+        normalized_name = _validate_user_name(name)
+        with self._connect() as connection:
+            current = connection.execute(
+                "SELECT name FROM users WHERE telegram_id = ?", (normalized_id,)
+            ).fetchone()
+            if current is None:
+                raise ValueError("User tidak ditemukan")
+            connection.execute(
+                "UPDATE users SET name = ?, updated_at = ? WHERE telegram_id = ?",
+                (normalized_name, _now(), normalized_id),
+            )
+            _write_audit(
+                connection,
+                actor,
+                "user.updated",
+                "user",
+                str(normalized_id),
+                {"name_before": current["name"], "name_after": normalized_name},
+            )
+        user = self.get_user_admin(normalized_id)
+        if user is None:
+            raise RuntimeError("User gagal diperbarui")
+        return user
+
+    def set_user_active(self, telegram_id: int, active: bool, actor: str) -> User:
+        normalized_id = _validate_telegram_id(telegram_id)
+        with self._connect() as connection:
+            current = connection.execute(
+                "SELECT active FROM users WHERE telegram_id = ?", (normalized_id,)
+            ).fetchone()
+            if current is None:
+                raise ValueError("User tidak ditemukan")
+            if bool(current["active"]) != active:
+                connection.execute(
+                    "UPDATE users SET active = ?, updated_at = ? WHERE telegram_id = ?",
+                    (int(active), _now(), normalized_id),
+                )
+                if not active:
+                    connection.execute(
+                        "DELETE FROM user_sessions WHERE telegram_id = ?",
+                        (normalized_id,),
+                    )
+                _write_audit(
+                    connection,
+                    actor,
+                    "user.activated" if active else "user.deactivated",
+                    "user",
+                    str(normalized_id),
+                    {"active": active},
+                )
+        user = self.get_user_admin(normalized_id)
+        if user is None:
+            raise RuntimeError("User gagal diperbarui")
+        return user
+
     def get_company(self, company_id: str) -> Company | None:
         with self._connect() as connection:
             row = connection.execute(
@@ -545,6 +690,293 @@ class Database:
                 (telegram_id,),
             ).fetchall()
         return [_membership_from_row(row) for row in rows]
+
+    def list_memberships_admin(self, telegram_id: int) -> list[Membership]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT m.*, c.name AS company_name
+                FROM user_company_memberships m
+                JOIN companies c ON c.company_id = m.company_id
+                WHERE m.telegram_id = ?
+                ORDER BY m.is_default DESC, c.name COLLATE NOCASE
+                """,
+                (_validate_telegram_id(telegram_id),),
+            ).fetchall()
+        return [_membership_from_row(row) for row in rows]
+
+    def get_membership_admin(
+        self, telegram_id: int, company_id: str
+    ) -> Membership | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT m.*, c.name AS company_name
+                FROM user_company_memberships m
+                JOIN companies c ON c.company_id = m.company_id
+                WHERE m.telegram_id = ? AND m.company_id = ?
+                """,
+                (
+                    _validate_telegram_id(telegram_id),
+                    _validate_company_id(company_id),
+                ),
+            ).fetchone()
+        return _membership_from_row(row) if row else None
+
+    def create_membership(
+        self,
+        telegram_id: int,
+        company_id: object,
+        job_title: object,
+        division: object,
+        role_level: object,
+        communication_profile: object,
+        custom_instruction: object,
+        is_default: bool,
+        actor: str,
+    ) -> Membership:
+        normalized_user = _validate_telegram_id(telegram_id)
+        values = _validate_membership_fields(
+            company_id,
+            job_title,
+            division,
+            role_level,
+            communication_profile,
+            custom_instruction,
+        )
+        now = _now()
+        try:
+            with self._connect() as connection:
+                _require_user(connection, normalized_user)
+                _require_active_company(connection, values["company_id"])
+                has_default = bool(
+                    connection.execute(
+                        """
+                        SELECT 1 FROM user_company_memberships
+                        WHERE telegram_id = ? AND active = 1 AND is_default = 1
+                        LIMIT 1
+                        """,
+                        (normalized_user,),
+                    ).fetchone()
+                )
+                make_default = is_default or not has_default
+                if make_default:
+                    connection.execute(
+                        """
+                        UPDATE user_company_memberships
+                        SET is_default = 0, updated_at = ?
+                        WHERE telegram_id = ?
+                        """,
+                        (now, normalized_user),
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO user_company_memberships (
+                        telegram_id, company_id, job_title, division, role_level,
+                        communication_profile, custom_instruction, is_default,
+                        active, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                    """,
+                    (
+                        normalized_user,
+                        values["company_id"],
+                        values["job_title"],
+                        values["division"],
+                        values["role_level"],
+                        values["communication_profile"],
+                        values["custom_instruction"],
+                        int(make_default),
+                        now,
+                    ),
+                )
+                _write_audit(
+                    connection,
+                    actor,
+                    "membership.created",
+                    "membership",
+                    f"{normalized_user}:{values['company_id']}",
+                    _membership_audit_details(values, is_default=make_default),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("User sudah memiliki membership pada company tersebut") from exc
+        membership = self.get_membership_admin(
+            normalized_user, values["company_id"]
+        )
+        if membership is None:
+            raise RuntimeError("Membership gagal disimpan")
+        return membership
+
+    def update_membership(
+        self,
+        telegram_id: int,
+        company_id: str,
+        job_title: object,
+        division: object,
+        role_level: object,
+        communication_profile: object,
+        custom_instruction: object,
+        is_default: bool,
+        actor: str,
+    ) -> Membership:
+        normalized_user = _validate_telegram_id(telegram_id)
+        values = _validate_membership_fields(
+            company_id,
+            job_title,
+            division,
+            role_level,
+            communication_profile,
+            custom_instruction,
+        )
+        now = _now()
+        with self._connect() as connection:
+            current = connection.execute(
+                """
+                SELECT * FROM user_company_memberships
+                WHERE telegram_id = ? AND company_id = ?
+                """,
+                (normalized_user, values["company_id"]),
+            ).fetchone()
+            if current is None:
+                raise ValueError("Membership tidak ditemukan")
+            if bool(current["active"]):
+                _require_active_company(connection, values["company_id"])
+            if bool(current["is_default"]) and not is_default:
+                other_default = connection.execute(
+                    """
+                    SELECT 1 FROM user_company_memberships
+                    WHERE telegram_id = ? AND company_id != ?
+                      AND active = 1 AND is_default = 1
+                    LIMIT 1
+                    """,
+                    (normalized_user, values["company_id"]),
+                ).fetchone()
+                if not other_default:
+                    raise ValueError(
+                        "Pilih membership lain sebagai default sebelum melepas default ini"
+                    )
+            if is_default:
+                connection.execute(
+                    """
+                    UPDATE user_company_memberships
+                    SET is_default = 0, updated_at = ?
+                    WHERE telegram_id = ?
+                    """,
+                    (now, normalized_user),
+                )
+            connection.execute(
+                """
+                UPDATE user_company_memberships SET
+                    job_title = ?, division = ?, role_level = ?,
+                    communication_profile = ?, custom_instruction = ?,
+                    is_default = ?, updated_at = ?
+                WHERE telegram_id = ? AND company_id = ?
+                """,
+                (
+                    values["job_title"],
+                    values["division"],
+                    values["role_level"],
+                    values["communication_profile"],
+                    values["custom_instruction"],
+                    int(is_default),
+                    now,
+                    normalized_user,
+                    values["company_id"],
+                ),
+            )
+            _write_audit(
+                connection,
+                actor,
+                "membership.updated",
+                "membership",
+                f"{normalized_user}:{values['company_id']}",
+                _membership_audit_details(values, is_default=is_default),
+            )
+        membership = self.get_membership_admin(
+            normalized_user, values["company_id"]
+        )
+        if membership is None:
+            raise RuntimeError("Membership gagal diperbarui")
+        return membership
+
+    def set_membership_active(
+        self, telegram_id: int, company_id: str, active: bool, actor: str
+    ) -> Membership:
+        normalized_user = _validate_telegram_id(telegram_id)
+        normalized_company = _validate_company_id(company_id)
+        now = _now()
+        with self._connect() as connection:
+            current = connection.execute(
+                """
+                SELECT active, is_default FROM user_company_memberships
+                WHERE telegram_id = ? AND company_id = ?
+                """,
+                (normalized_user, normalized_company),
+            ).fetchone()
+            if current is None:
+                raise ValueError("Membership tidak ditemukan")
+            if bool(current["active"]) != active:
+                if active:
+                    _require_active_company(connection, normalized_company)
+                    has_default = bool(
+                        connection.execute(
+                            """
+                            SELECT 1 FROM user_company_memberships
+                            WHERE telegram_id = ? AND active = 1 AND is_default = 1
+                            LIMIT 1
+                            """,
+                            (normalized_user,),
+                        ).fetchone()
+                    )
+                    is_default = not has_default
+                else:
+                    if bool(current["is_default"]):
+                        other_active = connection.execute(
+                            """
+                            SELECT 1 FROM user_company_memberships
+                            WHERE telegram_id = ? AND company_id != ? AND active = 1
+                            LIMIT 1
+                            """,
+                            (normalized_user, normalized_company),
+                        ).fetchone()
+                        if other_active:
+                            raise ValueError(
+                                "Jadikan membership lain sebagai default sebelum menonaktifkan ini"
+                            )
+                    is_default = False
+                connection.execute(
+                    """
+                    UPDATE user_company_memberships
+                    SET active = ?, is_default = ?, updated_at = ?
+                    WHERE telegram_id = ? AND company_id = ?
+                    """,
+                    (
+                        int(active),
+                        int(is_default),
+                        now,
+                        normalized_user,
+                        normalized_company,
+                    ),
+                )
+                if not active:
+                    connection.execute(
+                        """
+                        DELETE FROM user_sessions
+                        WHERE telegram_id = ? AND active_company_id = ?
+                        """,
+                        (normalized_user, normalized_company),
+                    )
+                _write_audit(
+                    connection,
+                    actor,
+                    "membership.activated" if active else "membership.deactivated",
+                    "membership",
+                    f"{normalized_user}:{normalized_company}",
+                    {"active": active, "is_default": is_default},
+                )
+        membership = self.get_membership_admin(normalized_user, normalized_company)
+        if membership is None:
+            raise RuntimeError("Membership gagal diperbarui")
+        return membership
 
     def get_active_membership(self, telegram_id: int) -> Membership | None:
         memberships = self.list_memberships(telegram_id)
@@ -731,6 +1163,18 @@ def _membership_from_row(row: sqlite3.Row) -> Membership:
     )
 
 
+def _user_from_row(row: sqlite3.Row) -> User:
+    return User(
+        telegram_id=row["telegram_id"],
+        name=row["name"],
+        role=row["role"],
+        division=row["division"],
+        communication_profile=row["communication_profile"],
+        custom_instruction=row["custom_instruction"],
+        active=bool(row["active"]),
+    )
+
+
 def _company_from_row(row: sqlite3.Row) -> Company:
     return Company(
         company_id=row["company_id"],
@@ -766,6 +1210,89 @@ def _validate_company_name(value: object) -> str:
     if not 2 <= len(name) <= 100:
         raise ValueError("Nama company harus terdiri dari 2-100 karakter")
     return name
+
+
+def _validate_telegram_id(value: object) -> int:
+    try:
+        telegram_id = int(str(value).strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Telegram ID harus berupa angka") from exc
+    if not 1 <= telegram_id <= MAX_TELEGRAM_ID:
+        raise ValueError("Telegram ID berada di luar rentang yang valid")
+    return telegram_id
+
+
+def _validate_user_name(value: object) -> str:
+    name = " ".join(str(value or "").split())
+    if not 2 <= len(name) <= 100:
+        raise ValueError("Nama user harus terdiri dari 2-100 karakter")
+    return name
+
+
+def _validate_membership_fields(
+    company_id: object,
+    job_title: object,
+    division: object,
+    role_level: object,
+    communication_profile: object,
+    custom_instruction: object,
+) -> dict[str, str]:
+    normalized_role = str(role_level or "").strip().casefold()
+    if normalized_role not in ROLE_LEVELS:
+        raise ValueError("Role level harus gm, manager, atau staff")
+    normalized_profile = str(communication_profile or "").strip().casefold()
+    if normalized_profile not in COMMUNICATION_PROFILES:
+        raise ValueError("Communication profile tidak valid")
+    normalized_job = " ".join(str(job_title or "").split())
+    normalized_division = " ".join(str(division or "").split())
+    if not 2 <= len(normalized_job) <= 100:
+        raise ValueError("Jabatan harus terdiri dari 2-100 karakter")
+    if not 2 <= len(normalized_division) <= 100:
+        raise ValueError("Divisi harus terdiri dari 2-100 karakter")
+    instruction = str(custom_instruction or "").strip()
+    if len(instruction) > 5_000:
+        raise ValueError("Custom instruction maksimal 5000 karakter")
+    return {
+        "company_id": _validate_company_id(company_id),
+        "job_title": normalized_job,
+        "division": normalized_division,
+        "role_level": normalized_role,
+        "communication_profile": normalized_profile,
+        "custom_instruction": instruction,
+    }
+
+
+def _require_user(connection: sqlite3.Connection, telegram_id: int) -> None:
+    if connection.execute(
+        "SELECT 1 FROM users WHERE telegram_id = ?", (telegram_id,)
+    ).fetchone() is None:
+        raise ValueError("User tidak ditemukan")
+
+
+def _require_active_company(
+    connection: sqlite3.Connection, company_id: str
+) -> None:
+    row = connection.execute(
+        "SELECT active FROM companies WHERE company_id = ?", (company_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError("Company tidak ditemukan")
+    if not bool(row["active"]):
+        raise ValueError("Company sedang nonaktif")
+
+
+def _membership_audit_details(
+    values: dict[str, str], *, is_default: bool
+) -> dict[str, object]:
+    return {
+        "company_id": values["company_id"],
+        "job_title": values["job_title"],
+        "division": values["division"],
+        "role_level": values["role_level"],
+        "communication_profile": values["communication_profile"],
+        "is_default": is_default,
+        "has_custom_instruction": bool(values["custom_instruction"]),
+    }
 
 
 def _write_audit(

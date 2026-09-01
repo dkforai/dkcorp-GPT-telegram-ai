@@ -35,6 +35,7 @@ Pemrosesan update memakai controlled concurrency. User berbeda dapat diproses pa
 - Raw HTML dari model di-escape dan fallback plain text tersedia
 - Admin web dengan login, dashboard, company registry, dan user access directory
 - Company Management untuk menambah, mengganti nama, mengaktifkan, dan menonaktifkan tenant
+- Users & Access Management untuk whitelist dan membership per company
 - Perintah `/start`, `/help`, `/company`, `/whoami`, dan `/reset`
 - Jawaban panjang otomatis dipecah agar muat di Telegram
 
@@ -49,7 +50,7 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Isi `.env`, tambahkan perusahaan ke `config/companies.json`, lalu tambahkan user dan membership ke `config/users.json`. Formatnya mengikuti file `.example.json`. Untuk mengetahui Telegram ID, user yang belum terdaftar cukup mengirim `/start`; bot akan membalas ID yang perlu dikirim ke admin.
+Isi `.env`. Pada database baru, `config/companies.json` dan `config/users.json` dipakai sebagai bootstrap awal. Setelah admin aktif, Company, user, dan membership dikelola dari dashboard. Untuk mengetahui Telegram ID, user yang belum terdaftar cukup mengirim `/start`; bot akan membalas ID yang perlu dikirim ke admin.
 
 Jalankan:
 
@@ -190,9 +191,10 @@ Halaman yang tersedia:
 - `/admin/companies` untuk company registry;
 - `/admin/companies/new` untuk menambah company;
 - `/admin/users` untuk user dan membership;
+- `/admin/users/new` untuk menambah whitelist user dan membership pertama;
 - `/health` untuk health check Railway.
 
-Company sudah dapat ditambah, diganti namanya, diaktifkan, dan dinonaktifkan melalui admin. Company ID dikunci setelah dibuat. Users & Access masih read-only. Instruction dan knowledge belum mempunyai Draft, Publish, dan Rollback.
+Company, user whitelist, dan membership sudah dapat dikelola melalui admin. Company ID serta Telegram ID dikunci setelah dibuat. Instruction dan knowledge belum mempunyai Draft, Publish, dan Rollback.
 
 ## Deploy ke Railway
 
@@ -209,7 +211,7 @@ Bot dan admin tetap memakai satu replica selama database menggunakan SQLite.
 
 ### Update data di Railway
 
-Company dikelola dari dashboard admin. User, membership, instruction, dan knowledge masih dikelola melalui tahap transisi yang dijelaskan pada dokumen arsitektur. Database dan history tetap aman selama volume `/app/data` terpasang.
+Company, user, dan membership dikelola dari dashboard admin. Instruction dan knowledge masih melalui tahap transisi yang dijelaskan pada dokumen arsitektur. Database dan history tetap aman selama volume `/app/data` terpasang.
 
 ## Environment variables
 
@@ -271,7 +273,7 @@ Conversation Delivery Policy seperti batas kata, satu pesan satu tujuan, dan pro
 - SQLite cocok untuk satu instance bot; jangan menjalankan beberapa replica
 - Controlled concurrency dibatasi maksimal 16 dan default 4
 - Knowledge sudah dipisahkan per company, tetapi belum per module/division/clearance
-- Admin baru writable untuk Company; Users, membership, instruction, dan knowledge masih tahap berikutnya
+- Admin writable untuk Company, user, dan membership; instruction dan knowledge masih tahap berikutnya
 - History dibatasi untuk konteks dan dipangkas menjadi 100 pesan per user-company
 
 ## Struktur

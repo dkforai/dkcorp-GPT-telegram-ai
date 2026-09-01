@@ -1,0 +1,43 @@
+{% extends "admin/base.html" %}
+{% block title %}{% if mode == 'create' %}Tambah Membership{% else %}Edit Membership{% endif %} · DK Corp AI Admin{% endblock %}
+{% block page_title %}{% if mode == 'create' %}Tambah Membership{% else %}Edit Membership{% endif %}{% endblock %}
+{% block content %}
+  <div class="page-lead">
+    <div><h2>{{ user.name }}</h2><p>Telegram ID {{ user.telegram_id }}</p></div>
+    <a class="secondary-link back-link" href="/admin/users/{{ user.telegram_id }}/edit">Kembali</a>
+  </div>
+
+  <form class="panel form-panel" method="post" action="{% if mode == 'create' %}/admin/users/{{ user.telegram_id }}/memberships{% else %}/admin/users/{{ user.telegram_id }}/memberships/{{ membership.company_id }}{% endif %}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+
+    {% if mode == 'create' and not companies %}
+      <div class="notice error">Semua company aktif sudah terhubung dengan user ini.</div>
+    {% else %}
+      <div class="form-grid">
+        <label>
+          Company
+          {% if mode == 'create' %}
+            <select name="company_id" required>{% for company in companies %}<option value="{{ company.company_id }}" {% if values.company_id == company.company_id %}selected{% endif %}>{{ company.name }}</option>{% endfor %}</select>
+          {% else %}
+            <input type="text" value="{{ membership.company_name }}" readonly>
+          {% endif %}
+        </label>
+        <label>Jabatan<input name="job_title" type="text" value="{{ values.job_title }}" minlength="2" maxlength="100" required></label>
+        <label>Divisi<input name="division" type="text" value="{{ values.division }}" minlength="2" maxlength="100" required></label>
+        <label>Role level<select name="role_level" required>{% for option in role_options %}<option value="{{ option.id }}" {% if values.role_level == option.id %}selected{% endif %}>{{ option.label }}</option>{% endfor %}</select></label>
+        <label>Communication profile<select name="communication_profile" required>{% for option in profile_options %}<option value="{{ option.id }}" {% if values.communication_profile == option.id %}selected{% endif %}>{{ option.label }}</option>{% endfor %}</select></label>
+      </div>
+      <label class="full-field">Custom instruction membership <span class="optional">Opsional</span><textarea name="custom_instruction" maxlength="5000" rows="6">{{ values.custom_instruction }}</textarea></label>
+      <label class="checkbox-row">
+        <input name="is_default" type="checkbox" value="1" {% if values.is_default == '1' %}checked{% endif %}>
+        <span><strong>Jadikan company default</strong><small>Dipakai ketika user belum memilih company aktif.</small></span>
+      </label>
+    {% endif %}
+
+    <div class="form-actions">
+      <a class="secondary-button" href="/admin/users/{{ user.telegram_id }}/edit">Batal</a>
+      <button class="primary-button" type="submit" {% if mode == 'create' and not companies %}disabled{% endif %}>Simpan membership</button>
+    </div>
+  </form>
+{% endblock %}

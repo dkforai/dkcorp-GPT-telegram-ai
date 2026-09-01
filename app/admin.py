@@ -18,7 +18,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.config import Settings, load_settings
-from app.database import Database
+from app.database import Database, Membership, User
+from app.role_profiles import load_role_profiles
 
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,11 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
     root = settings.project_root.resolve()
     templates = Jinja2Templates(directory=str(root / "templates"))
     limiter = LoginLimiter()
+    role_profiles = load_role_profiles(settings.role_profiles_file)
+    profile_options = [
+        {"id": profile.profile_id, "label": profile.label}
+        for profile in role_profiles.by_id.values()
+    ]
     app = FastAPI(
         title="DK Corp AI Admin",
         docs_url=None,
@@ -328,7 +334,324 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 "active_page": "users",
                 "users": database.list_users_admin(),
                 "admin_username": settings.admin_username,
+                "csrf_token": _csrf_token(request, settings),
+                "notice": request.query_params.get("notice", ""),
+                "error": request.query_params.get("error", ""),
             },
+        )
+
+    @app.get("/admin/users/new", response_class=HTMLResponse)
+    async def new_user(request: Request):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/user_form.html",
+            context=_user_form_context(
+                request,
+                settings,
+                database,
+                profile_options,
+                mode="create",
+            ),
+        )
+
+    @app.post("/admin/users", response_class=HTMLResponse)
+    async def create_user(request: Request):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        values = _user_form_values(form)
+        try:
+            user = database.create_user_with_membership(
+                values["telegram_id"],
+                values["name"],
+                values["company_id"],
+                values["job_title"],
+                values["division"],
+                values["role_level"],
+                values["communication_profile"],
+                values["custom_instruction"],
+                actor=settings.admin_username,
+                active=values["active"] == "1",
+            )
+        except ValueError as exc:
+            return templates.TemplateResponse(
+                request=request,
+                name="admin/user_form.html",
+                context=_user_form_context(
+                    request,
+                    settings,
+                    database,
+                    profile_options,
+                    mode="create",
+                    values=values,
+                    error=str(exc),
+                ),
+                status_code=400,
+            )
+        return _users_redirect(f"{user.name} berhasil ditambahkan")
+
+    @app.get("/admin/users/{telegram_id}/edit", response_class=HTMLResponse)
+    async def edit_user(request: Request, telegram_id: int):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        user = database.get_user_admin(telegram_id)
+        if user is None:
+            return HTMLResponse("User tidak ditemukan.", status_code=404)
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/user_form.html",
+            context=_user_form_context(
+                request,
+                settings,
+                database,
+                profile_options,
+                mode="edit",
+                user=user,
+                notice=request.query_params.get("notice", ""),
+                error=request.query_params.get("error", ""),
+            ),
+        )
+
+    @app.post("/admin/users/{telegram_id}", response_class=HTMLResponse)
+    async def update_user(request: Request, telegram_id: int):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        user = database.get_user_admin(telegram_id)
+        if user is None:
+            return HTMLResponse("User tidak ditemukan.", status_code=404)
+        try:
+            updated = database.update_user(
+                telegram_id, str(form.get("name", "")), actor=settings.admin_username
+            )
+        except ValueError as exc:
+            return templates.TemplateResponse(
+                request=request,
+                name="admin/user_form.html",
+                context=_user_form_context(
+                    request,
+                    settings,
+                    database,
+                    profile_options,
+                    mode="edit",
+                    user=user,
+                    values={"name": str(form.get("name", ""))},
+                    error=str(exc),
+                ),
+                status_code=400,
+            )
+        return _user_detail_redirect(
+            telegram_id, notice=f"{updated.name} berhasil diperbarui"
+        )
+
+    @app.post("/admin/users/{telegram_id}/status")
+    async def update_user_status(request: Request, telegram_id: int):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        target = str(form.get("active", ""))
+        if target not in {"0", "1"}:
+            return _users_redirect(error="Status user tidak valid")
+        try:
+            user = database.set_user_active(
+                telegram_id, target == "1", actor=settings.admin_username
+            )
+        except ValueError as exc:
+            return _users_redirect(error=str(exc))
+        status = "diaktifkan" if user.active else "dinonaktifkan"
+        return _users_redirect(f"{user.name} berhasil {status}")
+
+    @app.get(
+        "/admin/users/{telegram_id}/memberships/new", response_class=HTMLResponse
+    )
+    async def new_membership(request: Request, telegram_id: int):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        user = database.get_user_admin(telegram_id)
+        if user is None:
+            return HTMLResponse("User tidak ditemukan.", status_code=404)
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/membership_form.html",
+            context=_membership_form_context(
+                request,
+                settings,
+                database,
+                profile_options,
+                user=user,
+                mode="create",
+            ),
+        )
+
+    @app.post("/admin/users/{telegram_id}/memberships", response_class=HTMLResponse)
+    async def create_membership(request: Request, telegram_id: int):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        user = database.get_user_admin(telegram_id)
+        if user is None:
+            return HTMLResponse("User tidak ditemukan.", status_code=404)
+        values = _membership_form_values(form)
+        try:
+            membership = database.create_membership(
+                telegram_id,
+                values["company_id"],
+                values["job_title"],
+                values["division"],
+                values["role_level"],
+                values["communication_profile"],
+                values["custom_instruction"],
+                is_default=values["is_default"] == "1",
+                actor=settings.admin_username,
+            )
+        except ValueError as exc:
+            return templates.TemplateResponse(
+                request=request,
+                name="admin/membership_form.html",
+                context=_membership_form_context(
+                    request,
+                    settings,
+                    database,
+                    profile_options,
+                    user=user,
+                    mode="create",
+                    values=values,
+                    error=str(exc),
+                ),
+                status_code=400,
+            )
+        return _user_detail_redirect(
+            telegram_id,
+            notice=f"Membership {membership.company_name} berhasil ditambahkan",
+        )
+
+    @app.get(
+        "/admin/users/{telegram_id}/memberships/{company_id}/edit",
+        response_class=HTMLResponse,
+    )
+    async def edit_membership(
+        request: Request, telegram_id: int, company_id: str
+    ):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        user = database.get_user_admin(telegram_id)
+        membership = database.get_membership_admin(telegram_id, company_id)
+        if user is None or membership is None:
+            return HTMLResponse("Membership tidak ditemukan.", status_code=404)
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/membership_form.html",
+            context=_membership_form_context(
+                request,
+                settings,
+                database,
+                profile_options,
+                user=user,
+                mode="edit",
+                membership=membership,
+            ),
+        )
+
+    @app.post(
+        "/admin/users/{telegram_id}/memberships/{company_id}",
+        response_class=HTMLResponse,
+    )
+    async def update_membership(
+        request: Request, telegram_id: int, company_id: str
+    ):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        user = database.get_user_admin(telegram_id)
+        membership = database.get_membership_admin(telegram_id, company_id)
+        if user is None or membership is None:
+            return HTMLResponse("Membership tidak ditemukan.", status_code=404)
+        values = _membership_form_values(form, company_id=company_id)
+        try:
+            updated = database.update_membership(
+                telegram_id,
+                company_id,
+                values["job_title"],
+                values["division"],
+                values["role_level"],
+                values["communication_profile"],
+                values["custom_instruction"],
+                is_default=values["is_default"] == "1",
+                actor=settings.admin_username,
+            )
+        except ValueError as exc:
+            return templates.TemplateResponse(
+                request=request,
+                name="admin/membership_form.html",
+                context=_membership_form_context(
+                    request,
+                    settings,
+                    database,
+                    profile_options,
+                    user=user,
+                    mode="edit",
+                    membership=membership,
+                    values=values,
+                    error=str(exc),
+                ),
+                status_code=400,
+            )
+        return _user_detail_redirect(
+            telegram_id,
+            notice=f"Membership {updated.company_name} berhasil diperbarui",
+        )
+
+    @app.post(
+        "/admin/users/{telegram_id}/memberships/{company_id}/status"
+    )
+    async def update_membership_status(
+        request: Request, telegram_id: int, company_id: str
+    ):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        target = str(form.get("active", ""))
+        if target not in {"0", "1"}:
+            return _user_detail_redirect(
+                telegram_id, error="Status membership tidak valid"
+            )
+        try:
+            membership = database.set_membership_active(
+                telegram_id,
+                company_id,
+                target == "1",
+                actor=settings.admin_username,
+            )
+        except ValueError as exc:
+            return _user_detail_redirect(telegram_id, error=str(exc))
+        status = "diaktifkan" if membership.active else "dinonaktifkan"
+        return _user_detail_redirect(
+            telegram_id,
+            notice=f"Membership {membership.company_name} berhasil {status}",
         )
 
     @app.get("/admin/{section}", response_class=HTMLResponse)
@@ -495,6 +818,161 @@ def _companies_redirect(
     values = {key: value for key, value in {"notice": notice, "error": error}.items() if value}
     suffix = f"?{urlencode(values)}" if values else ""
     return RedirectResponse(f"/admin/companies{suffix}", status_code=303)
+
+
+def _user_form_values(form) -> dict[str, str]:
+    values = _membership_form_values(form)
+    values.update(
+        {
+            "telegram_id": str(form.get("telegram_id", "")).strip(),
+            "name": str(form.get("name", "")).strip(),
+            "active": "1" if form.get("active") == "1" else "0",
+        }
+    )
+    return values
+
+
+def _membership_form_values(form, *, company_id: str = "") -> dict[str, str]:
+    return {
+        "company_id": company_id or str(form.get("company_id", "")).strip(),
+        "job_title": str(form.get("job_title", "")).strip(),
+        "division": str(form.get("division", "")).strip(),
+        "role_level": str(form.get("role_level", "staff")).strip(),
+        "communication_profile": str(
+            form.get("communication_profile", "staff")
+        ).strip(),
+        "custom_instruction": str(form.get("custom_instruction", "")).strip(),
+        "is_default": "1" if form.get("is_default") == "1" else "0",
+    }
+
+
+def _active_company_options(database: Database) -> list[dict[str, object]]:
+    return [row for row in database.list_companies_admin() if bool(row["active"])]
+
+
+def _user_form_context(
+    request: Request,
+    settings: Settings,
+    database: Database,
+    profile_options: list[dict[str, str]],
+    *,
+    mode: str,
+    user: User | None = None,
+    values: dict[str, str] | None = None,
+    notice: str = "",
+    error: str = "",
+) -> dict[str, object]:
+    companies = _active_company_options(database)
+    defaults = {
+        "telegram_id": str(user.telegram_id) if user else "",
+        "name": user.name if user else "",
+        "active": "1" if user is None or user.active else "0",
+        "company_id": str(companies[0]["company_id"]) if companies else "",
+        "job_title": "",
+        "division": "",
+        "role_level": "staff",
+        "communication_profile": "staff",
+        "custom_instruction": "",
+        "is_default": "1",
+    }
+    defaults.update(values or {})
+    return {
+        "active_page": "users",
+        "admin_username": settings.admin_username,
+        "csrf_token": _csrf_token(request, settings),
+        "mode": mode,
+        "user": user,
+        "values": defaults,
+        "companies": companies,
+        "memberships": (
+            database.list_memberships_admin(user.telegram_id) if user else []
+        ),
+        "profile_options": profile_options,
+        "role_options": _role_options(),
+        "notice": notice,
+        "error": error,
+    }
+
+
+def _membership_form_context(
+    request: Request,
+    settings: Settings,
+    database: Database,
+    profile_options: list[dict[str, str]],
+    *,
+    user: User,
+    mode: str,
+    membership: Membership | None = None,
+    values: dict[str, str] | None = None,
+    error: str = "",
+) -> dict[str, object]:
+    existing_ids = {
+        item.company_id for item in database.list_memberships_admin(user.telegram_id)
+    }
+    companies = [
+        row
+        for row in _active_company_options(database)
+        if mode == "edit" or str(row["company_id"]) not in existing_ids
+    ]
+    defaults = {
+        "company_id": membership.company_id if membership else (
+            str(companies[0]["company_id"]) if companies else ""
+        ),
+        "job_title": membership.job_title if membership else "",
+        "division": membership.division if membership else "",
+        "role_level": membership.role_level if membership else "staff",
+        "communication_profile": (
+            membership.communication_profile if membership else "staff"
+        ),
+        "custom_instruction": membership.custom_instruction if membership else "",
+        "is_default": "1" if membership and membership.is_default else "0",
+    }
+    defaults.update(values or {})
+    return {
+        "active_page": "users",
+        "admin_username": settings.admin_username,
+        "csrf_token": _csrf_token(request, settings),
+        "user": user,
+        "mode": mode,
+        "membership": membership,
+        "values": defaults,
+        "companies": companies,
+        "profile_options": profile_options,
+        "role_options": _role_options(),
+        "error": error,
+    }
+
+
+def _role_options() -> list[dict[str, str]]:
+    return [
+        {"id": "gm", "label": "GM / Executive"},
+        {"id": "manager", "label": "Manager"},
+        {"id": "staff", "label": "Staff"},
+    ]
+
+
+def _users_redirect(notice: str = "", *, error: str = "") -> RedirectResponse:
+    values = {
+        key: value
+        for key, value in {"notice": notice, "error": error}.items()
+        if value
+    }
+    suffix = f"?{urlencode(values)}" if values else ""
+    return RedirectResponse(f"/admin/users{suffix}", status_code=303)
+
+
+def _user_detail_redirect(
+    telegram_id: int, notice: str = "", *, error: str = ""
+) -> RedirectResponse:
+    values = {
+        key: value
+        for key, value in {"notice": notice, "error": error}.items()
+        if value
+    }
+    suffix = f"?{urlencode(values)}" if values else ""
+    return RedirectResponse(
+        f"/admin/users/{telegram_id}/edit{suffix}", status_code=303
+    )
 
 
 def _markdown_count(root: Path, configured_path: str) -> int:

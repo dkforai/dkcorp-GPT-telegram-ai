@@ -1,0 +1,118 @@
+{% extends "admin/base.html" %}
+{% block title %}{% if mode == 'create' %}Tambah User{% else %}Kelola User{% endif %} · DK Corp AI Admin{% endblock %}
+{% block page_title %}{% if mode == 'create' %}Tambah User{% else %}Kelola User{% endif %}{% endblock %}
+{% block content %}
+  <div class="page-lead">
+    <div>
+      <h2>{% if mode == 'create' %}User baru{% else %}{{ user.name }}{% endif %}</h2>
+      <p>Whitelist Telegram dan akses perusahaan dikelola sebagai dua lapisan terpisah.</p>
+    </div>
+    <a class="secondary-link back-link" href="/admin/users">Kembali</a>
+  </div>
+
+  {% if notice %}<div class="notice success" role="status">{{ notice }}</div>{% endif %}
+  {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+
+  <form class="panel form-panel" method="post" action="{% if mode == 'create' %}/admin/users{% else %}/admin/users/{{ user.telegram_id }}{% endif %}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-section-title">
+      <h3>Identitas Telegram</h3>
+      <p>Telegram ID menjadi identitas permanen user.</p>
+    </div>
+    <div class="form-grid">
+      <label>
+        Nama user
+        <input name="name" type="text" value="{{ values.name }}" minlength="2" maxlength="100" required autofocus>
+        <small>Nama yang ditampilkan pada dashboard dan digunakan bot.</small>
+      </label>
+      <label>
+        Telegram ID
+        <input name="telegram_id" type="number" value="{{ values.telegram_id }}" min="1" max="9007199254740991" {% if mode == 'edit' %}readonly{% else %}required{% endif %}>
+        <small>{% if mode == 'edit' %}Telegram ID dikunci setelah user dibuat.{% else %}User mendapat ID ini ketika mengirim /start ke bot.{% endif %}</small>
+      </label>
+    </div>
+
+    {% if mode == 'create' %}
+      <label class="checkbox-row">
+        <input name="active" type="checkbox" value="1" {% if values.active == '1' %}checked{% endif %}>
+        <span><strong>Aktifkan whitelist</strong><small>User aktif dapat mengakses bot sesuai membership.</small></span>
+      </label>
+
+      <div class="form-section-title separated">
+        <h3>Membership pertama</h3>
+        <p>Membership pertama otomatis menjadi company default.</p>
+      </div>
+      {% if companies %}
+        <div class="form-grid">
+          <label>
+            Company
+            <select name="company_id" required>
+              {% for company in companies %}<option value="{{ company.company_id }}" {% if values.company_id == company.company_id %}selected{% endif %}>{{ company.name }}</option>{% endfor %}
+            </select>
+          </label>
+          <label>
+            Jabatan
+            <input name="job_title" type="text" value="{{ values.job_title }}" minlength="2" maxlength="100" placeholder="Contoh: General Manager" required>
+          </label>
+          <label>
+            Divisi
+            <input name="division" type="text" value="{{ values.division }}" minlength="2" maxlength="100" placeholder="Contoh: Management" required>
+          </label>
+          <label>
+            Role level
+            <select name="role_level" required>{% for option in role_options %}<option value="{{ option.id }}" {% if values.role_level == option.id %}selected{% endif %}>{{ option.label }}</option>{% endfor %}</select>
+          </label>
+          <label>
+            Communication profile
+            <select name="communication_profile" required>{% for option in profile_options %}<option value="{{ option.id }}" {% if values.communication_profile == option.id %}selected{% endif %}>{{ option.label }}</option>{% endfor %}</select>
+          </label>
+        </div>
+        <label class="full-field">
+          Custom instruction membership <span class="optional">Opsional</span>
+          <textarea name="custom_instruction" maxlength="5000" rows="5" placeholder="Aturan khusus untuk user pada company ini.">{{ values.custom_instruction }}</textarea>
+        </label>
+      {% else %}
+        <div class="notice error">Belum ada company aktif. Tambahkan atau aktifkan company terlebih dahulu.</div>
+      {% endif %}
+    {% endif %}
+
+    <div class="form-actions">
+      <a class="secondary-button" href="/admin/users">Batal</a>
+      <button class="primary-button" type="submit" {% if mode == 'create' and not companies %}disabled{% endif %}>{% if mode == 'create' %}Simpan user{% else %}Simpan identitas{% endif %}</button>
+    </div>
+  </form>
+
+  {% if mode == 'edit' %}
+    <div class="page-lead subsection-lead">
+      <div><h2>Company membership</h2><p>Jabatan, divisi, level komunikasi, dan company default user.</p></div>
+      <a class="primary-link" href="/admin/users/{{ user.telegram_id }}/memberships/new">Tambah membership</a>
+    </div>
+    <div class="panel table-panel">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Company</th><th>Jabatan · Divisi</th><th>Role</th><th>Profile</th><th>Default</th><th>Status</th><th>Action</th></tr></thead>
+          <tbody>
+            {% for membership in memberships %}
+              <tr>
+                <td><strong>{{ membership.company_name }}</strong><small class="block">{{ membership.company_id }}</small></td>
+                <td>{{ membership.job_title }}<small class="block">{{ membership.division }}</small></td>
+                <td>{{ membership.role_level }}</td>
+                <td>{{ membership.communication_profile }}</td>
+                <td>{% if membership.is_default %}<span class="status-badge default">Default</span>{% else %}-{% endif %}</td>
+                <td>{% if membership.active %}<span class="status-badge active">Active</span>{% else %}<span class="status-badge">Inactive</span>{% endif %}</td>
+                <td><div class="row-actions">
+                  <a class="secondary-link" href="/admin/users/{{ user.telegram_id }}/memberships/{{ membership.company_id }}/edit">Edit</a>
+                  <form method="post" action="/admin/users/{{ user.telegram_id }}/memberships/{{ membership.company_id }}/status">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="active" value="{% if membership.active %}0{% else %}1{% endif %}">
+                    <button class="text-button {% if membership.active %}danger{% endif %}" type="submit">{% if membership.active %}Nonaktifkan{% else %}Aktifkan{% endif %}</button>
+                  </form>
+                </div></td>
+              </tr>
+            {% else %}<tr><td colspan="7" class="empty-state">User belum mempunyai membership.</td></tr>{% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  {% endif %}
+{% endblock %}
