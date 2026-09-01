@@ -5,8 +5,8 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 1.6 |
-| Terakhir diperbarui | 1 September 2026 |
+| Versi | 1.7 |
+| Terakhir diperbarui | 2 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
 
@@ -35,6 +35,8 @@ Tujuan utama:
 7. Mutasi administratif harus tervalidasi, dilindungi CSRF, dan dicatat sebagai audit event.
 8. Draft instruction tidak boleh memengaruhi bot. Runtime hanya membaca versi database yang sudah dipublikasikan atau file transisi bila belum ada versi database.
 9. Draft knowledge tidak boleh memengaruhi bot. Runtime membaca versi published dari dokumen aktif; file transisi hanya dipakai sampai publish knowledge pertama pada company tersebut.
+10. Akses module bersifat default-deny per membership. Runtime hanya menerima module aktif yang statusnya aktif, playbook-nya sudah dipublikasikan, dan aksesnya diberikan admin.
+11. Draft module playbook tidak boleh memengaruhi bot. History General dan setiap module dipisahkan agar perpindahan pekerjaan tidak mencampur konteks.
 
 ## 3. Arsitektur logis
 
@@ -70,8 +72,9 @@ Knowledge Loader
 published knowledge database atau file Markdown transisi
     ↓
 Prompt Composer
-global policy + user context + communication profile
-+ custom instruction + knowledge
+global policy + user context + company instruction
++ optional module playbook + communication profile
++ custom instruction + company knowledge
     ↓
 Chat History SQLite
     ↓
@@ -100,16 +103,18 @@ Jawaban ke user
 | Custom Instruction | Sudah | Field global user dan field per membership |
 | Knowledge Loader | Sudah | Published document aktif dari SQLite; folder Markdown menjadi fallback sampai publish pertama |
 | Document Ingestion | Sebagian | Upload PDF, DOCX, TXT, dan Markdown menjadi draft teks; OCR dan `.doc` belum |
-| Chat History | Sudah | SQLite dipisahkan per user dan perusahaan |
+| Chat History | Sudah | SQLite dipisahkan per user, perusahaan, dan module; General memakai scope kosong tersendiri |
 | Provider Abstraction | Sudah | OpenAI dan DeepSeek compatible API |
 | Telegram Response Renderer | Sudah | Safe HTML, split, link preview off, dan fallback plain text |
 | Conversation Delivery Policy | Belum | Akan mengatur panjang, ritme, dan progressive disclosure |
 | Multi-company membership | Sudah | Tabel membership SQLite; JSON hanya bootstrap awal |
 | Company router dan active context | Sudah | Command `/company` dan session active company |
+| Module router dan active context | Sudah | Command `/module`, General context, default-deny module access, dan reset module saat company berubah |
 | Company-scoped instruction | Sudah | Draft dan versi publish tersimpan di SQLite; file company menjadi fallback transisi |
-| Authorization per knowledge | Sebagian | Sudah company-scoped; module, division, dan clearance belum |
+| AI Module Playbook | Sudah | Registry per company, draft, preview, immutable publish, restore-to-draft, status, dan runtime prompt |
+| Authorization per knowledge | Sebagian | Sudah company-scoped; knowledge khusus module, division, dan clearance belum |
 | Response Validator | Sebagian | Batas panjang, split, escape HTML, dan fallback; belum ada policy classifier |
-| Admin Panel | Sebagian | Company, user, membership, Instruction, dan Knowledge writable; Activity read-only; Modules menyusul |
+| Admin Panel | Sebagian | Company, user, membership, Instruction, Knowledge, Module, dan module access writable; Activity read-only |
 | Retrieval/RAG | Belum | Seluruh knowledge dimuat sampai batas karakter |
 
 ## 5. Target arsitektur multi-company
@@ -292,11 +297,12 @@ Folder adalah bentuk transisi yang mudah diaudit. Target produksi skala lanjut m
 | `module_access` | Hak membership terhadap modul |
 | `company_instruction_state` | Draft aktif dan pointer versi live per perusahaan |
 | `company_instruction_versions` | Versi publish immutable per perusahaan |
-| `module_playbooks` | Playbook versioned per modul |
+| `module_playbook_state` | Draft aktif dan pointer versi live per module |
+| `module_playbook_versions` | Versi playbook immutable per module |
 | `knowledge_documents` | Metadata, status, draft, dan pointer versi live per company |
 | `knowledge_document_versions` | Versi published immutable, title, content, checksum, actor, dan waktu publish |
-| `chat_sessions` | Active company, active module, dan summary |
-| `messages` | Audit percakapan |
+| `user_sessions` | Active company dan active module per user |
+| `messages` | History percakapan dengan scope user, company, dan module |
 
 Semua query knowledge wajib memiliki filter `company_id`. Filter `module_id` ditambahkan ketika modul mempunyai knowledge khusus.
 
@@ -311,7 +317,7 @@ Empat area utama:
 3. Users & Access: identity dan company membership;
 4. Activity: perubahan konfigurasi, versi, dan error operasional.
 
-Instruction dan Knowledge memakai alur Draft → Preview → Publish → Restore to Draft. Edit draft tidak langsung memengaruhi bot produksi.
+Instruction, Knowledge, dan Module Playbook memakai alur Draft → Preview → Publish → Restore to Draft. Edit draft tidak langsung memengaruhi bot produksi.
 
 Versi admin saat ini menyediakan:
 
@@ -325,8 +331,9 @@ Versi admin saat ini menyediakan:
 - halaman Knowledge untuk membuat dokumen per company, menyimpan draft, preview, publish, aktivasi/nonaktivasi, dan riwayat versi;
 - form Knowledge menerima teks langsung atau upload PDF, DOCX, TXT, dan Markdown maksimal 10 MB;
 - restore versi lama ke draft agar selalu melewati preview sebelum dipublikasikan kembali;
-- placeholder navigasi Modules;
-- halaman Activity read-only untuk 100 audit event terbaru dengan filter kategori;
+- halaman Modules untuk membuat registry per company, mengubah identitas, status, draft, preview, publish, dan riwayat versi playbook;
+- akses module default-deny dikelola pada form edit membership;
+- halaman Activity read-only untuk 100 audit event terbaru dengan filter kategori termasuk Modules;
 - security headers dan health endpoint.
 - CSRF token untuk seluruh mutasi Company;
 - audit event untuk create, update, activate, dan deactivate Company.
@@ -336,6 +343,10 @@ Versi admin saat ini menyediakan:
 - file instruction tetap dibaca sebagai fallback selama suatu company belum mempunyai versi database yang dipublikasikan.
 - bot hanya membaca knowledge published dari dokumen aktif dan selalu memfilternya dengan `company_id`;
 - file knowledge tetap menjadi fallback sampai company mempunyai publish knowledge pertama. Setelah itu database tetap menjadi sumber aktif meskipun semua dokumen dinonaktifkan.
+- bot hanya menawarkan module yang aktif, memiliki playbook published, dan telah diberikan pada membership aktif;
+- command `/module` memilih module aktif atau kembali ke `General` tanpa module khusus;
+- perubahan company, pencabutan akses, atau nonaktivasi module membersihkan pointer active module;
+- history disimpan dengan scope `telegram_id + company_id + module_id` sehingga perpindahan module tidak mencampur konteks.
 
 Admin dan bot sementara berjalan dalam satu container dan memakai SQLite yang sama. SQLite menjadi source of truth runtime. `config/companies.json` dan `config/users.json` hanya diimpor ketika tabel terkait masih kosong, sehingga restart atau redeploy tidak menimpa perubahan admin.
 
@@ -379,6 +390,26 @@ Format yang didukung adalah PDF dengan text layer, Word Open XML `.docx`, UTF-8 
 
 Sebelum publish pertama pada suatu company, runtime memakai folder Markdown transisi. Publish pertama memindahkan company ke mode database. Setelah mode database aktif, hasil knowledge dapat kosong bila seluruh dokumen dinonaktifkan; runtime tidak boleh membangkitkan kembali file transisi secara implisit.
 
+### 5.9.3 Lifecycle AI Module Playbook
+
+```text
+Admin membuat module dalam satu company
+    ↓ Module ID dibuat server dan dikunci
+Admin menyimpan draft playbook
+    ↓ Preview read-only, belum dapat dipilih bot
+Admin publish
+    ↓ module_playbook_versions versi immutable baru
+Admin memberi akses pada membership
+    ↓ module_access default-deny
+User memilih /module <module-id>
+    ↓ user_sessions.active_module_id
+Bot memakai playbook live dan history khusus module
+```
+
+Module hanya dapat dipilih ketika company dan membership aktif, module aktif, playbook published tersedia, dan row `module_access` aktif. Module ID unik di dalam company dan dibuat otomatis dari nama dengan suffix numerik bila terjadi collision. Restore menyalin versi lama ke draft; runtime tetap memakai versi live sampai admin memublikasikan draft tersebut.
+
+Mode `/module general` mengosongkan `active_module_id` dan memakai history General. Perubahan `/company`, pencabutan module access, atau nonaktivasi module juga mengosongkan pointer module. Data history lama tidak dihapus dan tetap dapat digunakan kembali jika akses module diberikan lagi.
+
 ### 5.10 Target persistence multi-tenant
 
 Target final menggunakan database multi-tenant dengan `company_id` sebagai tenant boundary utama. Semua entitas yang membawa data perusahaan wajib mempunyai scope company secara langsung atau melalui relasi yang tidak ambigu.
@@ -401,8 +432,8 @@ Implementasi dilakukan bertahap:
 1. schema database multi-tenant dan repository/service layer disiapkan — selesai untuk company, user, membership, session, message, dan audit event;
 2. data JSON diimpor hanya saat registry database kosong — selesai;
 3. runtime bot membaca SQLite sebagai source of truth — selesai;
-4. admin panel menulis entitas secara bertahap ke database — Company, user, membership, Company Instruction, dan Knowledge selesai;
-5. instruction dan knowledge memakai draft, preview, immutable published version, dan restore-to-draft — selesai;
+4. admin panel menulis entitas secara bertahap ke database — Company, user, membership, Company Instruction, Knowledge, Module, dan module access selesai;
+5. instruction, knowledge, dan module playbook memakai draft, preview, immutable published version, dan restore-to-draft — selesai;
 6. PostgreSQL menjadi target ketika bot dan admin dipisahkan menjadi service berbeda — belum.
 
 ## 6. Pemisahan konsep user
@@ -669,6 +700,12 @@ Sudah diterapkan:
 - audit knowledge menyimpan metadata, jumlah karakter, dan checksum, bukan isi dokumen penuh.
 - upload knowledge dibatasi 10 MB, filename dibersihkan, extension dan struktur file divalidasi, serta hasil ekstraksi dibatasi 100.000 karakter;
 - file upload tidak menjadi instruction dan tidak langsung live; hanya teks draft yang telah dipublish yang dibaca runtime.
+- module access bersifat default-deny dan divalidasi terhadap membership serta company yang sama;
+- module draft tidak masuk ke prompt; runtime hanya membaca published playbook dari module aktif yang diizinkan;
+- query dan restore playbook selalu divalidasi dengan pasangan `company_id + module_id`;
+- pergantian company, pencabutan akses, dan nonaktivasi module menghapus pointer module aktif;
+- history General dan module dipisahkan dengan `module_id`, tanpa menghapus history scope lain;
+- audit module menyimpan metadata, versi, jumlah karakter, dan checksum, bukan isi playbook.
 
 Belum diterapkan:
 
@@ -686,10 +723,10 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 - satu instance Railway;
 - seluruh knowledge company aktif dimuat sampai `KNOWLEDGE_MAX_CHARS`;
 - upload knowledge mendukung PDF text layer, DOCX, TXT, dan Markdown; OCR serta `.doc` lama belum;
-- Company, user, membership, communication profile, Company Instruction, dan Knowledge dikelola melalui admin;
-- modul, module access, dan module-scoped knowledge belum diimplementasikan;
+- Company, user, membership, communication profile, Company Instruction, Knowledge, Module, dan module access dikelola melalui admin;
+- module-scoped knowledge belum diimplementasikan; module masih memakai Knowledge company ditambah playbook;
 - combined legacy Funnel Coach masih dipakai sebagai instruction DK Corp Group sampai dokumen dipisahkan;
-- Company Instruction dan Knowledge sudah writable dan versioned; Activity menampilkan audit administratif; Modules masih tahap berikutnya.
+- Company Instruction, Knowledge, dan Module Playbook sudah writable dan versioned; Activity menampilkan audit administratif.
 - concurrency masih berada dalam satu process dan belum memakai durable application queue terpisah.
 
 ## 14. Roadmap
@@ -709,7 +746,7 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 - active company router; selesai melalui `/company`;
 - company instruction terpisah dan versioned; selesai, migrasi isi legacy per company dilakukan melalui editor admin;
 - company knowledge terpisah dan versioned; selesai untuk company scope, dengan fallback file selama transisi;
-- active module router dan module playbook;
+- active module router, default-deny access, dan versioned module playbook; selesai melalui `/module` dan admin;
 - knowledge metadata per division;
 - authorization policy dan clearance;
 - admin command atau admin panel;
@@ -779,8 +816,26 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 | ADR-043 | Collision identifier memakai suffix numerik deterministik | Nama yang sama tetap dapat dibuat tanpa meminta admin menyusun key manual |
 | ADR-044 | Activity hanya membaca audit event dan tidak mempunyai mutasi | Riwayat administratif tidak boleh menjadi jalur untuk mengubah atau menghapus state produksi |
 | ADR-045 | Activity tidak menampilkan isi instruction atau knowledge | Audit cukup menyimpan metadata, ukuran, versi, dan checksum tanpa membuka konten sensitif |
+| ADR-046 | Module merupakan entitas company-scoped dengan ID immutable | Nama dapat berubah tanpa memutus access, version history, session, atau history percakapan |
+| ADR-047 | Module access memakai explicit default-deny per membership | Membership company tidak otomatis membuka seluruh workflow dan playbook internal company tersebut |
+| ADR-048 | Module Playbook memakai draft dan immutable published version | Perubahan admin tidak boleh langsung mengubah perilaku bot dan versi lama tetap dapat diaudit |
+| ADR-049 | Module runtime membutuhkan status aktif, akses aktif, dan playbook published | Draft atau module tanpa otorisasi tidak boleh muncul pada daftar Telegram maupun masuk ke prompt |
+| ADR-050 | History memakai scope user, company, dan module | Perpindahan antara General dan workflow module tidak boleh mencampur konteks percakapan |
+| ADR-051 | Perubahan company atau hilangnya module access mereset active module | Session tidak boleh mempertahankan pointer menuju konteks yang tidak lagi valid atau diizinkan |
 
 ## 16. Changelog dokumen
+
+### 1.7 — 2 September 2026
+
+- membuka Module Management per company dengan Module ID otomatis dan immutable;
+- menambahkan draft, preview, immutable publish, version history, checksum, dan restore-to-draft untuk AI Module Playbook;
+- menolak publish playbook kosong agar module live selalu mempunyai instruksi kerja;
+- menambahkan module access default-deny pada setiap membership;
+- menambahkan command `/module`, mode `General`, dan tampilan active module pada `/whoami`;
+- mengkomposisikan published module playbook ke prompt hanya setelah status dan akses tervalidasi;
+- memisahkan history berdasarkan user, company, dan module serta mereset pointer module ketika company atau authorization berubah;
+- menambahkan audit module tanpa menyimpan isi playbook dan pengujian tenant/access/runtime/history boundary;
+- memperbarui status implementasi, persistence, security boundary, batas MVP, roadmap, dan keputusan arsitektur.
 
 ### 1.6 — 1 September 2026
 

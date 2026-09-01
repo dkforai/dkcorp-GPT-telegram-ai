@@ -1,0 +1,24 @@
+{% extends "admin/base.html" %}
+{% block title %}Tambah Module · DK Corp AI Admin{% endblock %}
+{% block page_title %}Tambah Module{% endblock %}
+{% block content %}
+  <div class="page-lead">
+    <div><h2>Module baru</h2><p>Module adalah pekerjaan AI khusus dalam konteks satu company.</p></div>
+    <a class="secondary-link back-link" href="/admin/modules">Kembali</a>
+  </div>
+  <form class="panel form-panel" method="post" action="/admin/modules">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+    {% if not companies %}
+      <div class="notice error">Belum ada company aktif. Aktifkan company terlebih dahulu.</div>
+    {% else %}
+      <div class="form-grid">
+        <label>Company<select name="company_id" required>{% for company in companies %}<option value="{{ company.company_id }}" {% if values.company_id == company.company_id %}selected{% endif %}>{{ company.name }}</option>{% endfor %}</select><small>Module hanya tersedia di company ini.</small></label>
+        <label>Nama module<input name="name" type="text" value="{{ values.name }}" minlength="2" maxlength="100" required autofocus><small>Module ID dibuat otomatis dan dikunci.</small></label>
+      </div>
+      <label class="full-field">Deskripsi <span class="optional">Opsional</span><textarea name="description" maxlength="500" rows="4">{{ values.description }}</textarea><small>Jelaskan kapan module dipakai dan hasil yang diharapkan.</small></label>
+      <label class="checkbox-row"><input name="active" type="checkbox" value="1" {% if values.active == '1' %}checked{% endif %}><span><strong>Aktifkan module</strong><small>User tetap memerlukan akses membership dan playbook published.</small></span></label>
+    {% endif %}
+    <div class="form-actions"><a class="secondary-button" href="/admin/modules">Batal</a><button class="primary-button" type="submit" {% if not companies %}disabled{% endif %}>Simpan module</button></div>
+  </form>
+{% endblock %}

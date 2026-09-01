@@ -1,0 +1,53 @@
+{% extends "admin/base.html" %}
+{% block title %}{{ state.name }} · Modules · DK Corp AI Admin{% endblock %}
+{% block page_title %}Module Playbook{% endblock %}
+{% block content %}
+  <div class="page-lead">
+    <div><h2>{{ state.name }}</h2><p>{{ state.company_name }} · {{ state.module_id }}</p></div>
+    <a class="secondary-link back-link" href="/admin/modules">Kembali</a>
+  </div>
+  {% if notice %}<div class="notice success" role="status">{{ notice }}</div>{% endif %}
+  {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+
+  <div class="module-editor-grid">
+    <form class="panel form-panel" method="post" action="/admin/modules/{{ state.company_id }}/{{ state.module_id }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="form-section-title"><h3>Identitas module</h3><p>Module ID dikunci setelah dibuat.</p></div>
+      <label>Nama module<input name="name" type="text" value="{{ state.name }}" minlength="2" maxlength="100" required></label>
+      <label class="full-field">Deskripsi <span class="optional">Opsional</span><textarea name="description" maxlength="500" rows="4">{{ state.description }}</textarea></label>
+      <div class="form-actions"><button class="primary-button" type="submit">Simpan identitas</button></div>
+    </form>
+
+    <aside class="panel instruction-guide">
+      <h3>Status runtime</h3>
+      <ul>
+        <li>Status module: {% if state.active %}Active{% else %}Inactive{% endif %}.</li>
+        <li>Playbook live: {% if state.published_version_number %}v{{ state.published_version_number }}{% else %}belum ada{% endif %}.</li>
+        <li>Akses diberikan melalui edit membership user.</li>
+        <li>Draft tidak digunakan bot sampai publish.</li>
+      </ul>
+    </aside>
+  </div>
+
+  <form class="panel form-panel instruction-editor module-playbook-editor" method="post" action="/admin/modules/{{ state.company_id }}/{{ state.module_id }}/draft">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-section-title"><h3>Draft AI Module Playbook</h3><p>Atur tujuan, input, proses, batasan, dan output contract module.</p></div>
+    <label class="full-field no-margin">Playbook<textarea class="instruction-textarea" name="content" maxlength="50000" spellcheck="true">{{ draft_content }}</textarea><small>Maksimal 50.000 karakter. Jangan taruh fakta bisnis yang seharusnya berada di Knowledge.</small></label>
+    <div class="form-actions split-actions">
+      <span class="form-status">{% if state.published_version_number %}Published v{{ state.published_version_number }}{% else %}Belum pernah publish{% endif %}{% if has_unpublished_changes %} · Ada perubahan draft{% endif %}</span>
+      <div>{% if state.draft_content is not none %}<a class="secondary-button" href="/admin/modules/{{ state.company_id }}/{{ state.module_id }}/preview">Preview</a>{% endif %}<button class="primary-button" type="submit">Simpan draft</button></div>
+    </div>
+  </form>
+
+  <div class="subsection-lead"><h2>Riwayat versi</h2><p>Versi published immutable. Restore selalu kembali ke draft.</p></div>
+  <div class="panel table-panel"><div class="table-wrap"><table>
+    <thead><tr><th>Version</th><th>Published</th><th>Isi</th><th>Checksum</th><th>Action</th></tr></thead>
+    <tbody>{% for version in versions %}<tr>
+      <td><strong>v{{ version.version_number }}</strong>{% if version.id == state.published_version_id %} <span class="status-badge active">Live</span>{% endif %}</td>
+      <td>{{ version.published_by }}<small class="block">{{ version.published_at }}</small></td>
+      <td>{{ version.content | length }} karakter<small class="block version-excerpt">{{ version.content | truncate(100, true) }}</small></td>
+      <td><code class="checksum">{{ version.content_sha256[:12] }}…</code></td>
+      <td><form method="post" action="/admin/modules/{{ state.company_id }}/{{ state.module_id }}/versions/{{ version.id }}/restore"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="text-button" type="submit">Pulihkan ke draft</button></form></td>
+    </tr>{% else %}<tr><td colspan="5" class="empty-state">Belum ada versi playbook.</td></tr>{% endfor %}</tbody>
+  </table></div></div>
+{% endblock %}

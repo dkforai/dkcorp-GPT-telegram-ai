@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.company_context import CompanyContent
-from app.database import Company, Membership, User
+from app.database import AIModule, Company, Membership, User
 from app.role_profiles import CommunicationProfile
 from app.telegram_renderer import TELEGRAM_MARKUP_CONTRACT
 
@@ -12,6 +12,8 @@ def build_system_prompt(
     company: Company,
     company_content: CompanyContent,
     communication_profile: CommunicationProfile | None = None,
+    active_module: AIModule | None = None,
+    module_playbook: str = "",
 ) -> str:
     parts = [
         "Anda adalah asisten AI internal perusahaan.",
@@ -34,6 +36,21 @@ def build_system_prompt(
         parts.append(
             "Instruksi perusahaan aktif. Terapkan hanya pada perusahaan aktif ini:\n"
             f"<company_instruction>\n{company_content.instruction}\n</company_instruction>"
+        )
+    if active_module:
+        parts.append(
+            "Module kerja aktif berikut membatasi fokus percakapan saat ini:\n"
+            f"Nama module: {active_module.name}\n"
+            f"Module ID: {active_module.module_id}\n"
+            f"Deskripsi: {active_module.description or '-'}"
+        )
+    if active_module and module_playbook:
+        parts.append(
+            "Playbook module aktif. Terapkan hanya untuk company dan module aktif ini. "
+            "Jangan menggunakan playbook ini untuk company atau module lain:\n"
+            f'<module_playbook company_id="{company.company_id}" '
+            f'module_id="{active_module.module_id}">\n'
+            f"{module_playbook}\n</module_playbook>"
         )
     if communication_profile:
         parts.append(

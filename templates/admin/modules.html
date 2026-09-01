@@ -1,0 +1,42 @@
+{% extends "admin/base.html" %}
+{% block title %}Modules · DK Corp AI Admin{% endblock %}
+{% block page_title %}Modules{% endblock %}
+{% block content %}
+  <div class="page-lead">
+    <div><h2>Module catalog</h2><p>Pekerjaan AI dan playbook yang tersedia pada setiap company.</p></div>
+    <a class="primary-link" href="/admin/modules/new">Tambah module</a>
+  </div>
+
+  {% if notice %}<div class="notice success" role="status">{{ notice }}</div>{% endif %}
+  {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+
+  <div class="panel table-panel">
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Module</th><th>Company</th><th>Playbook</th><th>Akses</th><th>Status</th><th>Action</th></tr></thead>
+        <tbody>
+          {% for module in modules %}
+            <tr>
+              <td><strong>{{ module.name }}</strong><small class="block">{{ module.module_id }}</small>{% if module.description %}<small class="block">{{ module.description | truncate(80, true) }}</small>{% endif %}</td>
+              <td><strong>{{ module.company_name }}</strong><small class="block">{{ module.company_id }}</small></td>
+              <td>
+                {% if module.published_version_number %}<span class="status-badge active">v{{ module.published_version_number }} Live</span>{% else %}<span class="muted-text">Belum publish</span>{% endif %}
+                {% if module.has_unpublished_draft %}<small class="block">Ada perubahan draft</small>{% endif %}
+              </td>
+              <td>{{ module.access_count }} membership</td>
+              <td>{% if module.active %}<span class="status-badge active">Active</span>{% else %}<span class="status-badge">Inactive</span>{% endif %}</td>
+              <td><div class="row-actions">
+                <a class="secondary-link" href="/admin/modules/{{ module.company_id }}/{{ module.module_id }}">Kelola</a>
+                <form method="post" action="/admin/modules/{{ module.company_id }}/{{ module.module_id }}/status">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <input type="hidden" name="active" value="{% if module.active %}0{% else %}1{% endif %}">
+                  <button class="text-button {% if module.active %}danger{% endif %}" type="submit">{% if module.active %}Nonaktifkan{% else %}Aktifkan{% endif %}</button>
+                </form>
+              </div></td>
+            </tr>
+          {% else %}<tr><td colspan="6" class="empty-state">Belum ada module. Tambahkan module untuk memulai.</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}

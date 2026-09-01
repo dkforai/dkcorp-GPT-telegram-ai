@@ -265,6 +265,7 @@ tbody tr:hover { background: #fcfcfe; }
 .activity-marker.membership { background: var(--green); }
 .activity-marker.instruction { background: var(--orange); }
 .activity-marker.knowledge { background: #b254a7; }
+.activity-marker.module { background: #3b8c94; }
 .activity-main { min-width: 0; padding: 17px 19px; }
 .activity-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
 .activity-heading h3 { margin: 2px 0 0; font-size: 13px; }
@@ -278,6 +279,15 @@ tbody tr:hover { background: #fcfcfe; }
 .activity-details div { display: flex; gap: 5px; padding: 5px 8px; background: #f7f8fa; border-radius: 7px; font-size: 9px; }
 .activity-details dt { color: #8b93a3; }
 .activity-details dd { margin: 0; color: #4f5869; font-weight: 650; overflow-wrap: anywhere; }
+.module-editor-grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(260px, .75fr); gap: 20px; align-items: start; }
+.module-editor-grid .form-panel { max-width: none; }
+.module-playbook-editor { max-width: none; margin-top: 20px; }
+.module-access-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; }
+.module-access-option { display: flex; align-items: flex-start; gap: 10px; padding: 14px; background: #fafafe; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
+.module-access-option input { margin-top: 3px; accent-color: var(--purple); }
+.module-access-option span, .module-access-option strong, .module-access-option small { display: block; }
+.module-access-option strong { color: #40495a; font-size: 11px; }
+.module-access-option small { margin-top: 3px; color: #8c94a3; font-size: 9px; font-weight: 500; }
 
 @media (max-width: 960px) {
   .shell { grid-template-columns: 205px 1fr; }
@@ -286,6 +296,7 @@ tbody tr:hover { background: #fcfcfe; }
   .login-layout { grid-template-columns: 1fr; }
   .login-intro { min-height: 320px; padding: 32px; }
   .instruction-layout { grid-template-columns: 1fr; }
+  .module-editor-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 700px) {
@@ -311,4 +322,5 @@ tbody tr:hover { background: #fcfcfe; }
   .publish-bar, .split-actions { align-items: stretch; flex-direction: column; }
   .split-actions > div { justify-content: flex-end; }
   .activity-heading { align-items: flex-start; flex-direction: column; gap: 6px; }
+  .module-access-grid { grid-template-columns: 1fr; }
 }

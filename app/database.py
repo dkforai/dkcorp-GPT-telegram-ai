@@ -16,6 +16,7 @@ COMMUNICATION_PROFILES = {"executive", "manager", "staff", "default"}
 MAX_TELEGRAM_ID = 9_007_199_254_740_991
 MAX_COMPANY_INSTRUCTION_CHARS = 50_000
 MAX_KNOWLEDGE_DOCUMENT_CHARS = 100_000
+MAX_MODULE_PLAYBOOK_CHARS = 50_000
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,16 @@ class Membership:
     communication_profile: str
     custom_instruction: str
     is_default: bool
+    active: bool
+
+
+@dataclass(frozen=True)
+class AIModule:
+    company_id: str
+    company_name: str
+    module_id: str
+    name: str
+    description: str
     active: bool
 
 
@@ -109,6 +120,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS user_sessions (
                     telegram_id INTEGER PRIMARY KEY,
                     active_company_id TEXT NOT NULL,
+                    active_module_id TEXT NOT NULL DEFAULT '',
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY (telegram_id) REFERENCES users(telegram_id),
                     FOREIGN KEY (active_company_id) REFERENCES companies(company_id)
@@ -118,6 +130,7 @@ class Database:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     telegram_id INTEGER NOT NULL,
                     company_id TEXT NOT NULL DEFAULT '',
+                    module_id TEXT NOT NULL DEFAULT '',
                     role TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
                     content TEXT NOT NULL,
                     created_at TEXT NOT NULL,
@@ -132,6 +145,55 @@ class Database:
                     entity_id TEXT NOT NULL,
                     details_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS modules (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    company_id TEXT NOT NULL,
+                    module_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(company_id, module_id),
+                    FOREIGN KEY (company_id) REFERENCES companies(company_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS module_playbook_versions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    module_pk INTEGER NOT NULL,
+                    version_number INTEGER NOT NULL,
+                    content TEXT NOT NULL,
+                    content_sha256 TEXT NOT NULL,
+                    published_by TEXT NOT NULL,
+                    published_at TEXT NOT NULL,
+                    UNIQUE(module_pk, version_number),
+                    FOREIGN KEY (module_pk) REFERENCES modules(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS module_playbook_state (
+                    module_pk INTEGER PRIMARY KEY,
+                    draft_content TEXT NOT NULL DEFAULT '',
+                    draft_updated_by TEXT NOT NULL DEFAULT '',
+                    draft_updated_at TEXT NOT NULL,
+                    published_version_id INTEGER,
+                    FOREIGN KEY (module_pk) REFERENCES modules(id),
+                    FOREIGN KEY (published_version_id)
+                        REFERENCES module_playbook_versions(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS module_access (
+                    telegram_id INTEGER NOT NULL,
+                    company_id TEXT NOT NULL,
+                    module_id TEXT NOT NULL,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (telegram_id, company_id, module_id),
+                    FOREIGN KEY (telegram_id, company_id)
+                        REFERENCES user_company_memberships(telegram_id, company_id),
+                    FOREIGN KEY (company_id, module_id)
+                        REFERENCES modules(company_id, module_id)
                 );
 
                 CREATE TABLE IF NOT EXISTS company_instruction_versions (
@@ -215,6 +277,27 @@ class Database:
                     ADD COLUMN company_id TEXT NOT NULL DEFAULT ''
                     """
                 )
+            if "module_id" not in message_columns:
+                connection.execute(
+                    """
+                    ALTER TABLE messages
+                    ADD COLUMN module_id TEXT NOT NULL DEFAULT ''
+                    """
+                )
+
+            session_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(user_sessions)"
+                ).fetchall()
+            }
+            if "active_module_id" not in session_columns:
+                connection.execute(
+                    """
+                    ALTER TABLE user_sessions
+                    ADD COLUMN active_module_id TEXT NOT NULL DEFAULT ''
+                    """
+                )
 
             knowledge_columns = {
                 row["name"]
@@ -237,7 +320,10 @@ class Database:
             connection.executescript(
                 """
                 CREATE INDEX IF NOT EXISTS idx_messages_user_company_id
-                ON messages(telegram_id, company_id, id DESC);
+                ON messages(telegram_id, company_id, module_id, id DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_messages_user_company_module_id
+                ON messages(telegram_id, company_id, module_id, id DESC);
 
                 CREATE INDEX IF NOT EXISTS idx_memberships_user
                 ON user_company_memberships(telegram_id, active, company_id);
@@ -253,6 +339,15 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_knowledge_versions_document
                 ON knowledge_document_versions(document_id, version_number DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_modules_company
+                ON modules(company_id, active, module_id);
+
+                CREATE INDEX IF NOT EXISTS idx_module_access_membership
+                ON module_access(telegram_id, company_id, active, module_id);
+
+                CREATE INDEX IF NOT EXISTS idx_module_playbook_versions
+                ON module_playbook_versions(module_pk, version_number DESC);
                 """
             )
 
@@ -760,6 +855,641 @@ class Database:
         if company is None:
             raise RuntimeError("Company gagal diperbarui")
         return company
+
+    def list_modules_admin(self) -> list[dict[str, object]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    m.company_id,
+                    c.name AS company_name,
+                    m.module_id,
+                    m.name,
+                    m.description,
+                    m.active,
+                    COUNT(DISTINCT CASE WHEN a.active = 1 THEN a.telegram_id END)
+                        AS access_count,
+                    v.version_number AS published_version_number,
+                    s.draft_updated_at,
+                    CASE
+                        WHEN s.module_pk IS NULL THEN 0
+                        WHEN v.id IS NULL THEN 1
+                        WHEN s.draft_content != v.content THEN 1
+                        ELSE 0
+                    END AS has_unpublished_draft
+                FROM modules m
+                JOIN companies c ON c.company_id = m.company_id
+                LEFT JOIN module_access a
+                    ON a.company_id = m.company_id
+                   AND a.module_id = m.module_id
+                LEFT JOIN module_playbook_state s ON s.module_pk = m.id
+                LEFT JOIN module_playbook_versions v
+                    ON v.id = s.published_version_id
+                GROUP BY m.id
+                ORDER BY c.name COLLATE NOCASE, m.name COLLATE NOCASE
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_module_admin(
+        self, company_id: str, module_id: str
+    ) -> AIModule | None:
+        normalized_company = _validate_company_id(company_id)
+        normalized_module = _validate_module_id(module_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT m.company_id, c.name AS company_name, m.module_id,
+                       m.name, m.description, m.active
+                FROM modules m
+                JOIN companies c ON c.company_id = m.company_id
+                WHERE m.company_id = ? AND m.module_id = ?
+                """,
+                (normalized_company, normalized_module),
+            ).fetchone()
+        return _module_from_row(row) if row else None
+
+    def create_module(
+        self,
+        company_id: str,
+        module_id: object,
+        name: object,
+        description: object,
+        actor: str,
+        active: bool = True,
+    ) -> AIModule:
+        normalized_company = _validate_company_id(company_id)
+        normalized_name = _validate_module_name(name)
+        normalized_description = _validate_module_description(description)
+        requested_id = str(module_id or "").strip()
+        normalized_module = (
+            _validate_module_id(requested_id) if requested_id else ""
+        )
+        now = _now()
+        try:
+            with self._connect() as connection:
+                _require_active_company(connection, normalized_company)
+                if not normalized_module:
+                    normalized_module = _next_unique_identifier(
+                        connection,
+                        "modules",
+                        "module_id",
+                        _identifier_from_label(normalized_name, "module"),
+                        where_column="company_id",
+                        where_value=normalized_company,
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO modules (
+                        company_id, module_id, name, description, active,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        normalized_company,
+                        normalized_module,
+                        normalized_name,
+                        normalized_description,
+                        int(active),
+                        now,
+                        now,
+                    ),
+                )
+                _write_audit(
+                    connection,
+                    actor,
+                    "module.created",
+                    "module",
+                    f"{normalized_company}:{normalized_module}",
+                    {
+                        "company_id": normalized_company,
+                        "name": normalized_name,
+                        "active": active,
+                    },
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("Module dengan ID tersebut sudah ada pada company") from exc
+        module = self.get_module_admin(normalized_company, normalized_module)
+        if module is None:
+            raise RuntimeError("Module gagal disimpan")
+        return module
+
+    def update_module(
+        self,
+        company_id: str,
+        module_id: str,
+        name: object,
+        description: object,
+        actor: str,
+    ) -> AIModule:
+        normalized_company = _validate_company_id(company_id)
+        normalized_module = _validate_module_id(module_id)
+        normalized_name = _validate_module_name(name)
+        normalized_description = _validate_module_description(description)
+        with self._connect() as connection:
+            current = connection.execute(
+                """
+                SELECT name, description FROM modules
+                WHERE company_id = ? AND module_id = ?
+                """,
+                (normalized_company, normalized_module),
+            ).fetchone()
+            if current is None:
+                raise ValueError("Module tidak ditemukan")
+            connection.execute(
+                """
+                UPDATE modules SET name = ?, description = ?, updated_at = ?
+                WHERE company_id = ? AND module_id = ?
+                """,
+                (
+                    normalized_name,
+                    normalized_description,
+                    _now(),
+                    normalized_company,
+                    normalized_module,
+                ),
+            )
+            _write_audit(
+                connection,
+                actor,
+                "module.updated",
+                "module",
+                f"{normalized_company}:{normalized_module}",
+                {"name_before": current["name"], "name_after": normalized_name},
+            )
+        module = self.get_module_admin(normalized_company, normalized_module)
+        if module is None:
+            raise RuntimeError("Module gagal diperbarui")
+        return module
+
+    def set_module_active(
+        self, company_id: str, module_id: str, active: bool, actor: str
+    ) -> AIModule:
+        normalized_company = _validate_company_id(company_id)
+        normalized_module = _validate_module_id(module_id)
+        with self._connect() as connection:
+            current = connection.execute(
+                """
+                SELECT active FROM modules
+                WHERE company_id = ? AND module_id = ?
+                """,
+                (normalized_company, normalized_module),
+            ).fetchone()
+            if current is None:
+                raise ValueError("Module tidak ditemukan")
+            if bool(current["active"]) != active:
+                if active:
+                    _require_active_company(connection, normalized_company)
+                connection.execute(
+                    """
+                    UPDATE modules SET active = ?, updated_at = ?
+                    WHERE company_id = ? AND module_id = ?
+                    """,
+                    (int(active), _now(), normalized_company, normalized_module),
+                )
+                if not active:
+                    connection.execute(
+                        """
+                        UPDATE user_sessions SET active_module_id = '', updated_at = ?
+                        WHERE active_company_id = ? AND active_module_id = ?
+                        """,
+                        (_now(), normalized_company, normalized_module),
+                    )
+                _write_audit(
+                    connection,
+                    actor,
+                    "module.activated" if active else "module.deactivated",
+                    "module",
+                    f"{normalized_company}:{normalized_module}",
+                    {"active": active},
+                )
+        module = self.get_module_admin(normalized_company, normalized_module)
+        if module is None:
+            raise RuntimeError("Module gagal diperbarui")
+        return module
+
+    def get_module_playbook_admin(
+        self, company_id: str, module_id: str
+    ) -> dict[str, object] | None:
+        normalized_company = _validate_company_id(company_id)
+        normalized_module = _validate_module_id(module_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    m.id AS module_pk,
+                    m.company_id,
+                    c.name AS company_name,
+                    m.module_id,
+                    m.name,
+                    m.description,
+                    m.active,
+                    s.draft_content,
+                    s.draft_updated_by,
+                    s.draft_updated_at,
+                    v.id AS published_version_id,
+                    v.version_number AS published_version_number,
+                    v.content AS published_content,
+                    v.content_sha256,
+                    v.published_by,
+                    v.published_at
+                FROM modules m
+                JOIN companies c ON c.company_id = m.company_id
+                LEFT JOIN module_playbook_state s ON s.module_pk = m.id
+                LEFT JOIN module_playbook_versions v
+                    ON v.id = s.published_version_id
+                WHERE m.company_id = ? AND m.module_id = ?
+                """,
+                (normalized_company, normalized_module),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def save_module_playbook_draft(
+        self, company_id: str, module_id: str, content: object, actor: str
+    ) -> None:
+        normalized_company = _validate_company_id(company_id)
+        normalized_module = _validate_module_id(module_id)
+        playbook = _validate_module_playbook(content)
+        now = _now()
+        with self._connect() as connection:
+            module = connection.execute(
+                """
+                SELECT id FROM modules WHERE company_id = ? AND module_id = ?
+                """,
+                (normalized_company, normalized_module),
+            ).fetchone()
+            if module is None:
+                raise ValueError("Module tidak ditemukan")
+            connection.execute(
+                """
+                INSERT INTO module_playbook_state (
+                    module_pk, draft_content, draft_updated_by, draft_updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(module_pk) DO UPDATE SET
+                    draft_content=excluded.draft_content,
+                    draft_updated_by=excluded.draft_updated_by,
+                    draft_updated_at=excluded.draft_updated_at
+                """,
+                (module["id"], playbook, actor, now),
+            )
+            _write_audit(
+                connection,
+                actor,
+                "module_playbook.draft_saved",
+                "module_playbook",
+                f"{normalized_company}:{normalized_module}",
+                {"character_count": len(playbook)},
+            )
+
+    def publish_module_playbook(
+        self, company_id: str, module_id: str, actor: str
+    ) -> int:
+        normalized_company = _validate_company_id(company_id)
+        normalized_module = _validate_module_id(module_id)
+        now = _now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            state = connection.execute(
+                """
+                SELECT m.id AS module_pk, s.draft_content
+                FROM modules m
+                JOIN module_playbook_state s ON s.module_pk = m.id
+                WHERE m.company_id = ? AND m.module_id = ?
+                """,
+                (normalized_company, normalized_module),
+            ).fetchone()
+            if state is None:
+                raise ValueError("Simpan draft playbook sebelum publish")
+            content = str(state["draft_content"]).strip()
+            if not content:
+                raise ValueError("Playbook module tidak boleh kosong saat publish")
+            next_version = int(
+                connection.execute(
+                    """
+                    SELECT COALESCE(MAX(version_number), 0) + 1
+                    FROM module_playbook_versions WHERE module_pk = ?
+                    """,
+                    (state["module_pk"],),
+                ).fetchone()[0]
+            )
+            checksum = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            cursor = connection.execute(
+                """
+                INSERT INTO module_playbook_versions (
+                    module_pk, version_number, content, content_sha256,
+                    published_by, published_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (state["module_pk"], next_version, content, checksum, actor, now),
+            )
+            connection.execute(
+                """
+                UPDATE module_playbook_state
+                SET published_version_id = ?, draft_updated_by = ?,
+                    draft_updated_at = ? WHERE module_pk = ?
+                """,
+                (cursor.lastrowid, actor, now, state["module_pk"]),
+            )
+            _write_audit(
+                connection,
+                actor,
+                "module_playbook.published",
+                "module_playbook",
+                f"{normalized_company}:{normalized_module}",
+                {
+                    "version_number": next_version,
+                    "character_count": len(content),
+                    "content_sha256": checksum,
+                },
+            )
+        return next_version
+
+    def list_module_playbook_versions(
+        self, company_id: str, module_id: str, limit: int = 50
+    ) -> list[dict[str, object]]:
+        normalized_company = _validate_company_id(company_id)
+        normalized_module = _validate_module_id(module_id)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT v.id, v.version_number, v.content, v.content_sha256,
+                       v.published_by, v.published_at
+                FROM module_playbook_versions v
+                JOIN modules m ON m.id = v.module_pk
+                WHERE m.company_id = ? AND m.module_id = ?
+                ORDER BY v.version_number DESC LIMIT ?
+                """,
+                (
+                    normalized_company,
+                    normalized_module,
+                    max(1, min(limit, 200)),
+                ),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def restore_module_playbook_version_to_draft(
+        self,
+        company_id: str,
+        module_id: str,
+        version_id: int,
+        actor: str,
+    ) -> None:
+        normalized_company = _validate_company_id(company_id)
+        normalized_module = _validate_module_id(module_id)
+        try:
+            normalized_version = int(version_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Versi playbook tidak valid") from exc
+        with self._connect() as connection:
+            version = connection.execute(
+                """
+                SELECT m.id AS module_pk, v.version_number, v.content
+                FROM module_playbook_versions v
+                JOIN modules m ON m.id = v.module_pk
+                WHERE v.id = ? AND m.company_id = ? AND m.module_id = ?
+                """,
+                (normalized_version, normalized_company, normalized_module),
+            ).fetchone()
+            if version is None:
+                raise ValueError("Versi playbook tidak ditemukan")
+            now = _now()
+            connection.execute(
+                """
+                INSERT INTO module_playbook_state (
+                    module_pk, draft_content, draft_updated_by, draft_updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(module_pk) DO UPDATE SET
+                    draft_content=excluded.draft_content,
+                    draft_updated_by=excluded.draft_updated_by,
+                    draft_updated_at=excluded.draft_updated_at
+                """,
+                (version["module_pk"], version["content"], actor, now),
+            )
+            _write_audit(
+                connection,
+                actor,
+                "module_playbook.version_restored_to_draft",
+                "module_playbook",
+                f"{normalized_company}:{normalized_module}",
+                {"source_version_number": int(version["version_number"])},
+            )
+
+    def get_published_module_playbook(
+        self, company_id: str, module_id: str
+    ) -> str | None:
+        normalized_company = _validate_company_id(company_id)
+        normalized_module = _validate_module_id(module_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT v.content
+                FROM modules m
+                JOIN module_playbook_state s ON s.module_pk = m.id
+                JOIN module_playbook_versions v ON v.id = s.published_version_id
+                WHERE m.company_id = ? AND m.module_id = ? AND m.active = 1
+                """,
+                (normalized_company, normalized_module),
+            ).fetchone()
+        return str(row["content"]) if row else None
+
+    def list_membership_module_access_admin(
+        self, telegram_id: int, company_id: str
+    ) -> list[dict[str, object]]:
+        normalized_user = _validate_telegram_id(telegram_id)
+        normalized_company = _validate_company_id(company_id)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT m.module_id, m.name, m.description, m.active,
+                       CASE WHEN a.active = 1 THEN 1 ELSE 0 END AS allowed
+                FROM modules m
+                LEFT JOIN module_access a
+                    ON a.telegram_id = ?
+                   AND a.company_id = m.company_id
+                   AND a.module_id = m.module_id
+                WHERE m.company_id = ?
+                ORDER BY m.name COLLATE NOCASE
+                """,
+                (normalized_user, normalized_company),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_membership_module_access(
+        self,
+        telegram_id: int,
+        company_id: str,
+        module_ids: list[object],
+        actor: str,
+    ) -> None:
+        normalized_user = _validate_telegram_id(telegram_id)
+        normalized_company = _validate_company_id(company_id)
+        normalized_modules = sorted({_validate_module_id(item) for item in module_ids})
+        now = _now()
+        with self._connect() as connection:
+            membership = connection.execute(
+                """
+                SELECT active FROM user_company_memberships
+                WHERE telegram_id = ? AND company_id = ?
+                """,
+                (normalized_user, normalized_company),
+            ).fetchone()
+            if membership is None:
+                raise ValueError("Membership tidak ditemukan")
+            if normalized_modules:
+                placeholders = ",".join("?" for _ in normalized_modules)
+                existing = {
+                    str(row["module_id"])
+                    for row in connection.execute(
+                        f"""
+                        SELECT module_id FROM modules
+                        WHERE company_id = ? AND module_id IN ({placeholders})
+                        """,
+                        (normalized_company, *normalized_modules),
+                    ).fetchall()
+                }
+                missing = set(normalized_modules) - existing
+                if missing:
+                    raise ValueError("Module tidak ditemukan pada company membership")
+            connection.execute(
+                """
+                DELETE FROM module_access
+                WHERE telegram_id = ? AND company_id = ?
+                """,
+                (normalized_user, normalized_company),
+            )
+            for normalized_module in normalized_modules:
+                connection.execute(
+                    """
+                    INSERT INTO module_access (
+                        telegram_id, company_id, module_id, active, updated_at
+                    ) VALUES (?, ?, ?, 1, ?)
+                    """,
+                    (normalized_user, normalized_company, normalized_module, now),
+                )
+            session = connection.execute(
+                """
+                SELECT active_module_id FROM user_sessions
+                WHERE telegram_id = ? AND active_company_id = ?
+                """,
+                (normalized_user, normalized_company),
+            ).fetchone()
+            if session and str(session["active_module_id"]) not in normalized_modules:
+                connection.execute(
+                    """
+                    UPDATE user_sessions SET active_module_id = '', updated_at = ?
+                    WHERE telegram_id = ?
+                    """,
+                    (now, normalized_user),
+                )
+            _write_audit(
+                connection,
+                actor,
+                "module_access.updated",
+                "module_access",
+                f"{normalized_user}:{normalized_company}",
+                {
+                    "company_id": normalized_company,
+                    "module_count": len(normalized_modules),
+                    "module_ids": normalized_modules,
+                },
+            )
+
+    def list_accessible_modules(
+        self, telegram_id: int, company_id: str
+    ) -> list[AIModule]:
+        normalized_user = _validate_telegram_id(telegram_id)
+        normalized_company = _validate_company_id(company_id)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT m.company_id, c.name AS company_name, m.module_id,
+                       m.name, m.description, m.active
+                FROM module_access a
+                JOIN modules m
+                    ON m.company_id = a.company_id
+                   AND m.module_id = a.module_id
+                JOIN companies c ON c.company_id = m.company_id
+                JOIN module_playbook_state state
+                    ON state.module_pk = m.id
+                   AND state.published_version_id IS NOT NULL
+                JOIN user_company_memberships membership
+                    ON membership.telegram_id = a.telegram_id
+                   AND membership.company_id = a.company_id
+                WHERE a.telegram_id = ? AND a.company_id = ?
+                  AND a.active = 1 AND m.active = 1
+                  AND c.active = 1 AND membership.active = 1
+                ORDER BY m.name COLLATE NOCASE
+                """,
+                (normalized_user, normalized_company),
+            ).fetchall()
+        return [_module_from_row(row) for row in rows]
+
+    def get_active_module(
+        self, telegram_id: int, company_id: str
+    ) -> AIModule | None:
+        modules = self.list_accessible_modules(telegram_id, company_id)
+        with self._connect() as connection:
+            session = connection.execute(
+                """
+                SELECT active_module_id FROM user_sessions
+                WHERE telegram_id = ? AND active_company_id = ?
+                """,
+                (_validate_telegram_id(telegram_id), _validate_company_id(company_id)),
+            ).fetchone()
+        if not session or not str(session["active_module_id"]):
+            return None
+        return next(
+            (
+                module
+                for module in modules
+                if module.module_id == str(session["active_module_id"])
+            ),
+            None,
+        )
+
+    def set_active_module(
+        self, telegram_id: int, module_id: str
+    ) -> AIModule | None:
+        membership = self.get_active_membership(telegram_id)
+        if membership is None:
+            return None
+        requested_module = _validate_module_id(module_id)
+        module = next(
+            (
+                item
+                for item in self.list_accessible_modules(
+                    telegram_id, membership.company_id
+                )
+                if item.module_id == requested_module
+            ),
+            None,
+        )
+        if module is None:
+            return None
+        with self._connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO user_sessions (
+                    telegram_id, active_company_id, active_module_id, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(telegram_id) DO UPDATE SET
+                    active_company_id=excluded.active_company_id,
+                    active_module_id=excluded.active_module_id,
+                    updated_at=excluded.updated_at
+                """,
+                (telegram_id, membership.company_id, module.module_id, _now()),
+            )
+        return module
+
+    def clear_active_module(self, telegram_id: int) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE user_sessions SET active_module_id = '', updated_at = ?
+                WHERE telegram_id = ?
+                """,
+                (_now(), _validate_telegram_id(telegram_id)),
+            )
 
     def get_company_instruction_admin(
         self, company_id: str
@@ -1793,6 +2523,7 @@ class Database:
                 VALUES (?, ?, ?)
                 ON CONFLICT(telegram_id) DO UPDATE SET
                     active_company_id=excluded.active_company_id,
+                    active_module_id='',
                     updated_at=excluded.updated_at
                 """,
                 (telegram_id, membership.company_id, _now()),
@@ -1869,21 +2600,31 @@ class Database:
         return [dict(row) for row in rows]
 
     def add_message(
-        self, telegram_id: int, role: str, content: str, company_id: str = ""
+        self,
+        telegram_id: int,
+        role: str,
+        content: str,
+        company_id: str = "",
+        module_id: str = "",
     ) -> None:
         if role not in {"user", "assistant"}:
             raise ValueError("Role pesan tidak valid")
         with self._connect() as connection:
             connection.execute(
                 """
-                INSERT INTO messages (telegram_id, company_id, role, content, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO messages (
+                    telegram_id, company_id, module_id, role, content, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (telegram_id, company_id, role, content, _now()),
+                (telegram_id, company_id, module_id, role, content, _now()),
             )
 
     def get_history(
-        self, telegram_id: int, limit: int, company_id: str = ""
+        self,
+        telegram_id: int,
+        limit: int,
+        company_id: str = "",
+        module_id: str = "",
     ) -> list[dict[str, str]]:
         if limit <= 0:
             return []
@@ -1891,34 +2632,52 @@ class Database:
             rows = connection.execute(
                 """
                 SELECT role, content FROM messages
-                WHERE telegram_id = ? AND company_id = ?
+                WHERE telegram_id = ? AND company_id = ? AND module_id = ?
                 ORDER BY id DESC LIMIT ?
                 """,
-                (telegram_id, company_id, limit),
+                (telegram_id, company_id, module_id, limit),
             ).fetchall()
         return [dict(row) for row in reversed(rows)]
 
-    def clear_history(self, telegram_id: int, company_id: str = "") -> None:
-        with self._connect() as connection:
-            connection.execute(
-                "DELETE FROM messages WHERE telegram_id = ? AND company_id = ?",
-                (telegram_id, company_id),
-            )
-
-    def prune_history(
-        self, telegram_id: int, company_id: str = "", keep: int = 100
+    def clear_history(
+        self, telegram_id: int, company_id: str = "", module_id: str = ""
     ) -> None:
         with self._connect() as connection:
             connection.execute(
                 """
                 DELETE FROM messages
-                WHERE telegram_id = ? AND company_id = ? AND id NOT IN (
+                WHERE telegram_id = ? AND company_id = ? AND module_id = ?
+                """,
+                (telegram_id, company_id, module_id),
+            )
+
+    def prune_history(
+        self,
+        telegram_id: int,
+        company_id: str = "",
+        module_id: str = "",
+        keep: int = 100,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                DELETE FROM messages
+                WHERE telegram_id = ? AND company_id = ? AND module_id = ?
+                  AND id NOT IN (
                     SELECT id FROM messages
-                    WHERE telegram_id = ? AND company_id = ?
+                    WHERE telegram_id = ? AND company_id = ? AND module_id = ?
                     ORDER BY id DESC LIMIT ?
                 )
                 """,
-                (telegram_id, company_id, telegram_id, company_id, keep),
+                (
+                    telegram_id,
+                    company_id,
+                    module_id,
+                    telegram_id,
+                    company_id,
+                    module_id,
+                    keep,
+                ),
             )
 
 
@@ -1933,6 +2692,17 @@ def _membership_from_row(row: sqlite3.Row) -> Membership:
         communication_profile=row["communication_profile"],
         custom_instruction=row["custom_instruction"],
         is_default=bool(row["is_default"]),
+        active=bool(row["active"]),
+    )
+
+
+def _module_from_row(row: sqlite3.Row) -> AIModule:
+    return AIModule(
+        company_id=row["company_id"],
+        company_name=row["company_name"],
+        module_id=row["module_id"],
+        name=row["name"],
+        description=row["description"],
         active=bool(row["active"]),
     )
 
@@ -2015,6 +2785,37 @@ def _validate_company_name(value: object) -> str:
     if not 2 <= len(name) <= 100:
         raise ValueError("Nama company harus terdiri dari 2-100 karakter")
     return name
+
+
+def _validate_module_id(value: object) -> str:
+    module_id = str(value or "").strip().casefold()
+    if not COMPANY_ID_PATTERN.fullmatch(module_id):
+        raise ValueError(
+            "Module ID harus 1-64 karakter dan hanya memakai huruf kecil, "
+            "angka, atau tanda minus"
+        )
+    return module_id
+
+
+def _validate_module_name(value: object) -> str:
+    name = " ".join(str(value or "").split())
+    if not 2 <= len(name) <= 100:
+        raise ValueError("Nama module harus terdiri dari 2-100 karakter")
+    return name
+
+
+def _validate_module_description(value: object) -> str:
+    description = " ".join(str(value or "").split())
+    if len(description) > 500:
+        raise ValueError("Deskripsi module maksimal 500 karakter")
+    return description
+
+
+def _validate_module_playbook(value: object) -> str:
+    playbook = str(value or "").strip()
+    if len(playbook) > MAX_MODULE_PLAYBOOK_CHARS:
+        raise ValueError("Playbook module maksimal 50.000 karakter")
+    return playbook
 
 
 def _validate_knowledge_document_key(value: object) -> str:

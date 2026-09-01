@@ -581,6 +581,8 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 user=user,
                 mode="edit",
                 membership=membership,
+                notice=request.query_params.get("notice", ""),
+                error=request.query_params.get("error", ""),
             ),
         )
 
@@ -666,6 +668,35 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
         return _user_detail_redirect(
             telegram_id,
             notice=f"Membership {membership.company_name} berhasil {status}",
+        )
+
+    @app.post(
+        "/admin/users/{telegram_id}/memberships/{company_id}/modules"
+    )
+    async def update_membership_module_access(
+        request: Request, telegram_id: int, company_id: str
+    ):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        try:
+            database.set_membership_module_access(
+                telegram_id,
+                company_id,
+                list(form.getlist("module_ids")),
+                actor=settings.admin_username,
+            )
+        except ValueError as exc:
+            return _membership_edit_redirect(
+                telegram_id, company_id, error=str(exc)
+            )
+        return _membership_edit_redirect(
+            telegram_id,
+            company_id,
+            notice="Akses module berhasil diperbarui",
         )
 
     @app.get("/admin/instructions", response_class=HTMLResponse)
@@ -1121,6 +1152,254 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             notice="Versi lama dipulihkan sebagai draft. Preview sebelum publish.",
         )
 
+    @app.get("/admin/modules", response_class=HTMLResponse)
+    async def modules(request: Request):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/modules.html",
+            context={
+                "active_page": "modules",
+                "admin_username": settings.admin_username,
+                "modules": database.list_modules_admin(),
+                "csrf_token": _csrf_token(request, settings),
+                "notice": request.query_params.get("notice", ""),
+                "error": request.query_params.get("error", ""),
+            },
+        )
+
+    @app.get("/admin/modules/new", response_class=HTMLResponse)
+    async def new_module(request: Request):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        companies = _active_company_options(database)
+        selected_company = str(request.query_params.get("company_id", ""))
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/module_form.html",
+            context=_module_form_context(
+                request,
+                settings,
+                companies,
+                values={"company_id": selected_company},
+            ),
+        )
+
+    @app.post("/admin/modules", response_class=HTMLResponse)
+    async def create_module(request: Request):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        values = _module_form_values(form)
+        try:
+            module = database.create_module(
+                values["company_id"],
+                "",
+                values["name"],
+                values["description"],
+                actor=settings.admin_username,
+                active=values["active"] == "1",
+            )
+        except ValueError as exc:
+            return templates.TemplateResponse(
+                request=request,
+                name="admin/module_form.html",
+                context=_module_form_context(
+                    request,
+                    settings,
+                    _active_company_options(database),
+                    values=values,
+                    error=str(exc),
+                ),
+                status_code=400,
+            )
+        return _module_redirect(
+            module.company_id,
+            module.module_id,
+            notice="Module berhasil dibuat. Isi dan publish playbook berikutnya.",
+        )
+
+    @app.get(
+        "/admin/modules/{company_id}/{module_id}", response_class=HTMLResponse
+    )
+    async def edit_module(request: Request, company_id: str, module_id: str):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        state = database.get_module_playbook_admin(company_id, module_id)
+        if state is None:
+            return HTMLResponse("Module tidak ditemukan.", status_code=404)
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/module_editor.html",
+            context=_module_editor_context(
+                request,
+                settings,
+                database,
+                state,
+                notice=request.query_params.get("notice", ""),
+                error=request.query_params.get("error", ""),
+            ),
+        )
+
+    @app.post("/admin/modules/{company_id}/{module_id}")
+    async def update_module(
+        request: Request, company_id: str, module_id: str
+    ):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        try:
+            database.update_module(
+                company_id,
+                module_id,
+                form.get("name", ""),
+                form.get("description", ""),
+                actor=settings.admin_username,
+            )
+        except ValueError as exc:
+            return _module_redirect(company_id, module_id, error=str(exc))
+        return _module_redirect(
+            company_id, module_id, notice="Identitas module berhasil diperbarui"
+        )
+
+    @app.post("/admin/modules/{company_id}/{module_id}/draft")
+    async def save_module_draft(
+        request: Request, company_id: str, module_id: str
+    ):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        try:
+            database.save_module_playbook_draft(
+                company_id,
+                module_id,
+                form.get("content", ""),
+                actor=settings.admin_username,
+            )
+        except ValueError as exc:
+            return _module_redirect(company_id, module_id, error=str(exc))
+        return _module_redirect(
+            company_id, module_id, notice="Draft playbook berhasil disimpan"
+        )
+
+    @app.get(
+        "/admin/modules/{company_id}/{module_id}/preview",
+        response_class=HTMLResponse,
+    )
+    async def preview_module(
+        request: Request, company_id: str, module_id: str
+    ):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        state = database.get_module_playbook_admin(company_id, module_id)
+        if state is None:
+            return HTMLResponse("Module tidak ditemukan.", status_code=404)
+        if state.get("draft_content") is None:
+            return _module_redirect(
+                company_id, module_id, error="Simpan draft sebelum preview"
+            )
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/module_preview.html",
+            context={
+                "active_page": "modules",
+                "admin_username": settings.admin_username,
+                "csrf_token": _csrf_token(request, settings),
+                "state": state,
+            },
+        )
+
+    @app.post("/admin/modules/{company_id}/{module_id}/publish")
+    async def publish_module(
+        request: Request, company_id: str, module_id: str
+    ):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        try:
+            version = database.publish_module_playbook(
+                company_id, module_id, actor=settings.admin_username
+            )
+        except ValueError as exc:
+            return _module_redirect(company_id, module_id, error=str(exc))
+        return _module_redirect(
+            company_id,
+            module_id,
+            notice=f"Playbook versi {version} berhasil dipublikasikan",
+        )
+
+    @app.post("/admin/modules/{company_id}/{module_id}/status")
+    async def update_module_status(
+        request: Request, company_id: str, module_id: str
+    ):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        target = str(form.get("active", ""))
+        if target not in {"0", "1"}:
+            return _modules_redirect(error="Status module tidak valid")
+        try:
+            module = database.set_module_active(
+                company_id,
+                module_id,
+                target == "1",
+                actor=settings.admin_username,
+            )
+        except ValueError as exc:
+            return _modules_redirect(error=str(exc))
+        status = "diaktifkan" if module.active else "dinonaktifkan"
+        return _modules_redirect(notice=f"{module.name} berhasil {status}")
+
+    @app.post(
+        "/admin/modules/{company_id}/{module_id}/versions/{version_id}/restore"
+    )
+    async def restore_module_version(
+        request: Request,
+        company_id: str,
+        module_id: str,
+        version_id: int,
+    ):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        try:
+            database.restore_module_playbook_version_to_draft(
+                company_id,
+                module_id,
+                version_id,
+                actor=settings.admin_username,
+            )
+        except ValueError as exc:
+            return _module_redirect(company_id, module_id, error=str(exc))
+        return _module_redirect(
+            company_id,
+            module_id,
+            notice="Versi playbook dipulihkan ke draft. Preview sebelum publish.",
+        )
+
     @app.get("/admin/activity", response_class=HTMLResponse)
     async def activity(request: Request):
         redirect = _login_redirect(request, settings)
@@ -1134,6 +1413,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             "membership": "Membership",
             "instruction": "Instruction",
             "knowledge": "Knowledge",
+            "module": "Modules",
         }
         if category not in categories:
             category = "all"
@@ -1162,7 +1442,6 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
         if redirect:
             return redirect
         labels = {
-            "modules": "Modules",
         }
         label = labels.get(section)
         if label is None:
@@ -1452,6 +1731,99 @@ def _knowledge_document_redirect(
     )
 
 
+def _module_form_values(form) -> dict[str, str]:
+    return {
+        "company_id": str(form.get("company_id", "")).strip(),
+        "name": str(form.get("name", "")).strip(),
+        "description": str(form.get("description", "")).strip(),
+        "active": "1" if form.get("active") == "1" else "0",
+    }
+
+
+def _module_form_context(
+    request: Request,
+    settings: Settings,
+    companies: list[dict[str, object]],
+    *,
+    values: dict[str, str] | None = None,
+    error: str = "",
+) -> dict[str, object]:
+    defaults = {
+        "company_id": str(companies[0]["company_id"]) if companies else "",
+        "name": "",
+        "description": "",
+        "active": "1",
+    }
+    defaults.update({key: value for key, value in (values or {}).items() if value})
+    return {
+        "active_page": "modules",
+        "admin_username": settings.admin_username,
+        "csrf_token": _csrf_token(request, settings),
+        "companies": companies,
+        "values": defaults,
+        "error": error,
+    }
+
+
+def _module_editor_context(
+    request: Request,
+    settings: Settings,
+    database: Database,
+    state: dict[str, object],
+    *,
+    notice: str = "",
+    error: str = "",
+) -> dict[str, object]:
+    draft_content = str(state.get("draft_content") or "")
+    published_content = str(state.get("published_content") or "")
+    return {
+        "active_page": "modules",
+        "admin_username": settings.admin_username,
+        "csrf_token": _csrf_token(request, settings),
+        "state": state,
+        "draft_content": draft_content,
+        "versions": database.list_module_playbook_versions(
+            str(state["company_id"]), str(state["module_id"])
+        ),
+        "has_unpublished_changes": (
+            state.get("published_version_id") is None
+            or draft_content != published_content
+        ),
+        "notice": notice,
+        "error": error,
+    }
+
+
+def _modules_redirect(
+    notice: str = "", *, error: str = ""
+) -> RedirectResponse:
+    values = {
+        key: value
+        for key, value in {"notice": notice, "error": error}.items()
+        if value
+    }
+    suffix = f"?{urlencode(values)}" if values else ""
+    return RedirectResponse(f"/admin/modules{suffix}", status_code=303)
+
+
+def _module_redirect(
+    company_id: str,
+    module_id: str,
+    notice: str = "",
+    *,
+    error: str = "",
+) -> RedirectResponse:
+    values = {
+        key: value
+        for key, value in {"notice": notice, "error": error}.items()
+        if value
+    }
+    suffix = f"?{urlencode(values)}" if values else ""
+    return RedirectResponse(
+        f"/admin/modules/{company_id}/{module_id}{suffix}", status_code=303
+    )
+
+
 _ACTIVITY_ACTION_LABELS = {
     "company.created": "Company dibuat",
     "company.updated": "Company diperbarui",
@@ -1474,6 +1846,14 @@ _ACTIVITY_ACTION_LABELS = {
     "knowledge_document.activated": "Knowledge diaktifkan",
     "knowledge_document.deactivated": "Knowledge dinonaktifkan",
     "knowledge_document.version_restored_to_draft": "Versi knowledge dipulihkan",
+    "module.created": "Module dibuat",
+    "module.updated": "Module diperbarui",
+    "module.activated": "Module diaktifkan",
+    "module.deactivated": "Module dinonaktifkan",
+    "module_playbook.draft_saved": "Draft playbook disimpan",
+    "module_playbook.published": "Playbook dipublikasikan",
+    "module_playbook.version_restored_to_draft": "Versi playbook dipulihkan",
+    "module_access.updated": "Akses module diperbarui",
 }
 
 _ACTIVITY_DETAIL_LABELS = {
@@ -1497,6 +1877,8 @@ _ACTIVITY_DETAIL_LABELS = {
     "source_version_number": "Versi sumber",
     "title": "Judul",
     "version_number": "Versi",
+    "module_count": "Jumlah module",
+    "module_ids": "Module",
 }
 
 
@@ -1509,6 +1891,9 @@ def _activity_event_view(row: dict[str, object]) -> dict[str, object]:
         "membership": "membership",
         "company_instruction": "instruction",
         "knowledge_document": "knowledge",
+        "module": "module",
+        "module_playbook": "module",
+        "module_access": "module",
     }.get(entity_type, "all")
     try:
         raw_details = json.loads(str(row.get("details_json", "{}")))
@@ -1548,6 +1933,8 @@ def _activity_detail_value(key: str, value: object) -> str:
     if key.endswith("sha256"):
         checksum = str(value)
         return f"{checksum[:12]}…" if len(checksum) > 12 else checksum
+    if key == "module_ids" and isinstance(value, list):
+        return ", ".join(str(item) for item in value) or "Tidak ada"
     return str(value)
 
 
@@ -1646,6 +2033,7 @@ def _membership_form_context(
     mode: str,
     membership: Membership | None = None,
     values: dict[str, str] | None = None,
+    notice: str = "",
     error: str = "",
 ) -> dict[str, object]:
     existing_ids = {
@@ -1681,6 +2069,14 @@ def _membership_form_context(
         "companies": companies,
         "profile_options": profile_options,
         "role_options": _role_options(),
+        "module_access": (
+            database.list_membership_module_access_admin(
+                user.telegram_id, membership.company_id
+            )
+            if mode == "edit" and membership
+            else []
+        ),
+        "notice": notice,
         "error": error,
     }
 
@@ -1714,6 +2110,25 @@ def _user_detail_redirect(
     suffix = f"?{urlencode(values)}" if values else ""
     return RedirectResponse(
         f"/admin/users/{telegram_id}/edit{suffix}", status_code=303
+    )
+
+
+def _membership_edit_redirect(
+    telegram_id: int,
+    company_id: str,
+    notice: str = "",
+    *,
+    error: str = "",
+) -> RedirectResponse:
+    values = {
+        key: value
+        for key, value in {"notice": notice, "error": error}.items()
+        if value
+    }
+    suffix = f"?{urlencode(values)}" if values else ""
+    return RedirectResponse(
+        f"/admin/users/{telegram_id}/memberships/{company_id}/edit{suffix}",
+        status_code=303,
     )
 
 

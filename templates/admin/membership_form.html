@@ -7,6 +7,8 @@
     <a class="secondary-link back-link" href="/admin/users/{{ user.telegram_id }}/edit">Kembali</a>
   </div>
 
+  {% if notice %}<div class="notice success" role="status">{{ notice }}</div>{% endif %}
+
   <form class="panel form-panel" method="post" action="{% if mode == 'create' %}/admin/users/{{ user.telegram_id }}/memberships{% else %}/admin/users/{{ user.telegram_id }}/memberships/{{ membership.company_id }}{% endif %}">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
@@ -40,4 +42,24 @@
       <button class="primary-button" type="submit" {% if mode == 'create' and not companies %}disabled{% endif %}>Simpan membership</button>
     </div>
   </form>
+
+  {% if mode == 'edit' %}
+    <div class="subsection-lead"><h2>Akses Modules</h2><p>Default-deny: user hanya dapat memilih module yang dicentang di sini.</p></div>
+    <form class="panel form-panel" method="post" action="/admin/users/{{ user.telegram_id }}/memberships/{{ membership.company_id }}/modules">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      {% if module_access %}
+        <div class="module-access-grid">
+          {% for module in module_access %}
+            <label class="module-access-option">
+              <input type="checkbox" name="module_ids" value="{{ module.module_id }}" {% if module.allowed %}checked{% endif %}>
+              <span><strong>{{ module.name }}</strong><small>{{ module.module_id }}{% if not module.active %} · Inactive{% endif %}</small>{% if module.description %}<small>{{ module.description }}</small>{% endif %}</span>
+            </label>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="empty-state">Company ini belum mempunyai module.</div>
+      {% endif %}
+      <div class="form-actions"><button class="primary-button" type="submit" {% if not module_access %}disabled{% endif %}>Simpan akses module</button></div>
+    </form>
+  {% endif %}
 {% endblock %}

@@ -10,7 +10,8 @@ Dokumen arsitektur dan konsep aplikasi dipelihara di `docs/architecture.md`. Dok
 Telegram → whitelist Telegram ID → company membership
          → active company + communication profile
          → company instruction + company knowledge
-         → company-scoped history SQLite → AI provider
+         → optional active module + published module playbook
+         → company/module-scoped history SQLite → AI provider
          → safe HTML renderer → Telegram
 ```
 
@@ -27,7 +28,7 @@ Pemrosesan update memakai controlled concurrency. User berbeda dapat diproses pa
 - Jabatan, divisi, role level, profile, dan custom instruction per membership
 - Communication profile `executive`, `manager`, `staff`, atau `default`
 - Company profile, instruction, dan knowledge dari path yang dikonfigurasi per perusahaan
-- History chat dipisahkan per user dan perusahaan di SQLite
+- History chat dipisahkan per user, perusahaan, dan module aktif di SQLite
 - Pending Telegram update dipertahankan saat bot restart
 - Controlled concurrency dengan urutan pesan per user tetap dijaga
 - Provider abstraction OpenAI/DeepSeek melalui API yang kompatibel dengan OpenAI
@@ -39,7 +40,11 @@ Pemrosesan update memakai controlled concurrency. User berbeda dapat diproses pa
 - Company Instruction Management dengan draft, preview, publish, dan riwayat versi
 - Knowledge Management per company dengan draft, preview, publish, status, dan riwayat versi
 - Upload PDF, DOCX, TXT, atau Markdown menjadi draft Knowledge yang dapat diperiksa sebelum publish
-- Perintah `/start`, `/help`, `/company`, `/whoami`, dan `/reset`
+- Module Management per company dengan draft, preview, publish, status, dan riwayat versi playbook
+- Akses module bersifat default-deny dan diberikan per membership
+- Module aktif dapat dilihat atau diganti melalui `/module`; mode General tetap tersedia
+- History chat dipisahkan per user, perusahaan, dan module aktif
+- Perintah `/start`, `/help`, `/company`, `/module`, `/whoami`, dan `/reset`
 - Jawaban panjang otomatis dipecah agar muat di Telegram
 
 ## Menjalankan lokal
@@ -137,8 +142,11 @@ Command Telegram:
 ```text
 /company                    daftar perusahaan yang dapat diakses
 /company amazing-malang     memilih perusahaan aktif
+/module                     daftar module yang boleh diakses pada perusahaan aktif
+/module marketing           memilih module dan playbook aktif
+/module general             kembali ke konteks perusahaan tanpa module khusus
 /whoami                     melihat membership dan profile aktif
-/reset                      menghapus history perusahaan aktif saja
+/reset                      menghapus history company/module yang sedang aktif saja
 ```
 
 ## Communication profile
@@ -169,6 +177,8 @@ Knowledge dikelola melalui admin dengan alur **Draft → Preview → Publish** p
 Pada saat membuat Knowledge Document, admin dapat menulis teks langsung atau upload PDF, Word `.docx`, TXT, dan Markdown maksimal 10 MB. File diekstrak menjadi teks draft; file aslinya tidak disimpan di SQLite. PDF harus mempunyai text layer. PDF hasil scan memerlukan OCR dan Word binary lama `.doc` harus disimpan ulang menjadi `.docx`.
 
 Profile masih berbasis file dan dibaca ulang pada setiap pertanyaan. Hanya content dari company aktif yang dimasukkan ke prompt. History juga difilter menggunakan company ID yang sama.
+
+Module dikelola melalui admin dengan alur **Draft → Preview → Publish** untuk playbook. Module baru tidak dapat dipilih bot sebelum playbook dipublikasikan dan aksesnya dicentang pada membership. Memilih `/company` mereset module ke `General`; mengganti module tidak menghapus history lama, tetapi memakai ruang history yang terpisah. Knowledge khusus module belum tersedia, sehingga module aktif masih memakai Knowledge company yang sama ditambah playbook module.
 
 MVP ini sengaja belum memakai embeddings/vector database. Seluruh knowledge company aktif dimasukkan ke prompt sampai batas `KNOWLEDGE_MAX_CHARS`. Jika knowledge mulai besar, langkah berikutnya adalah retrieval dengan filter wajib `company_id`, lalu `module_id` bila relevan.
 
@@ -205,9 +215,13 @@ Halaman yang tersedia:
 - `/admin/instructions/<company-id>` untuk draft, preview, publish, dan riwayat versi;
 - `/admin/knowledge` untuk status knowledge semua company;
 - `/admin/knowledge/<company-id>` untuk dokumen, draft, publish, status, dan riwayat versi;
+- `/admin/modules` untuk registry module semua company;
+- `/admin/modules/new` untuk membuat module dengan Module ID otomatis;
+- `/admin/modules/<company-id>/<module-id>` untuk identitas, playbook, preview, publish, status, dan riwayat versi;
+- `/admin/activity` untuk audit administratif read-only termasuk perubahan module dan akses;
 - `/health` untuk health check Railway.
 
-Company, user whitelist, membership, Company Instruction, dan Knowledge sudah dapat dikelola melalui admin. Company ID dan document key dibuat otomatis oleh server lalu dikunci. Telegram ID berasal dari Telegram dan dikunci setelah user dibuat. Versi instruction atau knowledge lama dapat dipulihkan ke draft, lalu harus dipreview dan dipublikasikan kembali.
+Company, user whitelist, membership, Company Instruction, Knowledge, Module, dan akses Module sudah dapat dikelola melalui admin. Company ID, document key, dan Module ID dibuat otomatis oleh server lalu dikunci. Telegram ID berasal dari Telegram dan dikunci setelah user dibuat. Versi instruction, knowledge, atau playbook lama dapat dipulihkan ke draft, lalu harus dipreview dan dipublikasikan kembali.
 
 ## Deploy ke Railway
 
@@ -224,7 +238,7 @@ Bot dan admin tetap memakai satu replica selama database menggunakan SQLite.
 
 ### Update data di Railway
 
-Company, user, membership, Company Instruction, dan Knowledge dikelola dari dashboard admin. Database, versi instruction/knowledge, dan history tetap aman selama volume `/app/data` terpasang.
+Company, user, membership, Company Instruction, Knowledge, Module, serta aksesnya dikelola dari dashboard admin. Database, versi instruction/knowledge/playbook, dan history tetap aman selama volume `/app/data` terpasang.
 
 ## Environment variables
 
@@ -287,8 +301,8 @@ Conversation Delivery Policy seperti batas kata, satu pesan satu tujuan, dan pro
 - Controlled concurrency dibatasi maksimal 16 dan default 4
 - Knowledge sudah dipisahkan per company, tetapi belum per module/division/clearance
 - Upload knowledge belum mendukung OCR, PDF scan, dan Word `.doc` lama
-- Admin writable untuk Company, user, membership, Company Instruction, dan Knowledge; Activity menampilkan audit administratif read-only; Modules masih tahap berikutnya
-- History dibatasi untuk konteks dan dipangkas menjadi 100 pesan per user-company
+- Admin writable untuk Company, user, membership, Company Instruction, Knowledge, Module, serta module access; Activity menampilkan audit administratif read-only
+- History dibatasi untuk konteks dan dipangkas menjadi 100 pesan per user-company-module
 
 ## Struktur
 

@@ -15,7 +15,7 @@ from app.admin import create_admin_app
 from app.bot import InternalBot, _split_message
 from app.company_context import CompanyContent, load_company_content
 from app.config import Settings
-from app.database import Company, Database, Membership, User
+from app.database import AIModule, Company, Database, Membership, User
 from app.document_ingestion import extract_uploaded_document
 from app.knowledge import load_knowledge
 from app.prompts import build_system_prompt
@@ -234,6 +234,26 @@ def test_knowledge_limit_and_prompt(tmp_path):
     assert "tujuan → checklist" in prompt
     assert '<knowledge company_id="amazing-malang">' in prompt
 
+    module = AIModule(
+        company_id="amazing-malang",
+        company_name="Amazing Malang",
+        module_id="marketing",
+        name="Marketing",
+        description="Perencanaan kampanye",
+        active=True,
+    )
+    module_prompt = build_system_prompt(
+        user,
+        membership,
+        company,
+        content,
+        profile,
+        module,
+        "Gunakan funnel awareness sampai conversion.",
+    )
+    assert 'module_id="marketing"' in module_prompt
+    assert "Gunakan funnel awareness sampai conversion." in module_prompt
+
 
 def test_explicit_profile_overrides_role_alias():
     profiles = load_role_profiles(Path("config/role_profiles.json"))
@@ -294,13 +314,134 @@ def test_existing_messages_get_company_scope_migration(tmp_path):
             )
             """
         )
+        connection.execute(
+            """
+            CREATE TABLE user_sessions (
+                telegram_id INTEGER PRIMARY KEY,
+                active_company_id TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
     database = Database(database_path)
     database.initialize()
     with sqlite3.connect(database_path) as connection:
-        columns = {
+        message_columns = {
             row[1] for row in connection.execute("PRAGMA table_info(messages)").fetchall()
         }
-    assert "company_id" in columns
+        session_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(user_sessions)"
+            ).fetchall()
+        }
+    assert "company_id" in message_columns
+    assert "module_id" in message_columns
+    assert "active_module_id" in session_columns
+
+
+def test_module_access_publish_and_history_are_scoped(tmp_path):
+    database = Database(tmp_path / "modules.db")
+    database.initialize()
+    database.create_company("company-a", "Company A", actor="admin")
+    database.create_user_with_membership(
+        42,
+        "DK",
+        "company-a",
+        "Owner",
+        "Management",
+        "gm",
+        "executive",
+        "",
+        actor="admin",
+    )
+    first = database.create_module(
+        "company-a", "", "Marketing", "Kelola campaign", actor="admin"
+    )
+    second = database.create_module(
+        "company-a", "", "Marketing", "Module kedua", actor="admin"
+    )
+    assert first.module_id == "marketing"
+    assert second.module_id == "marketing-2"
+
+    database.set_membership_module_access(
+        42, "company-a", [first.module_id], actor="admin"
+    )
+    assert database.list_accessible_modules(42, "company-a") == []
+    database.save_module_playbook_draft(
+        "company-a", first.module_id, "", actor="admin"
+    )
+    try:
+        database.publish_module_playbook(
+            "company-a", first.module_id, actor="admin"
+        )
+        assert False, "Playbook kosong seharusnya tidak dapat dipublikasikan"
+    except ValueError as exc:
+        assert "tidak boleh kosong" in str(exc)
+    database.save_module_playbook_draft(
+        "company-a", first.module_id, "Playbook marketing v1", actor="admin"
+    )
+    assert database.list_accessible_modules(42, "company-a") == []
+    assert database.publish_module_playbook(
+        "company-a", first.module_id, actor="admin"
+    ) == 1
+    accessible = database.list_accessible_modules(42, "company-a")
+    assert [module.module_id for module in accessible] == ["marketing"]
+    assert database.set_active_module(42, "marketing") == first
+
+    replies: list[str] = []
+
+    async def reply_text(value: str, **_kwargs) -> None:
+        replies.append(value)
+
+    settings = _test_settings(
+        tmp_path,
+        tmp_path / "users.json",
+        tmp_path / "companies.json",
+        database_path=tmp_path / "modules.db",
+    )
+    bot = InternalBot(settings, database, SimpleNamespace())
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=42),
+        effective_message=SimpleNamespace(reply_text=reply_text),
+    )
+    asyncio.run(bot.module(update, SimpleNamespace(args=["general"])))
+    assert database.get_active_module(42, "company-a") is None
+    assert "General" in replies[-1]
+    asyncio.run(bot.module(update, SimpleNamespace(args=["marketing"])))
+    assert database.get_active_module(42, "company-a") == first
+    assert "Marketing" in replies[-1]
+
+    database.add_message(42, "user", "General", "company-a", "")
+    database.add_message(42, "user", "Marketing", "company-a", "marketing")
+    assert database.get_history(42, 10, "company-a", "") == [
+        {"role": "user", "content": "General"}
+    ]
+    assert database.get_history(42, 10, "company-a", "marketing") == [
+        {"role": "user", "content": "Marketing"}
+    ]
+
+    database.save_module_playbook_draft(
+        "company-a", "marketing", "Playbook marketing v2", actor="admin"
+    )
+    assert database.get_published_module_playbook(
+        "company-a", "marketing"
+    ) == "Playbook marketing v1"
+    assert database.publish_module_playbook(
+        "company-a", "marketing", actor="admin"
+    ) == 2
+    versions = database.list_module_playbook_versions("company-a", "marketing")
+    database.restore_module_playbook_version_to_draft(
+        "company-a", "marketing", int(versions[1]["id"]), actor="admin"
+    )
+    state = database.get_module_playbook_admin("company-a", "marketing")
+    assert state is not None
+    assert state["draft_content"] == "Playbook marketing v1"
+    assert state["published_content"] == "Playbook marketing v2"
+
+    database.set_membership_module_access(42, "company-a", [], actor="admin")
+    assert database.get_active_module(42, "company-a") is None
+    assert database.set_active_module(42, "marketing") is None
 
 
 def test_company_content_is_scoped_to_configured_paths(tmp_path):
@@ -860,6 +1001,130 @@ def test_admin_company_instruction_workflow(tmp_path):
         "company_instruction.published",
         "company_instruction.draft_saved",
     ]
+
+
+def test_admin_module_playbook_and_membership_access_workflow(tmp_path):
+    companies_file = tmp_path / "companies.json"
+    companies_file.write_text(
+        json.dumps([{"id": "company-a", "name": "Company A"}]),
+        encoding="utf-8",
+    )
+    users_file = tmp_path / "users.json"
+    users_file.write_text(
+        json.dumps(
+            [
+                {
+                    "telegram_id": 42,
+                    "name": "DK",
+                    "memberships": [
+                        {
+                            "company_id": "company-a",
+                            "job_title": "Owner",
+                            "division": "Management",
+                            "role_level": "gm",
+                            "communication_profile": "executive",
+                            "default": True,
+                        }
+                    ],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    database = Database(tmp_path / "module-admin.db")
+    database.initialize()
+    database.bootstrap_companies(companies_file)
+    database.bootstrap_users(users_file)
+    settings = _test_settings(
+        tmp_path,
+        users_file,
+        companies_file,
+        database_path=tmp_path / "module-admin.db",
+    )
+    app = create_admin_app(settings, database)
+
+    with TestClient(app) as client:
+        assert client.post(
+            "/admin/login",
+            data={"username": "admin", "password": "strong-password"},
+            follow_redirects=False,
+        ).status_code == 303
+        form_page = client.get("/admin/modules/new")
+        assert form_page.status_code == 200
+        assert 'name="module_id"' not in form_page.text
+        csrf = re.search(
+            r'name="csrf_token" value="([a-f0-9]+)"', form_page.text
+        )
+        assert csrf is not None
+        csrf_token = csrf.group(1)
+
+        assert client.post(
+            "/admin/modules",
+            data={
+                "company_id": "company-a",
+                "name": "Marketing",
+                "description": "Campaign planning",
+            },
+        ).status_code == 403
+        response = client.post(
+            "/admin/modules",
+            data={
+                "csrf_token": csrf_token,
+                "company_id": "company-a",
+                "module_id": "forged-id",
+                "name": "Marketing",
+                "description": "Campaign planning",
+                "active": "1",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert response.headers["location"].startswith(
+            "/admin/modules/company-a/marketing"
+        )
+        assert database.get_module_admin("company-a", "forged-id") is None
+
+        assert client.post(
+            "/admin/modules/company-a/marketing/draft",
+            data={
+                "csrf_token": csrf_token,
+                "content": "Playbook marketing yang hanya boleh muncul setelah publish.",
+            },
+            follow_redirects=False,
+        ).status_code == 303
+        assert database.get_published_module_playbook(
+            "company-a", "marketing"
+        ) is None
+        preview = client.get("/admin/modules/company-a/marketing/preview")
+        assert preview.status_code == 200
+        assert "hanya boleh muncul setelah publish" in preview.text
+        assert client.post(
+            "/admin/modules/company-a/marketing/publish",
+            data={"csrf_token": csrf_token},
+            follow_redirects=False,
+        ).status_code == 303
+
+        membership_page = client.get(
+            "/admin/users/42/memberships/company-a/edit"
+        )
+        assert membership_page.status_code == 200
+        assert "Akses Modules" in membership_page.text
+        assert 'value="marketing"' in membership_page.text
+        assert client.post(
+            "/admin/users/42/memberships/company-a/modules",
+            data={"csrf_token": csrf_token, "module_ids": "marketing"},
+            follow_redirects=False,
+        ).status_code == 303
+        assert [
+            item.module_id
+            for item in database.list_accessible_modules(42, "company-a")
+        ] == ["marketing"]
+
+        activity = client.get("/admin/activity?category=module")
+        assert activity.status_code == 200
+        assert "Playbook dipublikasikan" in activity.text
+        assert "Akses module diperbarui" in activity.text
+        assert "hanya boleh muncul setelah publish" not in activity.text
 
 
 def test_knowledge_publish_runtime_fallback_and_tenant_isolation(tmp_path):

@@ -1,0 +1,13 @@
+{% extends "admin/base.html" %}
+{% block title %}Preview {{ state.name }} · DK Corp AI Admin{% endblock %}
+{% block page_title %}Preview Module Playbook{% endblock %}
+{% block content %}
+  <div class="page-lead"><div><h2>{{ state.name }}</h2><p>{{ state.company_name }} · Periksa sebelum menjadi konteks aktif bot.</p></div><a class="secondary-link back-link" href="/admin/modules/{{ state.company_id }}/{{ state.module_id }}">Kembali edit</a></div>
+  <div class="preview-summary">
+    <div><span>Module</span><strong>{{ state.name }}</strong></div>
+    <div><span>Draft</span><strong>{{ state.draft_content | length }} karakter</strong></div>
+    <div><span>Current live</span><strong>{% if state.published_version_number %}v{{ state.published_version_number }}{% else %}Belum ada{% endif %}</strong></div>
+  </div>
+  <div class="panel instruction-preview">{% if state.draft_content %}<pre>{{ state.draft_content }}</pre>{% else %}<p class="empty-state">Draft playbook kosong.</p>{% endif %}</div>
+  <div class="publish-bar panel"><div><strong>Publish membuat versi baru</strong><small>User dengan akses akan memakai playbook ini setelah memilih module.</small></div><form method="post" action="/admin/modules/{{ state.company_id }}/{{ state.module_id }}/publish"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="primary-button" type="submit">Publish playbook</button></form></div>
+{% endblock %}

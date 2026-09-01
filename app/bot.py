@@ -13,7 +13,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 
 from app.company_context import load_company_content
 from app.config import Settings
-from app.database import Database, Membership, User
+from app.database import AIModule, Database, Membership, User
 from app.prompts import build_system_prompt
 from app.providers import AIProvider
 from app.role_profiles import load_role_profiles, resolve_communication_profile
@@ -40,6 +40,7 @@ class InternalBot:
         application.add_handler(CommandHandler("help", self.help))
         application.add_handler(CommandHandler("whoami", self.whoami))
         application.add_handler(CommandHandler("company", self.company))
+        application.add_handler(CommandHandler("module", self.module))
         application.add_handler(CommandHandler("reset", self.reset))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.chat))
         return application
@@ -85,6 +86,26 @@ class InternalBot:
             )
         return "\n".join(lines)
 
+    def _module_list_text(self, user: User, membership: Membership) -> str:
+        modules = self.database.list_accessible_modules(
+            user.telegram_id, membership.company_id
+        )
+        active = self.database.get_active_module(
+            user.telegram_id, membership.company_id
+        )
+        lines = [
+            f"Pilih module untuk {membership.company_name}:",
+            f"{'\u2713 ' if active is None else ''}/module general — Tanpa module khusus",
+        ]
+        for module in modules:
+            marker = "✓ " if active and active.module_id == module.module_id else ""
+            lines.append(f"{marker}/module {module.module_id} — {module.name}")
+        if not modules:
+            lines.append(
+                "Belum ada module yang dipublikasikan dan diberikan kepadamu."
+            )
+        return "\n".join(lines)
+
     async def _reject(self, update: Update) -> None:
         telegram_id = update.effective_user.id if update.effective_user else "unknown"
         logger.warning("Akses ditolak untuk Telegram ID %s", telegram_id)
@@ -115,6 +136,7 @@ class InternalBot:
             await update.effective_message.reply_text(
                 "/whoami — lihat profil akses\n"
                 "/company — lihat atau ganti perusahaan aktif\n"
+                "/module — lihat atau ganti module kerja aktif\n"
                 "/reset — hapus konteks percakapan\n"
                 "/help — daftar perintah"
             )
@@ -128,6 +150,14 @@ class InternalBot:
                 await update.effective_message.reply_text(self._company_list_text(user))
                 return
             profile = self._communication_profile(user, membership)
+            active_module = self.database.get_active_module(
+                user.telegram_id, membership.company_id
+            )
+            module_text = (
+                f"{active_module.name} ({active_module.module_id})"
+                if active_module
+                else "General"
+            )
             await update.effective_message.reply_text(
                 f"Nama: {user.name}\n"
                 f"Perusahaan aktif: {membership.company_name}\n"
@@ -135,7 +165,8 @@ class InternalBot:
                 f"Jabatan: {membership.job_title or '-'}\n"
                 f"Division: {membership.division or '-'}\n"
                 f"Role level: {membership.role_level or '-'}\n"
-                f"Communication profile: {profile.label}"
+                f"Communication profile: {profile.label}\n"
+                f"Module aktif: {module_text}"
             )
 
     async def company(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -156,7 +187,43 @@ class InternalBot:
                 return
             await update.effective_message.reply_text(
                 f"Perusahaan aktif diubah ke {membership.company_name}. "
-                "History dan knowledge berikutnya akan memakai konteks perusahaan ini."
+                "Module aktif direset ke General. History dan knowledge berikutnya "
+                "akan memakai konteks perusahaan ini. Gunakan /module untuk memilih "
+                "module kerja."
+            )
+
+    async def module(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        async with self._serialized_user(update) as user:
+            if user is None:
+                return
+            membership = self._active_membership(user)
+            if membership is None:
+                await update.effective_message.reply_text(self._company_list_text(user))
+                return
+            if not context.args:
+                await update.effective_message.reply_text(
+                    self._module_list_text(user, membership)
+                )
+                return
+
+            module_id = context.args[0].strip().casefold()
+            if module_id in {"general", "none", "off"}:
+                self.database.clear_active_module(user.telegram_id)
+                await update.effective_message.reply_text(
+                    f"Module aktif untuk {membership.company_name} diubah ke General. "
+                    "History berikutnya memakai konteks General yang terpisah."
+                )
+                return
+            module = self.database.set_active_module(user.telegram_id, module_id)
+            if module is None:
+                await update.effective_message.reply_text(
+                    "Module tidak ditemukan, belum dipublikasikan, atau aksesmu "
+                    "belum diberikan.\n\n" + self._module_list_text(user, membership)
+                )
+                return
+            await update.effective_message.reply_text(
+                f"Module aktif diubah ke {module.name}. Playbook dan history "
+                "berikutnya memakai konteks module ini."
             )
 
     async def reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -167,9 +234,16 @@ class InternalBot:
             if membership is None:
                 await update.effective_message.reply_text(self._company_list_text(user))
                 return
-            self.database.clear_history(user.telegram_id, membership.company_id)
+            active_module = self.database.get_active_module(
+                user.telegram_id, membership.company_id
+            )
+            module_id = active_module.module_id if active_module else ""
+            self.database.clear_history(
+                user.telegram_id, membership.company_id, module_id
+            )
+            scope = active_module.name if active_module else "General"
             await update.effective_message.reply_text(
-                f"Riwayat percakapan untuk {membership.company_name} sudah dihapus."
+                f"Riwayat percakapan {membership.company_name} / {scope} sudah dihapus."
             )
 
     async def chat(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -206,10 +280,15 @@ class InternalBot:
 
         await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
         user_text = message.text.strip()
+        active_module: AIModule | None = self.database.get_active_module(
+            user.telegram_id, membership.company_id
+        )
+        module_id = active_module.module_id if active_module else ""
         history = self.database.get_history(
             user.telegram_id,
             self.settings.history_limit,
             membership.company_id,
+            module_id,
         )
         company_content = load_company_content(
             company,
@@ -227,19 +306,35 @@ class InternalBot:
             company,
             company_content,
             communication_profile,
+            active_module,
+            (
+                self.database.get_published_module_playbook(
+                    membership.company_id, module_id
+                )
+                if active_module
+                else ""
+            ),
         )
 
         try:
             answer = await self.provider.generate(system_prompt, history, user_text)
             answer = answer[: self.settings.max_response_chars]
             self.database.add_message(
-                user.telegram_id, "user", user_text, membership.company_id
+                user.telegram_id,
+                "user",
+                user_text,
+                membership.company_id,
+                module_id,
             )
             self.database.add_message(
-                user.telegram_id, "assistant", answer, membership.company_id
+                user.telegram_id,
+                "assistant",
+                answer,
+                membership.company_id,
+                module_id,
             )
             self.database.prune_history(
-                user.telegram_id, membership.company_id
+                user.telegram_id, membership.company_id, module_id
             )
             for chunk in _split_message(answer, size=3500):
                 rendered = markdown_to_telegram_html(chunk)
