@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login · DK Corp AI Admin</title>
+  <link rel="icon" href="{{ url_for('admin-static', path='favicon.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ url_for('admin-static', path='admin.css') }}">
+</head>
+<body class="login-body">
+  <main class="login-layout">
+    <section class="login-intro">
+      <div class="login-brand">
+        <span class="brand-mark large">DK</span>
+        <span>
+          <strong>DK Corp AI</strong>
+          <small>Multi-company control plane</small>
+        </span>
+      </div>
+      <div>
+        <p class="eyebrow light">Internal Administration</p>
+        <h1>Kelola konteks AI perusahaan dari satu tempat.</h1>
+        <p class="login-copy">Company, membership, instruction, knowledge, dan access berada dalam satu control plane.</p>
+      </div>
+      <p class="security-note">Akses dibatasi untuk administrator DK Corp.</p>
+    </section>
+
+    <section class="login-panel">
+      <form class="login-card" method="post" action="/admin/login">
+        <div>
+          <p class="eyebrow">Secure Access</p>
+          <h2>Masuk ke Admin</h2>
+          <p>Gunakan kredensial administrator.</p>
+        </div>
+
+        {% if error %}
+          <div class="alert" role="alert">{{ error }}</div>
+        {% endif %}
+
+        <label>
+          Username
+          <input name="username" type="text" autocomplete="username" required autofocus>
+        </label>
+        <label>
+          Password
+          <input name="password" type="password" autocomplete="current-password" required>
+        </label>
+        <button type="submit">Masuk</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

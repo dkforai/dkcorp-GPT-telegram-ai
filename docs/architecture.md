@@ -5,7 +5,7 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 0.6 |
+| Versi | 0.8 |
 | Terakhir diperbarui | 31 Agustus 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
@@ -91,6 +91,7 @@ Jawaban ke user
 | Lapisan | Status | Implementasi saat ini |
 |---|---|---|
 | Telegram Bot | Sudah | Long polling dan respons HTML terformat |
+| Update Reliability | Sudah | Pending update dipertahankan, concurrency terbatas, dan serialization per user |
 | Authentication | Sudah | Whitelist Telegram ID |
 | User Context | Sudah | Identity global dan membership per perusahaan |
 | Communication Profile | Sudah | Config terpusat dengan override per membership |
@@ -105,7 +106,7 @@ Jawaban ke user
 | Company-scoped instruction | Sudah | File profile, instruction, dan knowledge ditentukan per company |
 | Authorization per knowledge | Sebagian | Sudah company-scoped; module, division, dan clearance belum |
 | Response Validator | Sebagian | Batas panjang, split, escape HTML, dan fallback; belum ada policy classifier |
-| Admin Panel | Belum | User dikelola melalui JSON dan Git |
+| Admin Panel | Sebagian | Login, dashboard, Companies, dan Users & Access read-only |
 | Retrieval/RAG | Belum | Seluruh knowledge dimuat sampai batas karakter |
 
 ## 5. Target arsitektur multi-company
@@ -305,7 +306,20 @@ Empat area utama:
 3. Users & Access: identity dan company membership;
 4. Activity: perubahan konfigurasi, versi, dan error operasional.
 
-Instruction dan knowledge memakai alur Draft → Preview → Publish → Rollback agar edit admin tidak langsung memengaruhi bot produksi. Implementasi admin panel dilakukan setelah fondasi company, membership, dan company-scoped context stabil.
+Instruction dan knowledge memakai alur Draft → Preview → Publish → Rollback agar edit admin tidak langsung memengaruhi bot produksi.
+
+Versi admin pertama sudah menyediakan:
+
+- login admin berbasis environment credential;
+- signed session cookie dengan masa aktif delapan jam;
+- pembatasan lima kegagalan login per lima menit per client;
+- dashboard statistik company, user, membership, dan message;
+- halaman Companies read-only;
+- halaman Users & Access read-only;
+- placeholder navigasi Knowledge, Modules, dan Activity;
+- security headers dan health endpoint.
+
+Admin dan bot sementara berjalan dalam satu container dan memakai SQLite yang sama. Mutasi data belum dibuka agar tidak menciptakan dua source of truth selama JSON masih menjadi konfigurasi bootstrap aktif.
 
 ### 5.10 Target persistence multi-tenant
 
@@ -541,13 +555,17 @@ GitHub private repository
     ↓ automatic deployment
 Railway service
     ├── Docker container
+    ├── Telegram polling worker
+    ├── Admin HTTP server
     ├── environment variables
     └── volume /app/data
     ↓
 Telegram long polling
 ```
 
-Hanya satu replica boleh berjalan selama database memakai SQLite dan bot memakai long polling.
+Hanya satu replica boleh berjalan selama database memakai SQLite dan bot memakai long polling. Admin HTTP server memakai port dari variable Railway `PORT` dan menyediakan health endpoint `/health`.
+
+Telegram update memakai controlled concurrency dengan default empat update dan batas konfigurasi maksimum enam belas. Semua update dari Telegram ID yang sama melewati lock yang sama, sehingga command `/company`, `/reset`, history, dan chat tidak berlomba mengubah context user. Update dari user berbeda dapat berjalan paralel. Startup polling memakai `drop_pending_updates=False` agar antrean update tidak sengaja dihapus saat restart.
 
 ## 12. Keamanan dan batas akses
 
@@ -562,6 +580,10 @@ Sudah diterapkan:
 - membership membatasi perusahaan yang dapat dipilih user;
 - history dan content AI dipisahkan berdasarkan company aktif;
 - path content company harus relatif dan tidak boleh keluar dari project root.
+- admin memakai username, password, dan signed session cookie;
+- cookie admin bersifat `HttpOnly`, `SameSite=Lax`, dan `Secure` pada deployment;
+- admin mengirim CSP, anti-frame, no-sniff, no-referrer, dan no-store headers;
+- percobaan login admin dibatasi secara in-memory.
 
 Belum diterapkan:
 
@@ -582,7 +604,8 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 - company, membership, dan profile masih dikelola lewat JSON;
 - modul, module access, dan module-scoped knowledge belum diimplementasikan;
 - combined legacy Funnel Coach masih dipakai sebagai instruction DK Corp Group sampai dokumen dipisahkan;
-- admin panel belum diimplementasikan.
+- admin panel belum dapat melakukan mutasi data.
+- concurrency masih berada dalam satu process dan belum memakai durable application queue terpisah.
 
 ## 14. Roadmap
 
@@ -642,8 +665,29 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 | ADR-015 | Database multi-tenant menjadi source of truth final | Company, membership, access, instruction, knowledge metadata, version, dan audit harus dikelola konsisten melalui admin control plane |
 | ADR-016 | JSON hanya menjadi bootstrap/import setelah migrasi | Runtime tidak boleh memiliki dua source of truth yang dapat saling bertentangan |
 | ADR-017 | PostgreSQL menjadi target saat bot dan admin dipisahkan | SQLite cukup untuk transisi satu process, tetapi bukan storage bersama untuk beberapa service Railway |
+| ADR-018 | Admin versi pertama server-rendered dan read-only | Memvalidasi control plane, autentikasi, serta tampilan data sebelum membuka mutasi production |
+| ADR-019 | Bot dan admin sementara berjalan dalam satu container | SQLite dan Railway Volume tetap mempunyai satu writer boundary selama fase transisi |
+| ADR-020 | Pending Telegram update tidak dibuang saat startup | Pesan yang masuk saat restart atau redeploy tidak boleh sengaja dihapus oleh aplikasi |
+| ADR-021 | Controlled concurrency global dan serialization per user | User berbeda dapat dilayani paralel tanpa merusak urutan context, command, dan history user yang sama |
 
 ## 16. Changelog dokumen
+
+### 0.8 — 31 Agustus 2026
+
+- menghentikan pembuangan pending Telegram update saat startup;
+- menambahkan controlled concurrency dengan default empat update;
+- menambahkan per-user serialization untuk chat dan seluruh command;
+- menambahkan `MAX_CONCURRENT_UPDATES` dengan batas satu sampai enam belas;
+- mencatat durable queue sebagai batas yang belum diimplementasikan.
+
+### 0.7 — 31 Agustus 2026
+
+- menambahkan admin HTTP server dalam process aplikasi yang sama;
+- menambahkan login, signed cookie, login rate limit, dan security headers;
+- menambahkan dashboard, Companies, dan Users & Access read-only;
+- menambahkan navigasi dasar Knowledge, Modules, dan Activity;
+- menambahkan endpoint `/health` dan konfigurasi public port Railway;
+- mempertahankan JSON sebagai source of truth selama admin masih read-only.
 
 ### 0.6 — 31 Agustus 2026
 

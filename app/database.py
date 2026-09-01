@@ -418,6 +418,75 @@ class Database:
             )
         return membership
 
+    def get_admin_dashboard_stats(self) -> dict[str, int]:
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    (SELECT COUNT(*) FROM companies WHERE active = 1) AS companies,
+                    (SELECT COUNT(*) FROM users WHERE active = 1) AS users,
+                    (
+                        SELECT COUNT(*) FROM user_company_memberships
+                        WHERE active = 1
+                    ) AS memberships,
+                    (SELECT COUNT(*) FROM messages) AS messages
+                """
+            ).fetchone()
+        return {key: int(row[key]) for key in row.keys()}
+
+    def list_companies_admin(self) -> list[dict[str, object]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    c.company_id,
+                    c.name,
+                    c.profile_file,
+                    c.instruction_file,
+                    c.knowledge_dir,
+                    c.active,
+                    c.updated_at,
+                    COUNT(DISTINCT CASE WHEN m.active = 1 THEN m.telegram_id END)
+                        AS member_count,
+                    COUNT(DISTINCT msg.id) AS message_count
+                FROM companies c
+                LEFT JOIN user_company_memberships m
+                    ON m.company_id = c.company_id
+                LEFT JOIN messages msg
+                    ON msg.company_id = c.company_id
+                GROUP BY c.company_id
+                ORDER BY c.name COLLATE NOCASE
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_users_admin(self) -> list[dict[str, object]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    u.telegram_id,
+                    u.name,
+                    u.active,
+                    u.updated_at,
+                    COUNT(CASE WHEN m.active = 1 THEN 1 END) AS membership_count,
+                    GROUP_CONCAT(
+                        CASE WHEN m.active = 1
+                        THEN c.name || ' · ' || COALESCE(NULLIF(m.job_title, ''), '-')
+                        END,
+                        ' | '
+                    ) AS membership_summary
+                FROM users u
+                LEFT JOIN user_company_memberships m
+                    ON m.telegram_id = u.telegram_id
+                LEFT JOIN companies c
+                    ON c.company_id = m.company_id
+                GROUP BY u.telegram_id
+                ORDER BY u.name COLLATE NOCASE
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def add_message(
         self, telegram_id: int, role: str, content: str, company_id: str = ""
     ) -> None:

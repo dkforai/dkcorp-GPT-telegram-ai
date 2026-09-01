@@ -14,7 +14,9 @@ Telegram → whitelist Telegram ID → company membership
          → safe HTML renderer → Telegram
 ```
 
-Bot memakai **long polling**, jadi tidak memerlukan domain, webhook, atau web server. Ini cocok untuk Railway worker sederhana.
+Bot memakai **long polling** dan tidak memerlukan webhook. Admin panel memakai HTTP server dalam container yang sama. Domain Railway hanya diperlukan untuk membuka halaman admin.
+
+Pemrosesan update memakai controlled concurrency. User berbeda dapat diproses paralel sampai batas `MAX_CONCURRENT_UPDATES`, sedangkan pesan dan command dari Telegram ID yang sama memakai satu lock agar urutan company context, history, dan jawaban tidak tertukar. Pending update tidak dibuang saat startup.
 
 ## Fitur MVP
 
@@ -26,9 +28,12 @@ Bot memakai **long polling**, jadi tidak memerlukan domain, webhook, atau web se
 - Communication profile `executive`, `manager`, `staff`, atau `default`
 - Company profile, instruction, dan knowledge dari path yang dikonfigurasi per perusahaan
 - History chat dipisahkan per user dan perusahaan di SQLite
+- Pending Telegram update dipertahankan saat bot restart
+- Controlled concurrency dengan urutan pesan per user tetap dijaga
 - Provider abstraction OpenAI/DeepSeek melalui API yang kompatibel dengan OpenAI
 - Telegram renderer untuk bold, italic, code, link, quote, spoiler, dan code block
 - Raw HTML dari model di-escape dan fallback plain text tersedia
+- Admin web dengan login, dashboard, company registry, dan user access directory
 - Perintah `/start`, `/help`, `/company`, `/whoami`, dan `/reset`
 - Jawaban panjang otomatis dipecah agar muat di Telegram
 
@@ -160,6 +165,33 @@ MVP ini sengaja belum memakai embeddings/vector database. Seluruh knowledge comp
 
 Jangan masukkan rahasia seperti API key, password, data kartu, atau kredensial ke knowledge.
 
+## Admin web
+
+Admin web berjalan dalam process yang sama dengan bot Telegram. Admin hanya aktif ketika tiga variable berikut diisi bersama:
+
+```env
+ADMIN_USERNAME=dkadmin
+ADMIN_PASSWORD=password-minimal-12-karakter
+ADMIN_SESSION_SECRET=secret-acak-minimal-32-karakter
+```
+
+Untuk menjalankan melalui HTTP lokal, tambahkan:
+
+```env
+ADMIN_COOKIE_SECURE=false
+ADMIN_PORT=8080
+```
+
+Halaman yang tersedia:
+
+- `/admin/login` untuk autentikasi;
+- `/admin` untuk dashboard;
+- `/admin/companies` untuk company registry;
+- `/admin/users` untuk user dan membership;
+- `/health` untuk health check Railway.
+
+Versi ini read-only. Company dan membership masih disinkronkan dari JSON. Fungsi tambah, edit, Draft, Publish, dan Rollback ditambahkan setelah repository dan authorization layer selesai.
+
 ## Deploy ke Railway
 
 1. Push proyek ke repository GitHub private.
@@ -167,9 +199,11 @@ Jangan masukkan rahasia seperti API key, password, data kartu, atau kredensial k
 3. Tambahkan semua variable dari `.env.example` pada menu Variables. Jangan upload file `.env`.
 4. Tambahkan volume Railway dan mount ke `/app/data` agar database SQLite tidak hilang saat redeploy.
 5. Deploy. Railway akan membaca `Dockerfile` dan `railway.json`.
-6. Periksa logs hingga muncul pesan sinkronisasi user dan bot mulai polling.
+6. Buat public domain Railway untuk membuka admin web.
+7. Gunakan `/health` sebagai health-check URL bila diperlukan.
+8. Periksa deploy logs bot dan admin web.
 
-Service ini tidak menyediakan HTTP health check karena berjalan sebagai worker polling. Jangan mengaktifkan health-check URL Railway.
+Bot dan admin tetap memakai satu replica selama database menggunakan SQLite.
 
 ### Update user atau knowledge di Railway
 
@@ -190,9 +224,15 @@ Untuk alur paling sederhana, edit file di repository lalu push. Railway akan red
 | `ROLE_PROFILES_FILE` | JSON aturan communication profile | `config/role_profiles.json` |
 | `PROJECT_ROOT` | Root aman untuk resolusi path company | `.` |
 | `HISTORY_LIMIT` | Jumlah pesan lama yang dikirim ke AI | `12` |
+| `MAX_CONCURRENT_UPDATES` | Batas update Telegram yang diproses paralel | `4` |
 | `KNOWLEDGE_MAX_CHARS` | Batas karakter knowledge dalam prompt | `50000` |
 | `MAX_RESPONSE_CHARS` | Batas total jawaban AI | `12000` |
 | `LOG_LEVEL` | Level log | `INFO` |
+| `ADMIN_USERNAME` | Username login admin | kosong, admin nonaktif |
+| `ADMIN_PASSWORD` | Password admin minimal 12 karakter | kosong, admin nonaktif |
+| `ADMIN_SESSION_SECRET` | Secret penandatangan cookie minimal 32 karakter | kosong, admin nonaktif |
+| `ADMIN_COOKIE_SECURE` | Cookie hanya dikirim melalui HTTPS | `true` |
+| `ADMIN_PORT` | Port admin lokal; Railway memakai `PORT` | `8080` |
 
 ## Pengujian
 
@@ -227,14 +267,16 @@ Conversation Delivery Policy seperti batas kata, satu pesan satu tujuan, dan pro
 - Text-only, belum mendukung dokumen, gambar, voice note, atau tool calling
 - Satu konfigurasi AI provider untuk seluruh bot
 - SQLite cocok untuk satu instance bot; jangan menjalankan beberapa replica
+- Controlled concurrency dibatasi maksimal 16 dan default 4
 - Knowledge sudah dipisahkan per company, tetapi belum per module/division/clearance
-- Belum ada admin panel; user dikelola lewat JSON dan Git
+- Admin panel masih read-only; perubahan data dikelola lewat JSON dan Git
 - History dibatasi untuk konteks dan dipangkas menjadi 100 pesan per user-company
 
 ## Struktur
 
 ```text
 app/
+  admin.py        web admin, login, session, dan routes
   bot.py          handler Telegram
   company_context.py loader content company aktif
   config.py       environment settings
@@ -257,5 +299,7 @@ companies/
 docs/
   architecture.md
 knowledge/
+static/admin/
+templates/admin/
 tests/
 ```

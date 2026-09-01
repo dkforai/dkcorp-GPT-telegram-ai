@@ -1,0 +1,48 @@
+{% extends "admin/base.html" %}
+{% block title %}Users & Access · DK Corp AI Admin{% endblock %}
+{% block page_title %}Users &amp; Access{% endblock %}
+{% block content %}
+  <div class="page-lead">
+    <div>
+      <h2>User directory</h2>
+      <p>Whitelist Telegram dan membership perusahaan.</p>
+    </div>
+    <span class="mode-badge">Read only</span>
+  </div>
+
+  <div class="panel table-panel">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>User</th>
+            <th>Telegram ID</th>
+            <th>Membership</th>
+            <th>Company · Jabatan</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for user in users %}
+            <tr>
+              <td>
+                <div class="table-identity">
+                  <span class="avatar table-avatar">{{ user.name[:1] | upper }}</span>
+                  <strong>{{ user.name }}</strong>
+                </div>
+              </td>
+              <td><span class="path-text">{{ user.telegram_id }}</span></td>
+              <td>{{ user.membership_count }}</td>
+              <td>{{ user.membership_summary or '-' }}</td>
+              <td>
+                {% if user.active %}<span class="status-badge active">Active</span>{% else %}<span class="status-badge">Inactive</span>{% endif %}
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="5" class="empty-state">Belum ada user.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}

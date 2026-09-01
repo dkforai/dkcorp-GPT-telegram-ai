@@ -1,0 +1,48 @@
+{% extends "admin/base.html" %}
+{% block title %}Companies · DK Corp AI Admin{% endblock %}
+{% block page_title %}Companies{% endblock %}
+{% block content %}
+  <div class="page-lead">
+    <div>
+      <h2>Company registry</h2>
+      <p>Tenant, lokasi instruction, dan knowledge scope.</p>
+    </div>
+    <span class="mode-badge">Read only</span>
+  </div>
+
+  <div class="panel table-panel">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Company</th>
+            <th>Members</th>
+            <th>Knowledge</th>
+            <th>Instruction</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for company in companies %}
+            <tr>
+              <td>
+                <div class="table-identity">
+                  <span class="company-initial small">{{ company.name[:1] | upper }}</span>
+                  <div><strong>{{ company.name }}</strong><small>{{ company.company_id }}</small></div>
+                </div>
+              </td>
+              <td>{{ company.member_count }}</td>
+              <td><strong>{{ company.knowledge_count }}</strong><small class="block">Markdown file</small></td>
+              <td><span class="path-text">{{ company.instruction_file or '-' }}</span></td>
+              <td>
+                {% if company.active %}<span class="status-badge active">Active</span>{% else %}<span class="status-badge">Inactive</span>{% endif %}
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="5" class="empty-state">Belum ada company.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}

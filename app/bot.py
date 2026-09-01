@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from telegram import Update
 from telegram.constants import ChatAction
@@ -24,9 +27,15 @@ class InternalBot:
         self.settings = settings
         self.database = database
         self.provider = provider
+        self._user_locks: dict[int, asyncio.Lock] = {}
 
     def build_application(self) -> Application:
-        application = Application.builder().token(self.settings.telegram_bot_token).build()
+        application = (
+            Application.builder()
+            .token(self.settings.telegram_bot_token)
+            .concurrent_updates(self.settings.max_concurrent_updates)
+            .build()
+        )
         application.add_handler(CommandHandler("start", self.start))
         application.add_handler(CommandHandler("help", self.help))
         application.add_handler(CommandHandler("whoami", self.whoami))
@@ -40,6 +49,17 @@ class InternalBot:
         if telegram_user is None:
             return None
         return self.database.get_user(telegram_user.id)
+
+    @asynccontextmanager
+    async def _serialized_user(self, update: Update) -> AsyncIterator[User | None]:
+        user = self._authorized_user(update)
+        if user is None:
+            await self._reject(update)
+            yield None
+            return
+        lock = self._user_locks.setdefault(user.telegram_id, asyncio.Lock())
+        async with lock:
+            yield user
 
     def _communication_profile(self, user: User, membership: Membership):
         profiles = load_role_profiles(self.settings.role_profiles_file)
@@ -74,93 +94,96 @@ class InternalBot:
             )
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        user = self._authorized_user(update)
-        if not user:
-            await self._reject(update)
-            return
-        membership = self._active_membership(user)
-        company_text = (
-            f" Perusahaan aktif: {membership.company_name}."
-            if membership
-            else " Pilih perusahaan dengan /company sebelum mulai."
-        )
-        await update.effective_message.reply_text(
-            f"Halo {user.name}. Saya siap membantu sebagai asisten internal."
-            f"{company_text} Ketik /help untuk melihat perintah."
-        )
+        async with self._serialized_user(update) as user:
+            if user is None:
+                return
+            membership = self._active_membership(user)
+            company_text = (
+                f" Perusahaan aktif: {membership.company_name}."
+                if membership
+                else " Pilih perusahaan dengan /company sebelum mulai."
+            )
+            await update.effective_message.reply_text(
+                f"Halo {user.name}. Saya siap membantu sebagai asisten internal."
+                f"{company_text} Ketik /help untuk melihat perintah."
+            )
 
     async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not self._authorized_user(update):
-            await self._reject(update)
-            return
-        await update.effective_message.reply_text(
-            "/whoami — lihat profil akses\n"
-            "/company — lihat atau ganti perusahaan aktif\n"
-            "/reset — hapus konteks percakapan\n"
-            "/help — daftar perintah"
-        )
+        async with self._serialized_user(update) as user:
+            if user is None:
+                return
+            await update.effective_message.reply_text(
+                "/whoami — lihat profil akses\n"
+                "/company — lihat atau ganti perusahaan aktif\n"
+                "/reset — hapus konteks percakapan\n"
+                "/help — daftar perintah"
+            )
 
     async def whoami(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        user = self._authorized_user(update)
-        if not user:
-            await self._reject(update)
-            return
-        membership = self._active_membership(user)
-        if membership is None:
-            await update.effective_message.reply_text(self._company_list_text(user))
-            return
-        profile = self._communication_profile(user, membership)
-        await update.effective_message.reply_text(
-            f"Nama: {user.name}\n"
-            f"Perusahaan aktif: {membership.company_name}\n"
-            f"Company ID: {membership.company_id}\n"
-            f"Jabatan: {membership.job_title or '-'}\n"
-            f"Division: {membership.division or '-'}\n"
-            f"Role level: {membership.role_level or '-'}\n"
-            f"Communication profile: {profile.label}"
-        )
+        async with self._serialized_user(update) as user:
+            if user is None:
+                return
+            membership = self._active_membership(user)
+            if membership is None:
+                await update.effective_message.reply_text(self._company_list_text(user))
+                return
+            profile = self._communication_profile(user, membership)
+            await update.effective_message.reply_text(
+                f"Nama: {user.name}\n"
+                f"Perusahaan aktif: {membership.company_name}\n"
+                f"Company ID: {membership.company_id}\n"
+                f"Jabatan: {membership.job_title or '-'}\n"
+                f"Division: {membership.division or '-'}\n"
+                f"Role level: {membership.role_level or '-'}\n"
+                f"Communication profile: {profile.label}"
+            )
 
     async def company(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        user = self._authorized_user(update)
-        if not user:
-            await self._reject(update)
-            return
-        if not context.args:
-            await update.effective_message.reply_text(self._company_list_text(user))
-            return
+        async with self._serialized_user(update) as user:
+            if user is None:
+                return
+            if not context.args:
+                await update.effective_message.reply_text(self._company_list_text(user))
+                return
 
-        company_id = context.args[0].strip().casefold()
-        membership = self.database.set_active_company(user.telegram_id, company_id)
-        if membership is None:
+            company_id = context.args[0].strip().casefold()
+            membership = self.database.set_active_company(user.telegram_id, company_id)
+            if membership is None:
+                await update.effective_message.reply_text(
+                    "Perusahaan tidak ditemukan atau aksesmu tidak tersedia.\n\n"
+                    + self._company_list_text(user)
+                )
+                return
             await update.effective_message.reply_text(
-                "Perusahaan tidak ditemukan atau aksesmu tidak tersedia.\n\n"
-                + self._company_list_text(user)
+                f"Perusahaan aktif diubah ke {membership.company_name}. "
+                "History dan knowledge berikutnya akan memakai konteks perusahaan ini."
             )
-            return
-        await update.effective_message.reply_text(
-            f"Perusahaan aktif diubah ke {membership.company_name}. "
-            "History dan knowledge berikutnya akan memakai konteks perusahaan ini."
-        )
 
     async def reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        user = self._authorized_user(update)
-        if not user:
-            await self._reject(update)
-            return
-        membership = self._active_membership(user)
-        if membership is None:
-            await update.effective_message.reply_text(self._company_list_text(user))
-            return
-        self.database.clear_history(user.telegram_id, membership.company_id)
-        await update.effective_message.reply_text(
-            f"Riwayat percakapan untuk {membership.company_name} sudah dihapus."
-        )
+        async with self._serialized_user(update) as user:
+            if user is None:
+                return
+            membership = self._active_membership(user)
+            if membership is None:
+                await update.effective_message.reply_text(self._company_list_text(user))
+                return
+            self.database.clear_history(user.telegram_id, membership.company_id)
+            await update.effective_message.reply_text(
+                f"Riwayat percakapan untuk {membership.company_name} sudah dihapus."
+            )
 
     async def chat(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        user = self._authorized_user(update)
-        if not user:
-            await self._reject(update)
-            return
+        async with self._serialized_user(update) as user:
+            if user is None:
+                return
+            await self._chat_for_user(update, context, user)
+
+    async def _chat_for_user(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        user: User,
+    ) -> None:
         membership = self._active_membership(user)
         if membership is None:
             await update.effective_message.reply_text(self._company_list_text(user))

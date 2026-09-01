@@ -1,14 +1,53 @@
+import asyncio
 import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
-from app.bot import _split_message
+from fastapi.testclient import TestClient
+
+from app.admin import create_admin_app
+from app.bot import InternalBot, _split_message
 from app.company_context import CompanyContent, load_company_content
+from app.config import Settings
 from app.database import Company, Database, Membership, User
 from app.knowledge import load_knowledge
 from app.prompts import build_system_prompt
 from app.role_profiles import load_role_profiles, resolve_communication_profile
 from app.telegram_renderer import markdown_to_telegram_html
+
+
+def _test_settings(
+    tmp_path: Path,
+    users_file: Path,
+    companies_file: Path,
+    **overrides,
+) -> Settings:
+    values = {
+        "telegram_bot_token": "test-token",
+        "ai_provider": "openai",
+        "ai_api_key": "test-key",
+        "ai_model": "test-model",
+        "ai_base_url": None,
+        "database_path": tmp_path / "test.db",
+        "users_file": users_file,
+        "companies_file": companies_file,
+        "role_profiles_file": Path("config/role_profiles.json"),
+        "project_root": Path("."),
+        "history_limit": 12,
+        "max_concurrent_updates": 4,
+        "knowledge_max_chars": 50000,
+        "max_response_chars": 12000,
+        "log_level": "INFO",
+        "admin_username": "admin",
+        "admin_password": "strong-password",
+        "admin_session_secret": "x" * 32,
+        "admin_host": "127.0.0.1",
+        "admin_port": 8080,
+        "admin_cookie_secure": False,
+    }
+    values.update(overrides)
+    return Settings(**values)
 
 
 def test_user_sync_history_and_clear(tmp_path):
@@ -277,6 +316,133 @@ def test_company_content_is_scoped_to_configured_paths(tmp_path):
     assert content.profile == "Profil A"
     assert content.instruction == "Instruksi A"
     assert "Fakta A" in content.knowledge
+
+
+def test_admin_requires_login_and_renders_database(tmp_path):
+    companies_file = tmp_path / "companies.json"
+    companies_file.write_text(
+        json.dumps([{"id": "company-a", "name": "Company A"}]),
+        encoding="utf-8",
+    )
+    users_file = tmp_path / "users.json"
+    users_file.write_text(
+        json.dumps(
+            [
+                {
+                    "telegram_id": 42,
+                    "name": "DK",
+                    "memberships": [
+                        {
+                            "company_id": "company-a",
+                            "job_title": "Owner",
+                            "default": True,
+                        }
+                    ],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    database = Database(tmp_path / "admin.db")
+    database.initialize()
+    database.sync_companies(companies_file)
+    database.sync_users(users_file)
+    settings = _test_settings(
+        tmp_path,
+        users_file,
+        companies_file,
+        database_path=tmp_path / "admin.db",
+    )
+    app = create_admin_app(settings, database)
+    with TestClient(app) as client:
+        response = client.get("/admin", follow_redirects=False)
+        assert response.status_code == 303
+        assert response.headers["location"] == "/admin/login"
+
+        response = client.post(
+            "/admin/login",
+            data={"username": "admin", "password": "wrong-password"},
+        )
+        assert response.status_code == 401
+
+        response = client.post(
+            "/admin/login",
+            data={"username": "admin", "password": "strong-password"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        response = client.get("/admin")
+        assert response.status_code == 200
+        assert "Company A" in response.text
+        assert "Database transition mode" in response.text
+
+        response = client.get("/admin/users")
+        assert response.status_code == 200
+        assert "DK" in response.text
+        assert "Owner" in response.text
+
+
+def test_bot_serializes_same_user_and_allows_different_users(tmp_path):
+    companies_file = tmp_path / "companies.json"
+    companies_file.write_text(
+        json.dumps([{"id": "company-a", "name": "Company A"}]),
+        encoding="utf-8",
+    )
+    users_file = tmp_path / "users.json"
+    users_file.write_text(
+        json.dumps(
+            [
+                {
+                    "telegram_id": 42,
+                    "name": "User A",
+                    "memberships": [{"company_id": "company-a", "default": True}],
+                },
+                {
+                    "telegram_id": 43,
+                    "name": "User B",
+                    "memberships": [{"company_id": "company-a", "default": True}],
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    database = Database(tmp_path / "concurrency.db")
+    database.initialize()
+    database.sync_companies(companies_file)
+    database.sync_users(users_file)
+    settings = _test_settings(tmp_path, users_file, companies_file)
+    bot = InternalBot(settings, database, SimpleNamespace())
+
+    async def measure(user_ids: list[int]) -> int:
+        active = 0
+        max_active = 0
+
+        async def worker(user_id: int) -> None:
+            nonlocal active, max_active
+            update = SimpleNamespace(
+                effective_user=SimpleNamespace(id=user_id),
+                effective_message=None,
+            )
+            async with bot._serialized_user(update) as user:
+                assert user is not None
+                active += 1
+                max_active = max(max_active, active)
+                await asyncio.sleep(0.02)
+                active -= 1
+
+        await asyncio.gather(*(worker(user_id) for user_id in user_ids))
+        return max_active
+
+    async def scenario() -> tuple[int, int]:
+        return await measure([42, 42]), await measure([42, 43])
+
+    same_user_max, different_user_max = asyncio.run(scenario())
+    assert same_user_max == 1
+    assert different_user_max == 2
+
+    application = bot.build_application()
+    assert application.update_processor.max_concurrent_updates == 4
 
 
 def test_split_message():

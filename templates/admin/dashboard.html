@@ -1,0 +1,76 @@
+{% extends "admin/base.html" %}
+{% block title %}Dashboard · DK Corp AI Admin{% endblock %}
+{% block page_title %}Dashboard{% endblock %}
+{% block content %}
+  <div class="page-lead">
+    <div>
+      <h2>Ringkasan sistem</h2>
+      <p>Data aktif yang digunakan bot Telegram saat ini.</p>
+    </div>
+    <span class="mode-badge">Database transition mode</span>
+  </div>
+
+  <div class="stats-grid">
+    <article class="stat-card accent-purple">
+      <span>Companies</span>
+      <strong>{{ stats.companies }}</strong>
+      <small>tenant aktif</small>
+    </article>
+    <article class="stat-card accent-blue">
+      <span>Users</span>
+      <strong>{{ stats.users }}</strong>
+      <small>user aktif</small>
+    </article>
+    <article class="stat-card accent-green">
+      <span>Memberships</span>
+      <strong>{{ stats.memberships }}</strong>
+      <small>akses perusahaan</small>
+    </article>
+    <article class="stat-card accent-orange">
+      <span>Messages</span>
+      <strong>{{ stats.messages }}</strong>
+      <small>history tersimpan</small>
+    </article>
+  </div>
+
+  <div class="dashboard-grid">
+    <article class="panel">
+      <div class="panel-header">
+        <div>
+          <h3>Companies</h3>
+          <p>Tenant yang tersedia pada runtime.</p>
+        </div>
+        <a class="text-link" href="/admin/companies">Lihat semua</a>
+      </div>
+      <div class="list-stack">
+        {% for company in companies %}
+          <div class="company-row">
+            <span class="company-initial">{{ company.name[:1] | upper }}</span>
+            <div>
+              <strong>{{ company.name }}</strong>
+              <small>{{ company.company_id }}</small>
+            </div>
+            <span class="member-pill">{{ company.member_count }} member</span>
+          </div>
+        {% else %}
+          <div class="empty-state">Belum ada company aktif.</div>
+        {% endfor %}
+      </div>
+    </article>
+
+    <article class="panel system-panel">
+      <div class="panel-header">
+        <div>
+          <h3>System state</h3>
+          <p>Status control plane saat ini.</p>
+        </div>
+      </div>
+      <dl class="system-list">
+        <div><dt>Bot runtime</dt><dd><span class="status-dot"></span> Active</dd></div>
+        <div><dt>Tenant isolation</dt><dd>Company scoped</dd></div>
+        <div><dt>Configuration source</dt><dd>JSON → SQLite</dd></div>
+        <div><dt>Admin mode</dt><dd>Read only</dd></div>
+      </dl>
+    </article>
+  </div>
+{% endblock %}

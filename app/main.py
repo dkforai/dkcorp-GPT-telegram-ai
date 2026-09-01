@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 
+from app.admin import start_admin_server
 from app.bot import InternalBot
 from app.config import load_settings
 from app.database import Database
@@ -33,6 +34,8 @@ def main() -> None:
         "Memuat %d communication profile", len(profiles.by_id)
     )
 
+    start_admin_server(settings, database)
+
     provider = create_provider(
         settings.ai_provider,
         settings.ai_api_key,
@@ -40,7 +43,7 @@ def main() -> None:
         settings.ai_base_url,
     )
     application = InternalBot(settings, database, provider).build_application()
-    application.run_polling(drop_pending_updates=True)
+    application.run_polling(drop_pending_updates=False)
 
 
 if __name__ == "__main__":
