@@ -5,8 +5,8 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 0.8 |
-| Terakhir diperbarui | 31 Agustus 2026 |
+| Versi | 0.9 |
+| Terakhir diperbarui | 1 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
 
@@ -669,8 +669,15 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 | ADR-019 | Bot dan admin sementara berjalan dalam satu container | SQLite dan Railway Volume tetap mempunyai satu writer boundary selama fase transisi |
 | ADR-020 | Pending Telegram update tidak dibuang saat startup | Pesan yang masuk saat restart atau redeploy tidak boleh sengaja dihapus oleh aplikasi |
 | ADR-021 | Controlled concurrency global dan serialization per user | User berbeda dapat dilayani paralel tanpa merusak urutan context, command, dan history user yang sama |
+| ADR-022 | Asset admin memakai path internal tetap | CSS dan favicon harus tetap same-origin di balik reverse proxy HTTPS Railway tanpa bergantung pada rekonstruksi scheme dari request |
 
 ## 16. Changelog dokumen
+
+### 0.9 — 1 September 2026
+
+- memperbaiki pemuatan CSS dan favicon admin pada public domain HTTPS Railway;
+- menetapkan `/admin/static/*` sebagai path asset same-origin yang tidak bergantung pada scheme hasil rekonstruksi reverse proxy;
+- menambahkan pengujian respons stylesheet admin.
 
 ### 0.8 — 31 Agustus 2026
 

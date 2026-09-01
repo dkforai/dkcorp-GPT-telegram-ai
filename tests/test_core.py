@@ -376,6 +376,11 @@ def test_admin_requires_login_and_renders_database(tmp_path):
         assert response.status_code == 200
         assert "Company A" in response.text
         assert "Database transition mode" in response.text
+        assert 'href="/admin/static/admin.css"' in response.text
+
+        response = client.get("/admin/static/admin.css")
+        assert response.status_code == 200
+        assert "--sidebar" in response.text
 
         response = client.get("/admin/users")
         assert response.status_code == 200
