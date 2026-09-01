@@ -9,6 +9,7 @@ import threading
 import time
 from collections import defaultdict, deque
 from pathlib import Path
+from urllib.parse import urlencode
 
 import uvicorn
 from fastapi import FastAPI, Request
@@ -179,8 +180,141 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 "active_page": "companies",
                 "companies": rows,
                 "admin_username": settings.admin_username,
+                "csrf_token": _csrf_token(request, settings),
+                "notice": request.query_params.get("notice", ""),
+                "error": request.query_params.get("error", ""),
             },
         )
+
+    @app.get("/admin/companies/new", response_class=HTMLResponse)
+    async def new_company(request: Request):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/company_form.html",
+            context=_company_form_context(
+                request,
+                settings,
+                mode="create",
+                company_id="",
+                name="",
+                active=True,
+            ),
+        )
+
+    @app.post("/admin/companies", response_class=HTMLResponse)
+    async def create_company(request: Request):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        company_id = str(form.get("company_id", ""))
+        name = str(form.get("name", ""))
+        active = form.get("active") == "1"
+        try:
+            database.create_company(
+                company_id, name, actor=settings.admin_username, active=active
+            )
+        except ValueError as exc:
+            return templates.TemplateResponse(
+                request=request,
+                name="admin/company_form.html",
+                context=_company_form_context(
+                    request,
+                    settings,
+                    mode="create",
+                    company_id=company_id,
+                    name=name,
+                    active=active,
+                    error=str(exc),
+                ),
+                status_code=400,
+            )
+        return _companies_redirect("Company berhasil ditambahkan")
+
+    @app.get("/admin/companies/{company_id}/edit", response_class=HTMLResponse)
+    async def edit_company(request: Request, company_id: str):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        company = database.get_company_admin(company_id)
+        if company is None:
+            return HTMLResponse("Company tidak ditemukan.", status_code=404)
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/company_form.html",
+            context=_company_form_context(
+                request,
+                settings,
+                mode="edit",
+                company_id=company.company_id,
+                name=company.name,
+                active=company.active,
+                profile_file=company.profile_file,
+                instruction_file=company.instruction_file,
+                knowledge_dir=company.knowledge_dir,
+            ),
+        )
+
+    @app.post("/admin/companies/{company_id}", response_class=HTMLResponse)
+    async def update_company(request: Request, company_id: str):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        company = database.get_company_admin(company_id)
+        if company is None:
+            return HTMLResponse("Company tidak ditemukan.", status_code=404)
+        name = str(form.get("name", ""))
+        try:
+            updated = database.update_company(
+                company_id, name, actor=settings.admin_username
+            )
+        except ValueError as exc:
+            return templates.TemplateResponse(
+                request=request,
+                name="admin/company_form.html",
+                context=_company_form_context(
+                    request,
+                    settings,
+                    mode="edit",
+                    company_id=company.company_id,
+                    name=name,
+                    active=company.active,
+                    profile_file=company.profile_file,
+                    instruction_file=company.instruction_file,
+                    knowledge_dir=company.knowledge_dir,
+                    error=str(exc),
+                ),
+                status_code=400,
+            )
+        return _companies_redirect(f"{updated.name} berhasil diperbarui")
+
+    @app.post("/admin/companies/{company_id}/status")
+    async def update_company_status(request: Request, company_id: str):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        target = str(form.get("active", ""))
+        if target not in {"0", "1"}:
+            return _companies_redirect(error="Status company tidak valid")
+        try:
+            company = database.set_company_active(
+                company_id, target == "1", actor=settings.admin_username
+            )
+        except ValueError as exc:
+            return _companies_redirect(error=str(exc))
+        status = "diaktifkan" if company.active else "dinonaktifkan"
+        return _companies_redirect(f"{company.name} berhasil {status}")
 
     @app.get("/admin/users", response_class=HTMLResponse)
     async def users(request: Request):
@@ -264,8 +398,8 @@ def create_admin_app_from_env() -> FastAPI:
         raise RuntimeError("Admin web belum diaktifkan melalui environment variables")
     database = Database(settings.database_path)
     database.initialize()
-    database.sync_companies(settings.companies_file)
-    database.sync_users(settings.users_file)
+    database.bootstrap_companies(settings.companies_file)
+    database.bootstrap_users(settings.users_file)
     return create_admin_app(settings, database)
 
 
@@ -309,6 +443,58 @@ def _login_redirect(request: Request, settings: Settings) -> RedirectResponse | 
     if _is_authenticated(request, settings):
         return None
     return RedirectResponse("/admin/login", status_code=303)
+
+
+def _csrf_token(request: Request, settings: Settings) -> str:
+    session = request.cookies.get(SESSION_COOKIE, "")
+    if not session:
+        return ""
+    return hmac.new(
+        settings.admin_session_secret.encode(),
+        f"csrf:{session}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _valid_csrf(value: str, request: Request, settings: Settings) -> bool:
+    expected = _csrf_token(request, settings)
+    return bool(expected) and hmac.compare_digest(value, expected)
+
+
+def _company_form_context(
+    request: Request,
+    settings: Settings,
+    *,
+    mode: str,
+    company_id: str,
+    name: str,
+    active: bool,
+    profile_file: str = "",
+    instruction_file: str = "",
+    knowledge_dir: str = "",
+    error: str = "",
+) -> dict[str, object]:
+    return {
+        "active_page": "companies",
+        "admin_username": settings.admin_username,
+        "csrf_token": _csrf_token(request, settings),
+        "mode": mode,
+        "company_id": company_id,
+        "name": name,
+        "active": active,
+        "profile_file": profile_file,
+        "instruction_file": instruction_file,
+        "knowledge_dir": knowledge_dir,
+        "error": error,
+    }
+
+
+def _companies_redirect(
+    notice: str = "", *, error: str = ""
+) -> RedirectResponse:
+    values = {key: value for key, value in {"notice": notice, "error": error}.items() if value}
+    suffix = f"?{urlencode(values)}" if values else ""
+    return RedirectResponse(f"/admin/companies{suffix}", status_code=303)
 
 
 def _markdown_count(root: Path, configured_path: str) -> int:

@@ -34,6 +34,7 @@ Pemrosesan update memakai controlled concurrency. User berbeda dapat diproses pa
 - Telegram renderer untuk bold, italic, code, link, quote, spoiler, dan code block
 - Raw HTML dari model di-escape dan fallback plain text tersedia
 - Admin web dengan login, dashboard, company registry, dan user access directory
+- Company Management untuk menambah, mengganti nama, mengaktifkan, dan menonaktifkan tenant
 - Perintah `/start`, `/help`, `/company`, `/whoami`, dan `/reset`
 - Jawaban panjang otomatis dipecah agar muat di Telegram
 
@@ -123,7 +124,7 @@ Edit `config/users.json`:
 
 Satu user dapat mempunyai beberapa membership dan jabatan yang berbeda pada setiap perusahaan. Hanya satu membership boleh memakai `default: true`. Contoh: General Manager dapat memakai `executive`, Head of Department memakai `manager`, dan Content Creator memakai `staff`.
 
-File company dan user adalah source of truth yang disinkronkan ke SQLite saat bot menyala. Restart service setelah mengubah konfigurasi. Entry user, company, atau membership yang dihapus dari JSON dinonaktifkan di database; penggunaan `active: false` tetap disarankan agar pencabutan akses terlihat jelas di Git.
+SQLite adalah source of truth runtime. File company dan user hanya menjadi bootstrap pada database kosong. Setelah database terisi, perubahan JSON tidak menimpa data SQLite ketika bot restart atau Railway redeploy.
 
 Saat migrasi pertama, history lama yang belum memiliki company ID dipindahkan ke membership default. Jika user hanya memiliki satu membership, membership tersebut dipakai otomatis.
 
@@ -187,10 +188,11 @@ Halaman yang tersedia:
 - `/admin/login` untuk autentikasi;
 - `/admin` untuk dashboard;
 - `/admin/companies` untuk company registry;
+- `/admin/companies/new` untuk menambah company;
 - `/admin/users` untuk user dan membership;
 - `/health` untuk health check Railway.
 
-Versi ini read-only. Company dan membership masih disinkronkan dari JSON. Fungsi tambah, edit, Draft, Publish, dan Rollback ditambahkan setelah repository dan authorization layer selesai.
+Company sudah dapat ditambah, diganti namanya, diaktifkan, dan dinonaktifkan melalui admin. Company ID dikunci setelah dibuat. Users & Access masih read-only. Instruction dan knowledge belum mempunyai Draft, Publish, dan Rollback.
 
 ## Deploy ke Railway
 
@@ -205,9 +207,9 @@ Versi ini read-only. Company dan membership masih disinkronkan dari JSON. Fungsi
 
 Bot dan admin tetap memakai satu replica selama database menggunakan SQLite.
 
-### Update user atau knowledge di Railway
+### Update data di Railway
 
-Untuk alur paling sederhana, edit file di repository lalu push. Railway akan redeploy. Database history tetap aman selama volume `/app/data` terpasang.
+Company dikelola dari dashboard admin. User, membership, instruction, dan knowledge masih dikelola melalui tahap transisi yang dijelaskan pada dokumen arsitektur. Database dan history tetap aman selama volume `/app/data` terpasang.
 
 ## Environment variables
 
@@ -219,8 +221,8 @@ Untuk alur paling sederhana, edit file di repository lalu push. Railway akan red
 | `AI_MODEL` | Nama model provider | sesuai provider |
 | `AI_BASE_URL` | Override endpoint provider | sesuai provider |
 | `DATABASE_PATH` | Lokasi SQLite | `data/bot.db` |
-| `USERS_FILE` | JSON sumber whitelist | `config/users.json` |
-| `COMPANIES_FILE` | JSON master company dan lokasi content | `config/companies.json` |
+| `USERS_FILE` | JSON bootstrap whitelist untuk database kosong | `config/users.json` |
+| `COMPANIES_FILE` | JSON bootstrap company untuk database kosong | `config/companies.json` |
 | `ROLE_PROFILES_FILE` | JSON aturan communication profile | `config/role_profiles.json` |
 | `PROJECT_ROOT` | Root aman untuk resolusi path company | `.` |
 | `HISTORY_LIMIT` | Jumlah pesan lama yang dikirim ke AI | `12` |
@@ -269,7 +271,7 @@ Conversation Delivery Policy seperti batas kata, satu pesan satu tujuan, dan pro
 - SQLite cocok untuk satu instance bot; jangan menjalankan beberapa replica
 - Controlled concurrency dibatasi maksimal 16 dan default 4
 - Knowledge sudah dipisahkan per company, tetapi belum per module/division/clearance
-- Admin panel masih read-only; perubahan data dikelola lewat JSON dan Git
+- Admin baru writable untuk Company; Users, membership, instruction, dan knowledge masih tahap berikutnya
 - History dibatasi untuk konteks dan dipangkas menjadi 100 pesan per user-company
 
 ## Struktur

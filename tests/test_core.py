@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
@@ -386,6 +387,106 @@ def test_admin_requires_login_and_renders_database(tmp_path):
         assert response.status_code == 200
         assert "DK" in response.text
         assert "Owner" in response.text
+
+        response = client.get("/admin/companies")
+        csrf = re.search(r'name="csrf_token" value="([a-f0-9]+)"', response.text)
+        assert csrf is not None
+        response = client.post(
+            "/admin/companies/company-a/status",
+            data={"csrf_token": csrf.group(1), "active": "0"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert "membership+aktif" in response.headers["location"]
+        assert database.get_company_admin("company-a").active is True
+
+
+def test_admin_company_management_and_csrf(tmp_path):
+    companies_file = tmp_path / "companies.json"
+    companies_file.write_text(
+        json.dumps([{"id": "company-a", "name": "Company A"}]),
+        encoding="utf-8",
+    )
+    users_file = tmp_path / "users.json"
+    users_file.write_text("[]", encoding="utf-8")
+    database = Database(tmp_path / "company-admin.db")
+    database.initialize()
+    assert database.bootstrap_companies(companies_file) == 1
+    assert database.bootstrap_companies(companies_file) == 0
+
+    settings = _test_settings(
+        tmp_path,
+        users_file,
+        companies_file,
+        database_path=tmp_path / "company-admin.db",
+    )
+    app = create_admin_app(settings, database)
+    with TestClient(app) as client:
+        response = client.post(
+            "/admin/login",
+            data={"username": "admin", "password": "strong-password"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+
+        response = client.get("/admin/companies/new")
+        assert response.status_code == 200
+        csrf = re.search(r'name="csrf_token" value="([a-f0-9]+)"', response.text)
+        assert csrf is not None
+        csrf_token = csrf.group(1)
+
+        response = client.post(
+            "/admin/companies",
+            data={"company_id": "company-b", "name": "Company B", "active": "1"},
+        )
+        assert response.status_code == 403
+
+        response = client.post(
+            "/admin/companies",
+            data={
+                "csrf_token": csrf_token,
+                "company_id": "company-b",
+                "name": "Company B",
+                "active": "1",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        company = database.get_company_admin("company-b")
+        assert company is not None
+        assert company.profile_file == "companies/company-b/profile.md"
+        assert company.instruction_file == "companies/company-b/instruction.md"
+        assert company.knowledge_dir == "companies/company-b/knowledge"
+
+        response = client.post(
+            "/admin/companies/company-b",
+            data={"csrf_token": csrf_token, "name": "Company B Updated"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert database.get_company_admin("company-b").name == "Company B Updated"
+
+        response = client.post(
+            "/admin/companies/company-b/status",
+            data={"csrf_token": csrf_token, "active": "0"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert database.get_company_admin("company-b").active is False
+
+    actions = [row["action"] for row in database.list_admin_audit_events()]
+    assert actions == [
+        "company.deactivated",
+        "company.updated",
+        "company.created",
+    ]
+
+    companies_file.write_text(
+        json.dumps([{"id": "company-a", "name": "Config Name Changed"}]),
+        encoding="utf-8",
+    )
+    assert database.bootstrap_companies(companies_file) == 0
+    assert database.get_company_admin("company-a").name == "Company A"
 
 
 def test_bot_serializes_same_user_and_allows_different_users(tmp_path):

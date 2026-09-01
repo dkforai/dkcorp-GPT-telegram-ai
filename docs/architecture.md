@@ -5,7 +5,7 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 0.9 |
+| Versi | 1.0 |
 | Terakhir diperbarui | 1 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
@@ -30,9 +30,9 @@ Tujuan utama:
 2. Jabatan tidak menentukan gaya secara hardcoded. User mempunyai `communication_profile` tersendiri.
 3. Informasi yang tidak tersedia tidak boleh dikarang.
 4. Knowledge merupakan referensi data, bukan instruksi yang boleh mengambil alih system prompt.
-5. Pada fase transisi, perubahan konfigurasi dilakukan melalui file yang dapat diaudit di Git. Target final memakai database versioned melalui admin control plane.
+5. SQLite menjadi source of truth runtime pada fase satu-container. JSON hanya dipakai untuk bootstrap ketika registry database masih kosong.
 6. MVP memakai komponen minimum yang cukup untuk satu instance.
-7. Sinkronisasi konfigurasi bersifat fail-closed: entry yang hilang dari source of truth dinonaktifkan di database.
+7. Mutasi administratif harus tervalidasi, dilindungi CSRF, dan dicatat sebagai audit event.
 
 ## 3. Arsitektur logis
 
@@ -101,12 +101,12 @@ Jawaban ke user
 | Provider Abstraction | Sudah | OpenAI dan DeepSeek compatible API |
 | Telegram Response Renderer | Sudah | Safe HTML, split, link preview off, dan fallback plain text |
 | Conversation Delivery Policy | Belum | Akan mengatur panjang, ritme, dan progressive disclosure |
-| Multi-company membership | Sudah | Tabel membership dan konfigurasi JSON |
+| Multi-company membership | Sudah | Tabel membership SQLite; JSON hanya bootstrap awal |
 | Company router dan active context | Sudah | Command `/company` dan session active company |
 | Company-scoped instruction | Sudah | File profile, instruction, dan knowledge ditentukan per company |
 | Authorization per knowledge | Sebagian | Sudah company-scoped; module, division, dan clearance belum |
 | Response Validator | Sebagian | Batas panjang, split, escape HTML, dan fallback; belum ada policy classifier |
-| Admin Panel | Sebagian | Login, dashboard, Companies, dan Users & Access read-only |
+| Admin Panel | Sebagian | Company Management writable; Users & Access masih read-only |
 | Retrieval/RAG | Belum | Seluruh knowledge dimuat sampai batas karakter |
 
 ## 5. Target arsitektur multi-company
@@ -308,18 +308,20 @@ Empat area utama:
 
 Instruction dan knowledge memakai alur Draft → Preview → Publish → Rollback agar edit admin tidak langsung memengaruhi bot produksi.
 
-Versi admin pertama sudah menyediakan:
+Versi admin saat ini menyediakan:
 
 - login admin berbasis environment credential;
 - signed session cookie dengan masa aktif delapan jam;
 - pembatasan lima kegagalan login per lima menit per client;
 - dashboard statistik company, user, membership, dan message;
-- halaman Companies read-only;
+- halaman Companies untuk tambah, ubah nama, aktivasi, dan nonaktivasi;
 - halaman Users & Access read-only;
 - placeholder navigasi Knowledge, Modules, dan Activity;
 - security headers dan health endpoint.
+- CSRF token untuk seluruh mutasi Company;
+- audit event untuk create, update, activate, dan deactivate Company.
 
-Admin dan bot sementara berjalan dalam satu container dan memakai SQLite yang sama. Mutasi data belum dibuka agar tidak menciptakan dua source of truth selama JSON masih menjadi konfigurasi bootstrap aktif.
+Admin dan bot sementara berjalan dalam satu container dan memakai SQLite yang sama. SQLite menjadi source of truth runtime. `config/companies.json` dan `config/users.json` hanya diimpor ketika tabel terkait masih kosong, sehingga restart atau redeploy tidak menimpa perubahan admin.
 
 ### 5.10 Target persistence multi-tenant
 
@@ -340,12 +342,12 @@ Isi file knowledge dapat tetap berada di object/file storage, tetapi metadata, o
 
 Implementasi dilakukan bertahap:
 
-1. SQLite dan JSON tetap menjalankan bot selama migrasi;
-2. schema database multi-tenant dan repository/service layer disiapkan;
-3. data JSON diimpor secara idempotent;
-4. admin panel menulis draft dan published records ke database;
-5. runtime bot membaca database sebagai source of truth;
-6. JSON diturunkan menjadi bootstrap/recovery, lalu PostgreSQL menjadi target deployment ketika bot dan admin dipisahkan menjadi service berbeda.
+1. schema database multi-tenant dan repository/service layer disiapkan — selesai untuk company, user, membership, session, message, dan audit event;
+2. data JSON diimpor hanya saat registry database kosong — selesai;
+3. runtime bot membaca SQLite sebagai source of truth — selesai;
+4. admin panel menulis entitas secara bertahap ke database — Company selesai, area lain menyusul;
+5. instruction dan knowledge memakai draft, publish, version, dan rollback — belum;
+6. PostgreSQL menjadi target ketika bot dan admin dipisahkan menjadi service berbeda — belum.
 
 ## 6. Pemisahan konsep user
 
@@ -526,8 +528,8 @@ Renderer tidak mengatur panjang ideal, jumlah pilihan, tone, satu pesan satu tuj
 
 | Lokasi | Isi |
 |---|---|
-| `config/companies.json` | Master company dan lokasi content |
-| `config/users.json` | Whitelist dan membership user per company |
+| `config/companies.json` | Bootstrap company untuk database kosong |
+| `config/users.json` | Bootstrap whitelist dan membership untuk database kosong |
 | `config/role_profiles.json` | Aturan communication profile |
 | `companies/<company-id>/` | Profile, instruction, dan knowledge perusahaan |
 | `knowledge/company.md` | Combined legacy playbook DK Corp Group selama transisi |
@@ -535,14 +537,15 @@ Renderer tidak mengatur panjang ideal, jumlah pilihan, tone, satu pesan satu tuj
 
 ### 10.2 SQLite
 
-SQLite menyimpan:
+SQLite menjadi source of truth runtime dan menyimpan:
 
-- salinan user hasil sinkronisasi konfigurasi;
+- user dan status whitelist;
 - master company;
 - user-company membership;
 - perusahaan aktif per user;
 - pesan user dan assistant dengan `company_id`;
-- timestamp pesan dan pembaruan konfigurasi.
+- timestamp pesan dan pembaruan konfigurasi;
+- audit event perubahan administratif.
 
 Railway Volume dipasang pada `/app/data` agar database bertahan saat redeploy.
 
@@ -584,11 +587,15 @@ Sudah diterapkan:
 - cookie admin bersifat `HttpOnly`, `SameSite=Lax`, dan `Secure` pada deployment;
 - admin mengirim CSP, anti-frame, no-sniff, no-referrer, dan no-store headers;
 - percobaan login admin dibatasi secara in-memory.
+- seluruh mutasi Company memakai CSRF token yang terikat pada session;
+- Company ID divalidasi dan tidak dapat diubah setelah dibuat;
+- Company dengan membership aktif tidak dapat dinonaktifkan;
+- perubahan Company dicatat pada `admin_audit_events`.
 
 Belum diterapkan:
 
 - knowledge access per division atau clearance;
-- audit log administratif;
+- tampilan Activity untuk audit log administratif;
 - enkripsi field aplikasi pada database;
 - klasifikasi data sensitif pada jawaban;
 - admin approval untuk perubahan akses.
@@ -601,10 +608,10 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 - satu provider aktif untuk seluruh bot;
 - satu instance Railway;
 - seluruh knowledge company aktif dimuat sampai `KNOWLEDGE_MAX_CHARS`;
-- company, membership, dan profile masih dikelola lewat JSON;
+- Company dikelola melalui admin; user, membership, dan profile masih read-only;
 - modul, module access, dan module-scoped knowledge belum diimplementasikan;
 - combined legacy Funnel Coach masih dipakai sebagai instruction DK Corp Group sampai dokumen dipisahkan;
-- admin panel belum dapat melakukan mutasi data.
+- mutasi admin baru tersedia untuk Company.
 - concurrency masih berada dalam satu process dan belum memakai durable application queue terpisah.
 
 ## 14. Roadmap
@@ -670,8 +677,22 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 | ADR-020 | Pending Telegram update tidak dibuang saat startup | Pesan yang masuk saat restart atau redeploy tidak boleh sengaja dihapus oleh aplikasi |
 | ADR-021 | Controlled concurrency global dan serialization per user | User berbeda dapat dilayani paralel tanpa merusak urutan context, command, dan history user yang sama |
 | ADR-022 | Asset admin memakai path internal tetap | CSS dan favicon harus tetap same-origin di balik reverse proxy HTTPS Railway tanpa bergantung pada rekonstruksi scheme dari request |
+| ADR-023 | SQLite menjadi source of truth pada fase satu-container | Admin dan bot memakai database serta volume yang sama; JSON tidak boleh menimpa mutasi admin saat restart |
+| ADR-024 | JSON hanya diimpor ketika registry terkait kosong | Menjaga bootstrap deployment baru tanpa menciptakan dua source of truth aktif |
+| ADR-025 | Company ID immutable dan deactivation dijaga | Tenant boundary tidak boleh berubah dan company dengan membership aktif tidak boleh terputus tanpa pemindahan akses |
+| ADR-026 | Mutasi admin memakai CSRF dan audit event | Perubahan state melalui web harus terlindungi serta dapat ditelusuri |
 
 ## 16. Changelog dokumen
+
+### 1.0 — 1 September 2026
+
+- menetapkan SQLite sebagai source of truth runtime pada fase satu-container;
+- mengubah JSON company dan user menjadi bootstrap ketika registry database kosong;
+- membuka Company Management untuk create, rename, activate, dan deactivate;
+- mengunci Company ID setelah dibuat dan mencegah deactivation ketika masih memiliki membership aktif;
+- menambahkan perlindungan CSRF pada mutasi Company;
+- menambahkan tabel audit event administratif;
+- memperbarui status implementasi, batas MVP, persistence, dan security boundary.
 
 ### 0.9 — 1 September 2026
 

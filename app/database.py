@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-COMPANY_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
+COMPANY_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 
 
 @dataclass(frozen=True)
@@ -116,6 +116,16 @@ class Database:
                     created_at TEXT NOT NULL,
                     FOREIGN KEY (telegram_id) REFERENCES users(telegram_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS admin_audit_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    actor TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    entity_type TEXT NOT NULL,
+                    entity_id TEXT NOT NULL,
+                    details_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
                 """
             )
             user_columns = {
@@ -149,8 +159,27 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_memberships_user
                 ON user_company_memberships(telegram_id, active, company_id);
+
+                CREATE INDEX IF NOT EXISTS idx_admin_audit_created
+                ON admin_audit_events(created_at DESC, id DESC);
                 """
             )
+
+    def bootstrap_companies(self, companies_file: Path) -> int:
+        """Import JSON only when the company registry is still empty."""
+        with self._connect() as connection:
+            existing = int(
+                connection.execute("SELECT COUNT(*) FROM companies").fetchone()[0]
+            )
+        return 0 if existing else self.sync_companies(companies_file)
+
+    def bootstrap_users(self, users_file: Path) -> int:
+        """Import JSON only when the user directory is still empty."""
+        with self._connect() as connection:
+            existing = int(
+                connection.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+            )
+        return 0 if existing else self.sync_users(users_file)
 
     def sync_companies(self, companies_file: Path) -> int:
         if not companies_file.exists():
@@ -166,7 +195,8 @@ class Database:
             company_id = str(item["id"]).strip().casefold()
             if not COMPANY_ID_PATTERN.fullmatch(company_id):
                 raise ValueError(
-                    f"Company ID '{company_id}' tidak valid. Gunakan huruf kecil, angka, dan tanda minus."
+                    f"Company ID '{company_id}' tidak valid. Gunakan huruf kecil, "
+                    "angka, dan tanda minus."
                 )
             if company_id in seen_ids:
                 raise ValueError(f"Company ID duplikat: {company_id}")
@@ -356,6 +386,151 @@ class Database:
                 (company_id,),
             ).fetchone()
         return _company_from_row(row) if row else None
+
+    def get_company_admin(self, company_id: str) -> Company | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM companies WHERE company_id = ?",
+                (company_id.strip().casefold(),),
+            ).fetchone()
+        return _company_from_row(row) if row else None
+
+    def create_company(
+        self, company_id: str, name: str, actor: str, active: bool = True
+    ) -> Company:
+        normalized_id = _validate_company_id(company_id)
+        normalized_name = _validate_company_name(name)
+        base = f"companies/{normalized_id}"
+        now = _now()
+        try:
+            with self._connect() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO companies (
+                        company_id, name, profile_file, instruction_file,
+                        knowledge_dir, active, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        normalized_id,
+                        normalized_name,
+                        f"{base}/profile.md",
+                        f"{base}/instruction.md",
+                        f"{base}/knowledge",
+                        int(active),
+                        now,
+                    ),
+                )
+                _write_audit(
+                    connection,
+                    actor,
+                    "company.created",
+                    "company",
+                    normalized_id,
+                    {"name": normalized_name, "active": active},
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(f"Company ID '{normalized_id}' sudah digunakan") from exc
+        company = self.get_company_admin(normalized_id)
+        if company is None:
+            raise RuntimeError("Company gagal disimpan")
+        return company
+
+    def update_company(self, company_id: str, name: str, actor: str) -> Company:
+        normalized_id = _validate_company_id(company_id)
+        normalized_name = _validate_company_name(name)
+        with self._connect() as connection:
+            current = connection.execute(
+                "SELECT name FROM companies WHERE company_id = ?", (normalized_id,)
+            ).fetchone()
+            if current is None:
+                raise ValueError("Company tidak ditemukan")
+            connection.execute(
+                "UPDATE companies SET name = ?, updated_at = ? WHERE company_id = ?",
+                (normalized_name, _now(), normalized_id),
+            )
+            _write_audit(
+                connection,
+                actor,
+                "company.updated",
+                "company",
+                normalized_id,
+                {"name_before": current["name"], "name_after": normalized_name},
+            )
+        company = self.get_company_admin(normalized_id)
+        if company is None:
+            raise RuntimeError("Company gagal diperbarui")
+        return company
+
+    def set_company_active(
+        self, company_id: str, active: bool, actor: str
+    ) -> Company:
+        normalized_id = _validate_company_id(company_id)
+        with self._connect() as connection:
+            current = connection.execute(
+                "SELECT active FROM companies WHERE company_id = ?", (normalized_id,)
+            ).fetchone()
+            if current is None:
+                raise ValueError("Company tidak ditemukan")
+            if bool(current["active"]) == active:
+                company = self.get_company_admin(normalized_id)
+                if company is None:
+                    raise RuntimeError("Company tidak ditemukan")
+                return company
+            if not active:
+                active_members = int(
+                    connection.execute(
+                        """
+                        SELECT COUNT(*) FROM user_company_memberships
+                        WHERE company_id = ? AND active = 1
+                        """,
+                        (normalized_id,),
+                    ).fetchone()[0]
+                )
+                if active_members:
+                    raise ValueError(
+                        "Company masih memiliki membership aktif. Nonaktifkan "
+                        "membership terlebih dahulu."
+                    )
+                other_active = int(
+                    connection.execute(
+                        """
+                        SELECT COUNT(*) FROM companies
+                        WHERE active = 1 AND company_id != ?
+                        """,
+                        (normalized_id,),
+                    ).fetchone()[0]
+                )
+                if not other_active:
+                    raise ValueError("Minimal satu company harus tetap aktif")
+            connection.execute(
+                "UPDATE companies SET active = ?, updated_at = ? WHERE company_id = ?",
+                (int(active), _now(), normalized_id),
+            )
+            _write_audit(
+                connection,
+                actor,
+                "company.activated" if active else "company.deactivated",
+                "company",
+                normalized_id,
+                {"active": active},
+            )
+        company = self.get_company_admin(normalized_id)
+        if company is None:
+            raise RuntimeError("Company gagal diperbarui")
+        return company
+
+    def list_admin_audit_events(self, limit: int = 100) -> list[dict[str, object]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT actor, action, entity_type, entity_id, details_json, created_at
+                FROM admin_audit_events
+                ORDER BY id DESC LIMIT ?
+                """,
+                (max(1, min(limit, 500)),),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def list_memberships(self, telegram_id: int) -> list[Membership]:
         with self._connect() as connection:
@@ -575,6 +750,47 @@ def _safe_relative_path(value: object) -> str:
     if path.is_absolute() or ".." in path.parts:
         raise ValueError(f"Path konfigurasi harus relatif dan tidak boleh memakai '..': {text}")
     return path.as_posix()
+
+
+def _validate_company_id(value: object) -> str:
+    company_id = str(value or "").strip().casefold()
+    if not COMPANY_ID_PATTERN.fullmatch(company_id):
+        raise ValueError(
+            "Company ID harus 1-64 karakter dan hanya memakai huruf kecil, angka, atau tanda minus"
+        )
+    return company_id
+
+
+def _validate_company_name(value: object) -> str:
+    name = " ".join(str(value or "").split())
+    if not 2 <= len(name) <= 100:
+        raise ValueError("Nama company harus terdiri dari 2-100 karakter")
+    return name
+
+
+def _write_audit(
+    connection: sqlite3.Connection,
+    actor: str,
+    action: str,
+    entity_type: str,
+    entity_id: str,
+    details: dict[str, object],
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO admin_audit_events (
+            actor, action, entity_type, entity_id, details_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            actor,
+            action,
+            entity_type,
+            entity_id,
+            json.dumps(details, ensure_ascii=False, sort_keys=True),
+            _now(),
+        ),
+    )
 
 
 def _now() -> str:

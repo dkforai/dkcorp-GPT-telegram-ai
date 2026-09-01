@@ -23,12 +23,12 @@ def main() -> None:
 
     database = Database(settings.database_path)
     database.initialize()
-    synced_companies = database.sync_companies(settings.companies_file)
+    synced_companies = database.bootstrap_companies(settings.companies_file)
     logging.getLogger(__name__).info(
-        "Sinkronisasi %d perusahaan dari konfigurasi", synced_companies
+        "Bootstrap %d perusahaan dari konfigurasi", synced_companies
     )
-    synced = database.sync_users(settings.users_file)
-    logging.getLogger(__name__).info("Sinkronisasi %d user dari konfigurasi", synced)
+    synced = database.bootstrap_users(settings.users_file)
+    logging.getLogger(__name__).info("Bootstrap %d user dari konfigurasi", synced)
     profiles = load_role_profiles(settings.role_profiles_file)
     logging.getLogger(__name__).info(
         "Memuat %d communication profile", len(profiles.by_id)

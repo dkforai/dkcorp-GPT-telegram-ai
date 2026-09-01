@@ -5,10 +5,13 @@
   <div class="page-lead">
     <div>
       <h2>Company registry</h2>
-      <p>Tenant, lokasi instruction, dan knowledge scope.</p>
+      <p>Tenant aktif yang menjadi batas instruction, knowledge, dan akses user.</p>
     </div>
-    <span class="mode-badge">Read only</span>
+    <a class="primary-link" href="/admin/companies/new">Tambah company</a>
   </div>
+
+  {% if notice %}<div class="notice success" role="status">{{ notice }}</div>{% endif %}
+  {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
 
   <div class="panel table-panel">
     <div class="table-wrap">
@@ -20,6 +23,7 @@
             <th>Knowledge</th>
             <th>Instruction</th>
             <th>Status</th>
+            <th>Action</th>
           </tr>
         </thead>
         <tbody>
@@ -37,9 +41,21 @@
               <td>
                 {% if company.active %}<span class="status-badge active">Active</span>{% else %}<span class="status-badge">Inactive</span>{% endif %}
               </td>
+              <td>
+                <div class="row-actions">
+                  <a class="secondary-link" href="/admin/companies/{{ company.company_id }}/edit">Edit</a>
+                  <form method="post" action="/admin/companies/{{ company.company_id }}/status">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="active" value="{% if company.active %}0{% else %}1{% endif %}">
+                    <button class="text-button {% if company.active %}danger{% endif %}" type="submit">
+                      {% if company.active %}Nonaktifkan{% else %}Aktifkan{% endif %}
+                    </button>
+                  </form>
+                </div>
+              </td>
             </tr>
           {% else %}
-            <tr><td colspan="5" class="empty-state">Belum ada company.</td></tr>
+            <tr><td colspan="6" class="empty-state">Belum ada company.</td></tr>
           {% endfor %}
         </tbody>
       </table>

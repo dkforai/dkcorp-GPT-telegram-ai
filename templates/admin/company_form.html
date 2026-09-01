@@ -1,0 +1,49 @@
+{% extends "admin/base.html" %}
+{% block title %}{% if mode == 'create' %}Tambah Company{% else %}Edit Company{% endif %} · DK Corp AI Admin{% endblock %}
+{% block page_title %}{% if mode == 'create' %}Tambah Company{% else %}Edit Company{% endif %}{% endblock %}
+{% block content %}
+  <div class="page-lead">
+    <div>
+      <h2>{% if mode == 'create' %}Company baru{% else %}{{ name }}{% endif %}</h2>
+      <p>Company menjadi tenant boundary untuk membership, instruction, knowledge, dan chat history.</p>
+    </div>
+    <a class="secondary-link back-link" href="/admin/companies">Kembali</a>
+  </div>
+
+  <form class="panel form-panel" method="post" action="{% if mode == 'create' %}/admin/companies{% else %}/admin/companies/{{ company_id }}{% endif %}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+
+    <div class="form-grid">
+      <label>
+        Nama company
+        <input name="name" type="text" value="{{ name }}" minlength="2" maxlength="100" required autofocus>
+        <small>Nama yang ditampilkan kepada admin dan user Telegram.</small>
+      </label>
+
+      <label>
+        Company ID
+        <input name="company_id" type="text" value="{{ company_id }}" pattern="[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?" maxlength="64" {% if mode == 'edit' %}readonly{% else %}required{% endif %}>
+        <small>{% if mode == 'edit' %}ID dikunci karena menjadi tenant boundary.{% else %}Gunakan huruf kecil, angka, dan tanda minus. Contoh: malang-strudel.{% endif %}</small>
+      </label>
+    </div>
+
+    {% if mode == 'create' %}
+      <label class="checkbox-row">
+        <input name="active" type="checkbox" value="1" {% if active %}checked{% endif %}>
+        <span><strong>Aktifkan company</strong><small>Company aktif dapat dipilih setelah membership ditambahkan.</small></span>
+      </label>
+    {% else %}
+      <div class="path-preview">
+        <div><span>Profile</span><code>{{ profile_file }}</code></div>
+        <div><span>Instruction</span><code>{{ instruction_file }}</code></div>
+        <div><span>Knowledge</span><code>{{ knowledge_dir }}</code></div>
+      </div>
+    {% endif %}
+
+    <div class="form-actions">
+      <a class="secondary-button" href="/admin/companies">Batal</a>
+      <button class="primary-button" type="submit">{% if mode == 'create' %}Simpan company{% else %}Simpan perubahan{% endif %}</button>
+    </div>
+  </form>
+{% endblock %}
