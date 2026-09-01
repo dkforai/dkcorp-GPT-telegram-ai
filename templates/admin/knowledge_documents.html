@@ -1,0 +1,51 @@
+{% extends "admin/base.html" %}
+{% block title %}Knowledge {{ company.name }} · DK Corp AI Admin{% endblock %}
+{% block page_title %}Knowledge Documents{% endblock %}
+{% block content %}
+  <div class="page-lead">
+    <div>
+      <h2>{{ company.name }}</h2>
+      <p>{{ company.company_id }} · Draft tidak memengaruhi bot sampai dipublikasikan.</p>
+    </div>
+    <div class="lead-actions">
+      <a class="secondary-link back-link" href="/admin/knowledge">Kembali</a>
+      <a class="primary-link" href="/admin/knowledge/{{ company.company_id }}/new">Tambah dokumen</a>
+    </div>
+  </div>
+
+  {% if notice %}<div class="notice success" role="status">{{ notice }}</div>{% endif %}
+  {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+  {% if not summary.published_document_count and legacy_document_count %}
+    <div class="notice transition-note" role="status">Bot masih memakai {{ legacy_document_count }} file transisi. Fallback file berhenti setelah dokumen pertama dipublikasikan.</div>
+  {% endif %}
+
+  <div class="panel table-panel">
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Document</th><th>Published</th><th>Draft</th><th>Status</th><th>Action</th></tr></thead>
+        <tbody>
+          {% for document in documents %}
+            <tr>
+              <td><strong>{{ document.title }}</strong><small class="block path-text">{{ document.document_key }}</small></td>
+              <td>{% if document.published_version_number %}<strong>v{{ document.published_version_number }}</strong><small class="block">{{ document.published_at }}</small>{% else %}<span class="muted-text">Belum ada</span>{% endif %}</td>
+              <td>{% if document.has_unpublished_draft %}<span class="status-badge warning">Pending</span>{% else %}<span class="status-badge">Sinkron</span>{% endif %}</td>
+              <td>{% if document.active %}<span class="status-badge active">Active</span>{% else %}<span class="status-badge">Inactive</span>{% endif %}</td>
+              <td>
+                <div class="row-actions">
+                  <a class="secondary-link" href="/admin/knowledge/{{ company.company_id }}/{{ document.document_key }}">Kelola</a>
+                  <form method="post" action="/admin/knowledge/{{ company.company_id }}/{{ document.document_key }}/status">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="active" value="{% if document.active %}0{% else %}1{% endif %}">
+                    <button class="text-button {% if document.active %}danger{% endif %}" type="submit">{% if document.active %}Nonaktifkan{% else %}Aktifkan{% endif %}</button>
+                  </form>
+                </div>
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="5" class="empty-state">Belum ada knowledge document di database.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}

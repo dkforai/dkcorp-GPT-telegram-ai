@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +15,7 @@ ROLE_LEVELS = {"gm", "manager", "staff"}
 COMMUNICATION_PROFILES = {"executive", "manager", "staff", "default"}
 MAX_TELEGRAM_ID = 9_007_199_254_740_991
 MAX_COMPANY_INSTRUCTION_CHARS = 50_000
+MAX_KNOWLEDGE_DOCUMENT_CHARS = 100_000
 
 
 @dataclass(frozen=True)
@@ -152,6 +155,41 @@ class Database:
                     FOREIGN KEY (published_version_id)
                         REFERENCES company_instruction_versions(id)
                 );
+
+                CREATE TABLE IF NOT EXISTS knowledge_documents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    company_id TEXT NOT NULL,
+                    document_key TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    draft_content TEXT NOT NULL DEFAULT '',
+                    draft_updated_by TEXT NOT NULL,
+                    draft_updated_at TEXT NOT NULL,
+                    source_filename TEXT NOT NULL DEFAULT '',
+                    source_media_type TEXT NOT NULL DEFAULT '',
+                    source_size_bytes INTEGER NOT NULL DEFAULT 0,
+                    source_sha256 TEXT NOT NULL DEFAULT '',
+                    published_version_id INTEGER,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(company_id, document_key),
+                    FOREIGN KEY (company_id) REFERENCES companies(company_id),
+                    FOREIGN KEY (published_version_id)
+                        REFERENCES knowledge_document_versions(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS knowledge_document_versions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    document_id INTEGER NOT NULL,
+                    version_number INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    content_sha256 TEXT NOT NULL,
+                    published_by TEXT NOT NULL,
+                    published_at TEXT NOT NULL,
+                    UNIQUE(document_id, version_number),
+                    FOREIGN KEY (document_id) REFERENCES knowledge_documents(id)
+                );
                 """
             )
             user_columns = {
@@ -178,6 +216,24 @@ class Database:
                     """
                 )
 
+            knowledge_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(knowledge_documents)"
+                ).fetchall()
+            }
+            for column_name, definition in (
+                ("source_filename", "TEXT NOT NULL DEFAULT ''"),
+                ("source_media_type", "TEXT NOT NULL DEFAULT ''"),
+                ("source_size_bytes", "INTEGER NOT NULL DEFAULT 0"),
+                ("source_sha256", "TEXT NOT NULL DEFAULT ''"),
+            ):
+                if column_name not in knowledge_columns:
+                    connection.execute(
+                        f"ALTER TABLE knowledge_documents "
+                        f"ADD COLUMN {column_name} {definition}"
+                    )
+
             connection.executescript(
                 """
                 CREATE INDEX IF NOT EXISTS idx_messages_user_company_id
@@ -191,6 +247,12 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_instruction_versions_company
                 ON company_instruction_versions(company_id, version_number DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_knowledge_documents_company
+                ON knowledge_documents(company_id, active, document_key);
+
+                CREATE INDEX IF NOT EXISTS idx_knowledge_versions_document
+                ON knowledge_document_versions(document_id, version_number DESC);
                 """
             )
 
@@ -569,12 +631,20 @@ class Database:
     def create_company(
         self, company_id: str, name: str, actor: str, active: bool = True
     ) -> Company:
-        normalized_id = _validate_company_id(company_id)
         normalized_name = _validate_company_name(name)
-        base = f"companies/{normalized_id}"
+        requested_id = str(company_id or "").strip()
+        normalized_id = _validate_company_id(requested_id) if requested_id else ""
         now = _now()
         try:
             with self._connect() as connection:
+                if not normalized_id:
+                    normalized_id = _next_unique_identifier(
+                        connection,
+                        "companies",
+                        "company_id",
+                        _identifier_from_label(normalized_name, "company"),
+                    )
+                base = f"companies/{normalized_id}"
                 connection.execute(
                     """
                     INSERT INTO companies (
@@ -915,6 +985,459 @@ class Database:
                 normalized_id,
                 {"source_version_number": int(version["version_number"])},
             )
+
+    def list_company_knowledge_summary_admin(self) -> list[dict[str, object]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    c.company_id,
+                    c.name AS company_name,
+                    c.active AS company_active,
+                    c.knowledge_dir,
+                    COUNT(d.id) AS document_count,
+                    COUNT(CASE WHEN d.active = 1 THEN 1 END)
+                        AS active_document_count,
+                    COUNT(CASE WHEN d.published_version_id IS NOT NULL THEN 1 END)
+                        AS published_document_count,
+                    COUNT(CASE
+                        WHEN d.active = 1 AND d.published_version_id IS NOT NULL
+                        THEN 1 END) AS live_document_count,
+                    COUNT(CASE
+                        WHEN d.id IS NOT NULL AND (
+                            v.id IS NULL OR d.title != v.title
+                            OR d.draft_content != v.content
+                        ) THEN 1 END) AS pending_draft_count
+                FROM companies c
+                LEFT JOIN knowledge_documents d ON d.company_id = c.company_id
+                LEFT JOIN knowledge_document_versions v
+                    ON v.id = d.published_version_id
+                GROUP BY c.company_id
+                ORDER BY c.name COLLATE NOCASE
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_knowledge_documents_admin(
+        self, company_id: str
+    ) -> list[dict[str, object]]:
+        normalized_company = _validate_company_id(company_id)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    d.id,
+                    d.company_id,
+                    d.document_key,
+                    d.title,
+                    d.active,
+                    d.draft_updated_by,
+                    d.draft_updated_at,
+                    d.published_version_id,
+                    v.version_number AS published_version_number,
+                    v.title AS published_title,
+                    v.content AS published_content,
+                    v.published_at,
+                    CASE
+                        WHEN v.id IS NULL OR d.title != v.title
+                             OR d.draft_content != v.content
+                        THEN 1 ELSE 0
+                    END AS has_unpublished_draft
+                FROM knowledge_documents d
+                LEFT JOIN knowledge_document_versions v
+                    ON v.id = d.published_version_id
+                WHERE d.company_id = ?
+                ORDER BY d.title COLLATE NOCASE
+                """,
+                (normalized_company,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_knowledge_document_admin(
+        self, company_id: str, document_key: str
+    ) -> dict[str, object] | None:
+        normalized_company = _validate_company_id(company_id)
+        normalized_key = _validate_knowledge_document_key(document_key)
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    d.*,
+                    c.name AS company_name,
+                    c.active AS company_active,
+                    v.version_number AS published_version_number,
+                    v.title AS published_title,
+                    v.content AS published_content,
+                    v.published_by,
+                    v.published_at
+                FROM knowledge_documents d
+                JOIN companies c ON c.company_id = d.company_id
+                LEFT JOIN knowledge_document_versions v
+                    ON v.id = d.published_version_id
+                WHERE d.company_id = ? AND d.document_key = ?
+                """,
+                (normalized_company, normalized_key),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def create_knowledge_document(
+        self,
+        company_id: str,
+        document_key: object,
+        title: object,
+        content: object,
+        actor: str,
+        *,
+        source_filename: object = "",
+        source_media_type: object = "",
+        source_size_bytes: object = 0,
+        source_sha256: object = "",
+    ) -> dict[str, object]:
+        normalized_company = _validate_company_id(company_id)
+        normalized_title = _validate_knowledge_title(title)
+        requested_key = str(document_key or "").strip()
+        normalized_key = (
+            _validate_knowledge_document_key(requested_key) if requested_key else ""
+        )
+        normalized_content = _validate_knowledge_content(content)
+        source = _validate_knowledge_source(
+            source_filename,
+            source_media_type,
+            source_size_bytes,
+            source_sha256,
+        )
+        now = _now()
+        try:
+            with self._connect() as connection:
+                if connection.execute(
+                    "SELECT 1 FROM companies WHERE company_id = ?",
+                    (normalized_company,),
+                ).fetchone() is None:
+                    raise ValueError("Company tidak ditemukan")
+                if not normalized_key:
+                    normalized_key = _next_unique_identifier(
+                        connection,
+                        "knowledge_documents",
+                        "document_key",
+                        _identifier_from_label(normalized_title, "document"),
+                        where_column="company_id",
+                        where_value=normalized_company,
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO knowledge_documents (
+                        company_id, document_key, title, draft_content,
+                        draft_updated_by, draft_updated_at, active,
+                        source_filename, source_media_type, source_size_bytes,
+                        source_sha256, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        normalized_company,
+                        normalized_key,
+                        normalized_title,
+                        normalized_content,
+                        actor,
+                        now,
+                        source["filename"],
+                        source["media_type"],
+                        source["size_bytes"],
+                        source["sha256"],
+                        now,
+                        now,
+                    ),
+                )
+                _write_audit(
+                    connection,
+                    actor,
+                    "knowledge_document.created",
+                    "knowledge_document",
+                    f"{normalized_company}:{normalized_key}",
+                    {
+                        "title": normalized_title,
+                        "character_count": len(normalized_content),
+                        "source_filename": source["filename"],
+                        "source_media_type": source["media_type"],
+                        "source_size_bytes": source["size_bytes"],
+                        "source_sha256": source["sha256"],
+                    },
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(
+                f"Document key '{normalized_key}' sudah digunakan pada company ini"
+            ) from exc
+        document = self.get_knowledge_document_admin(
+            normalized_company, normalized_key
+        )
+        if document is None:
+            raise RuntimeError("Knowledge document gagal disimpan")
+        return document
+
+    def save_knowledge_document_draft(
+        self,
+        company_id: str,
+        document_key: str,
+        title: object,
+        content: object,
+        actor: str,
+    ) -> None:
+        normalized_company = _validate_company_id(company_id)
+        normalized_key = _validate_knowledge_document_key(document_key)
+        normalized_title = _validate_knowledge_title(title)
+        normalized_content = _validate_knowledge_content(content)
+        now = _now()
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE knowledge_documents
+                SET title = ?, draft_content = ?, draft_updated_by = ?,
+                    draft_updated_at = ?, updated_at = ?
+                WHERE company_id = ? AND document_key = ?
+                """,
+                (
+                    normalized_title,
+                    normalized_content,
+                    actor,
+                    now,
+                    now,
+                    normalized_company,
+                    normalized_key,
+                ),
+            )
+            if not cursor.rowcount:
+                raise ValueError("Knowledge document tidak ditemukan")
+            _write_audit(
+                connection,
+                actor,
+                "knowledge_document.draft_saved",
+                "knowledge_document",
+                f"{normalized_company}:{normalized_key}",
+                {
+                    "title": normalized_title,
+                    "character_count": len(normalized_content),
+                },
+            )
+
+    def publish_knowledge_document(
+        self, company_id: str, document_key: str, actor: str
+    ) -> int:
+        normalized_company = _validate_company_id(company_id)
+        normalized_key = _validate_knowledge_document_key(document_key)
+        now = _now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            document = connection.execute(
+                """
+                SELECT id, title, draft_content
+                FROM knowledge_documents
+                WHERE company_id = ? AND document_key = ?
+                """,
+                (normalized_company, normalized_key),
+            ).fetchone()
+            if document is None:
+                raise ValueError("Knowledge document tidak ditemukan")
+            next_version = int(
+                connection.execute(
+                    """
+                    SELECT COALESCE(MAX(version_number), 0) + 1
+                    FROM knowledge_document_versions
+                    WHERE document_id = ?
+                    """,
+                    (document["id"],),
+                ).fetchone()[0]
+            )
+            content = str(document["draft_content"])
+            checksum = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            cursor = connection.execute(
+                """
+                INSERT INTO knowledge_document_versions (
+                    document_id, version_number, title, content,
+                    content_sha256, published_by, published_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    document["id"],
+                    next_version,
+                    document["title"],
+                    content,
+                    checksum,
+                    actor,
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE knowledge_documents
+                SET published_version_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (cursor.lastrowid, now, document["id"]),
+            )
+            _write_audit(
+                connection,
+                actor,
+                "knowledge_document.published",
+                "knowledge_document",
+                f"{normalized_company}:{normalized_key}",
+                {
+                    "version_number": next_version,
+                    "title": str(document["title"]),
+                    "character_count": len(content),
+                    "content_sha256": checksum,
+                },
+            )
+        return next_version
+
+    def list_knowledge_document_versions(
+        self, company_id: str, document_key: str, limit: int = 50
+    ) -> list[dict[str, object]]:
+        document = self.get_knowledge_document_admin(company_id, document_key)
+        if document is None:
+            return []
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT id, version_number, title, content, content_sha256,
+                       published_by, published_at
+                FROM knowledge_document_versions
+                WHERE document_id = ?
+                ORDER BY version_number DESC
+                LIMIT ?
+                """,
+                (document["id"], max(1, min(limit, 200))),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def restore_knowledge_document_version_to_draft(
+        self,
+        company_id: str,
+        document_key: str,
+        version_id: int,
+        actor: str,
+    ) -> None:
+        normalized_company = _validate_company_id(company_id)
+        normalized_key = _validate_knowledge_document_key(document_key)
+        try:
+            normalized_version_id = int(version_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Versi knowledge tidak valid") from exc
+        with self._connect() as connection:
+            version = connection.execute(
+                """
+                SELECT v.version_number, v.title, v.content, d.id AS document_id
+                FROM knowledge_document_versions v
+                JOIN knowledge_documents d ON d.id = v.document_id
+                WHERE v.id = ? AND d.company_id = ? AND d.document_key = ?
+                """,
+                (normalized_version_id, normalized_company, normalized_key),
+            ).fetchone()
+            if version is None:
+                raise ValueError("Versi knowledge tidak ditemukan")
+            now = _now()
+            connection.execute(
+                """
+                UPDATE knowledge_documents
+                SET title = ?, draft_content = ?, draft_updated_by = ?,
+                    draft_updated_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    version["title"],
+                    version["content"],
+                    actor,
+                    now,
+                    now,
+                    version["document_id"],
+                ),
+            )
+            _write_audit(
+                connection,
+                actor,
+                "knowledge_document.version_restored_to_draft",
+                "knowledge_document",
+                f"{normalized_company}:{normalized_key}",
+                {"source_version_number": int(version["version_number"])},
+            )
+
+    def set_knowledge_document_active(
+        self, company_id: str, document_key: str, active: bool, actor: str
+    ) -> None:
+        normalized_company = _validate_company_id(company_id)
+        normalized_key = _validate_knowledge_document_key(document_key)
+        with self._connect() as connection:
+            current = connection.execute(
+                """
+                SELECT active FROM knowledge_documents
+                WHERE company_id = ? AND document_key = ?
+                """,
+                (normalized_company, normalized_key),
+            ).fetchone()
+            if current is None:
+                raise ValueError("Knowledge document tidak ditemukan")
+            if bool(current["active"]) != active:
+                connection.execute(
+                    """
+                    UPDATE knowledge_documents SET active = ?, updated_at = ?
+                    WHERE company_id = ? AND document_key = ?
+                    """,
+                    (int(active), _now(), normalized_company, normalized_key),
+                )
+                _write_audit(
+                    connection,
+                    actor,
+                    (
+                        "knowledge_document.activated"
+                        if active
+                        else "knowledge_document.deactivated"
+                    ),
+                    "knowledge_document",
+                    f"{normalized_company}:{normalized_key}",
+                    {"active": active},
+                )
+
+    def get_published_company_knowledge(
+        self, company_id: str, max_chars: int
+    ) -> str | None:
+        normalized_company = _validate_company_id(company_id)
+        with self._connect() as connection:
+            published_count = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*) FROM knowledge_documents
+                    WHERE company_id = ? AND published_version_id IS NOT NULL
+                    """,
+                    (normalized_company,),
+                ).fetchone()[0]
+            )
+            if not published_count:
+                return None
+            rows = connection.execute(
+                """
+                SELECT d.document_key, v.title, v.content
+                FROM knowledge_documents d
+                JOIN knowledge_document_versions v
+                    ON v.id = d.published_version_id
+                WHERE d.company_id = ? AND d.active = 1
+                ORDER BY v.title COLLATE NOCASE, d.document_key
+                """,
+                (normalized_company,),
+            ).fetchall()
+        if max_chars <= 0:
+            return ""
+        sections: list[str] = []
+        used = 0
+        for row in rows:
+            section = (
+                f"## Sumber: {row['document_key']} — {row['title']}\n\n"
+                f"{row['content']}"
+            )
+            separator = "\n\n---\n\n" if sections else ""
+            remaining = max_chars - used - len(separator)
+            if remaining <= 0:
+                break
+            sections.append(section[:remaining])
+            used += len(separator) + len(sections[-1])
+        return "\n\n---\n\n".join(sections)
 
     def list_admin_audit_events(self, limit: int = 100) -> list[dict[str, object]]:
         with self._connect() as connection:
@@ -1456,11 +1979,98 @@ def _validate_company_id(value: object) -> str:
     return company_id
 
 
+def _identifier_from_label(value: object, fallback: str) -> str:
+    normalized = unicodedata.normalize("NFKD", str(value or ""))
+    ascii_text = normalized.encode("ascii", "ignore").decode("ascii").casefold()
+    identifier = re.sub(r"[^a-z0-9]+", "-", ascii_text).strip("-")
+    return (identifier or fallback)[:64].rstrip("-")
+
+
+def _next_unique_identifier(
+    connection: sqlite3.Connection,
+    table: str,
+    column: str,
+    base: str,
+    *,
+    where_column: str = "",
+    where_value: object = None,
+) -> str:
+    candidate = base
+    counter = 2
+    while True:
+        query = f"SELECT 1 FROM {table} WHERE {column} = ?"
+        params: tuple[object, ...] = (candidate,)
+        if where_column:
+            query += f" AND {where_column} = ?"
+            params += (where_value,)
+        if connection.execute(query, params).fetchone() is None:
+            return candidate
+        suffix = f"-{counter}"
+        candidate = f"{base[: 64 - len(suffix)].rstrip('-')}{suffix}"
+        counter += 1
+
+
 def _validate_company_name(value: object) -> str:
     name = " ".join(str(value or "").split())
     if not 2 <= len(name) <= 100:
         raise ValueError("Nama company harus terdiri dari 2-100 karakter")
     return name
+
+
+def _validate_knowledge_document_key(value: object) -> str:
+    document_key = str(value or "").strip().casefold()
+    if not COMPANY_ID_PATTERN.fullmatch(document_key):
+        raise ValueError(
+            "Document key harus 1-64 karakter dan hanya memakai huruf kecil, "
+            "angka, atau tanda minus"
+        )
+    return document_key
+
+
+def _validate_knowledge_title(value: object) -> str:
+    title = " ".join(str(value or "").split())
+    if not 2 <= len(title) <= 150:
+        raise ValueError("Judul knowledge harus terdiri dari 2-150 karakter")
+    return title
+
+
+def _validate_knowledge_content(value: object) -> str:
+    content = str(value or "").strip()
+    if len(content) > MAX_KNOWLEDGE_DOCUMENT_CHARS:
+        raise ValueError(
+            "Isi knowledge maksimal "
+            f"{MAX_KNOWLEDGE_DOCUMENT_CHARS:,} karakter".replace(",", ".")
+        )
+    return content
+
+
+def _validate_knowledge_source(
+    filename: object,
+    media_type: object,
+    size_bytes: object,
+    sha256: object,
+) -> dict[str, object]:
+    normalized_filename = Path(
+        str(filename or "").replace("\\", "/")
+    ).name.strip()[:255]
+    normalized_media_type = str(media_type or "").strip()[:150]
+    try:
+        normalized_size = int(size_bytes or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Ukuran source knowledge tidak valid") from exc
+    if normalized_size < 0:
+        raise ValueError("Ukuran source knowledge tidak valid")
+    normalized_sha256 = str(sha256 or "").strip().casefold()
+    if normalized_sha256 and not re.fullmatch(r"[a-f0-9]{64}", normalized_sha256):
+        raise ValueError("Checksum source knowledge tidak valid")
+    if normalized_filename and not normalized_sha256:
+        raise ValueError("Checksum source knowledge wajib tersedia untuk file upload")
+    return {
+        "filename": normalized_filename,
+        "media_type": normalized_media_type,
+        "size_bytes": normalized_size,
+        "sha256": normalized_sha256,
+    }
 
 
 def _validate_telegram_id(value: object) -> int:

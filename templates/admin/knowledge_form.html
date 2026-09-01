@@ -1,0 +1,33 @@
+{% extends "admin/base.html" %}
+{% block title %}Tambah Knowledge · DK Corp AI Admin{% endblock %}
+{% block page_title %}Tambah Knowledge Document{% endblock %}
+{% block content %}
+  <div class="page-lead">
+    <div><h2>{{ company.name }}</h2><p>Dokumen baru disimpan sebagai draft dan belum masuk ke konteks bot.</p></div>
+    <a class="secondary-link back-link" href="/admin/knowledge/{{ company.company_id }}">Kembali</a>
+  </div>
+  {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+  <form class="panel form-panel knowledge-form" method="post" enctype="multipart/form-data" action="/admin/knowledge/{{ company.company_id }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-grid">
+      <label class="full-field">Judul dokumen
+        <input type="text" name="title" value="{{ values.title }}" maxlength="150" required>
+        <small>Document key dibuat otomatis dari judul dan dikunci setelah tersimpan.</small>
+      </label>
+    </div>
+    <div class="upload-field">
+      <div>
+        <strong>Upload dokumen</strong>
+        <small>PDF, Word DOCX, TXT, atau Markdown. Maksimal 10 MB.</small>
+      </div>
+      <input type="file" name="source_file" accept=".pdf,.docx,.txt,.md,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown">
+      <p>File diekstrak menjadi teks draft. PDF hasil scan tanpa text layer belum dapat dibaca.</p>
+    </div>
+    <div class="input-divider"><span>atau tulis langsung</span></div>
+    <label class="full-field no-top-margin">Isi awal <span class="optional">Opsional</span>
+      <textarea class="knowledge-textarea" name="content" maxlength="100000" spellcheck="true">{{ values.content }}</textarea>
+      <small>Fakta bisnis, SOP, target, harga, definisi, atau referensi internal.</small>
+    </label>
+    <div class="form-actions"><a class="secondary-button" href="/admin/knowledge/{{ company.company_id }}">Batal</a><button class="primary-button" type="submit">Buat draft</button></div>
+  </form>
+{% endblock %}

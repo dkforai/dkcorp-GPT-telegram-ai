@@ -1,0 +1,17 @@
+{% extends "admin/base.html" %}
+{% block title %}Preview {{ document.title }} · DK Corp AI Admin{% endblock %}
+{% block page_title %}Preview Knowledge{% endblock %}
+{% block content %}
+  <div class="page-lead">
+    <div><h2>{{ document.title }}</h2><p>Periksa isi draft sebelum menjadikannya knowledge aktif bot.</p></div>
+    <a class="secondary-link back-link" href="/admin/knowledge/{{ document.company_id }}/{{ document.document_key }}">Kembali edit</a>
+  </div>
+  <div class="preview-summary">
+    <div><span>Company</span><strong>{{ document.company_name }}</strong></div>
+    <div><span>Document</span><strong>{{ document.document_key }}</strong></div>
+    <div><span>Draft</span><strong>{{ document.draft_content | length }} karakter</strong></div>
+    <div><span>Current live</span><strong>{% if document.published_version_number %}v{{ document.published_version_number }}{% else %}Belum ada{% endif %}</strong></div>
+  </div>
+  <div class="panel instruction-preview"><h3>{{ document.title }}</h3>{% if document.draft_content %}<pre>{{ document.draft_content }}</pre>{% else %}<p class="empty-state">Draft kosong. Dokumen kosong tidak menambahkan fakta ke prompt.</p>{% endif %}</div>
+  <div class="publish-bar panel"><div><strong>Publish membuat versi baru</strong><small>Bot memakai versi ini pada pesan berikutnya untuk {{ document.company_name }} jika dokumen aktif.</small></div><form method="post" action="/admin/knowledge/{{ document.company_id }}/{{ document.document_key }}/publish"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="primary-button" type="submit">Publish knowledge</button></form></div>
+{% endblock %}

@@ -19,6 +19,7 @@ def load_company_content(
     project_root: Path,
     max_chars: int,
     published_instruction: str | None = None,
+    published_knowledge: str | None = None,
 ) -> CompanyContent:
     root = project_root.resolve()
     profile = _read_scoped_file(root, company.profile_file, max_chars=10_000)
@@ -27,12 +28,15 @@ def load_company_content(
         if published_instruction is not None
         else _read_scoped_file(root, company.instruction_file, max_chars=max_chars)
     )
-    knowledge_dir = _scoped_path(root, company.knowledge_dir)
-    knowledge = (
-        load_knowledge(knowledge_dir, max_chars)
-        if knowledge_dir is not None
-        else ""
-    )
+    if published_knowledge is not None:
+        knowledge = published_knowledge.strip()[:max_chars]
+    else:
+        knowledge_dir = _scoped_path(root, company.knowledge_dir)
+        knowledge = (
+            load_knowledge(knowledge_dir, max_chars)
+            if knowledge_dir is not None
+            else ""
+        )
     return CompanyContent(
         profile=profile,
         instruction=instruction,

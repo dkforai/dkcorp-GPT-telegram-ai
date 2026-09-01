@@ -36,7 +36,10 @@
                 </div>
               </td>
               <td>{{ company.member_count }}</td>
-              <td><strong>{{ company.knowledge_count }}</strong><small class="block">Markdown file</small></td>
+              <td>
+                <a class="secondary-link" href="/admin/knowledge/{{ company.company_id }}"><strong>{{ company.knowledge_count }}</strong> dokumen</a>
+                <small class="block">{{ company.knowledge_source }}</small>
+              </td>
               <td>
                 <a class="secondary-link" href="/admin/instructions/{{ company.company_id }}">Kelola instruction</a>
                 <small class="block path-text">{{ company.instruction_file or '-' }}</small>

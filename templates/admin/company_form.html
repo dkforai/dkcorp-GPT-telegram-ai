@@ -15,17 +15,19 @@
     {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
 
     <div class="form-grid">
-      <label>
+      <label class="{% if mode == 'create' %}full-field{% endif %}">
         Nama company
         <input name="name" type="text" value="{{ name }}" minlength="2" maxlength="100" required autofocus>
-        <small>Nama yang ditampilkan kepada admin dan user Telegram.</small>
+        <small>{% if mode == 'create' %}Company ID dibuat otomatis dari nama dan dikunci setelah tersimpan.{% else %}Nama yang ditampilkan kepada admin dan user Telegram.{% endif %}</small>
       </label>
 
-      <label>
-        Company ID
-        <input name="company_id" type="text" value="{{ company_id }}" pattern="[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?" maxlength="64" {% if mode == 'edit' %}readonly{% else %}required{% endif %}>
-        <small>{% if mode == 'edit' %}ID dikunci karena menjadi tenant boundary.{% else %}Gunakan huruf kecil, angka, dan tanda minus. Contoh: malang-strudel.{% endif %}</small>
-      </label>
+      {% if mode == 'edit' %}
+        <label>
+          Company ID
+          <input type="text" value="{{ company_id }}" readonly>
+          <small>ID dibuat sistem dan dikunci karena menjadi tenant boundary.</small>
+        </label>
+      {% endif %}
     </div>
 
     {% if mode == 'create' %}

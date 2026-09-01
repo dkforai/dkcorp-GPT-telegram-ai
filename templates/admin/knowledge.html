@@ -1,0 +1,49 @@
+{% extends "admin/base.html" %}
+{% block title %}Knowledge · DK Corp AI Admin{% endblock %}
+{% block page_title %}Company Knowledge{% endblock %}
+{% block content %}
+  <div class="page-lead">
+    <div>
+      <h2>Knowledge registry</h2>
+      <p>Dokumen bisnis per company. Bot hanya memakai versi published dari dokumen aktif.</p>
+    </div>
+  </div>
+
+  {% if notice %}<div class="notice success" role="status">{{ notice }}</div>{% endif %}
+  {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+
+  <div class="panel table-panel">
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Company</th><th>Documents</th><th>Live</th><th>Draft</th><th>Source aktif</th><th>Action</th></tr></thead>
+        <tbody>
+          {% for company in companies %}
+            <tr>
+              <td>
+                <div class="table-identity">
+                  <span class="company-initial small">{{ company.company_name[:1] | upper }}</span>
+                  <div><strong>{{ company.company_name }}</strong><small>{{ company.company_id }}</small></div>
+                </div>
+              </td>
+              <td>{{ company.document_count }}</td>
+              <td><strong>{{ company.live_document_count }}</strong><small class="block">published &amp; active</small></td>
+              <td>{% if company.pending_draft_count %}<span class="status-badge warning">{{ company.pending_draft_count }} pending</span>{% else %}<span class="status-badge">Sinkron</span>{% endif %}</td>
+              <td>
+                {% if company.published_document_count %}
+                  Database
+                {% elif company.legacy_document_count %}
+                  File transisi ({{ company.legacy_document_count }})
+                {% else %}
+                  Belum ada
+                {% endif %}
+              </td>
+              <td><a class="secondary-link" href="/admin/knowledge/{{ company.company_id }}">Kelola</a></td>
+            </tr>
+          {% else %}
+            <tr><td colspan="6" class="empty-state">Belum ada company.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}

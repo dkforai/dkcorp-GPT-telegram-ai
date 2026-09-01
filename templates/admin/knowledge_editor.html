@@ -1,0 +1,55 @@
+{% extends "admin/base.html" %}
+{% block title %}{{ document.title }} · DK Corp AI Admin{% endblock %}
+{% block page_title %}Knowledge Document{% endblock %}
+{% block content %}
+  <div class="page-lead">
+    <div><h2>{{ document.company_name }}</h2><p>{{ document.document_key }} · Draft tidak memengaruhi bot sampai dipublikasikan.</p></div>
+    <a class="secondary-link back-link" href="/admin/knowledge/{{ document.company_id }}">Kembali</a>
+  </div>
+  {% if notice %}<div class="notice success" role="status">{{ notice }}</div>{% endif %}
+  {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+
+  <div class="instruction-layout">
+    <form class="panel form-panel instruction-editor" method="post" action="/admin/knowledge/{{ document.company_id }}/{{ document.document_key }}/draft">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="form-section-title"><h3>Draft knowledge</h3><p>Document key bersifat permanen: {{ document.document_key }}</p></div>
+      {% if document.source_filename %}
+        <div class="source-file-note"><strong>Source upload</strong><span>{{ document.source_filename }} · {{ (document.source_size_bytes / 1024) | round(1) }} KB</span><code>{{ document.source_sha256[:12] }}…</code></div>
+      {% endif %}
+      <label class="no-margin">Judul
+        <input type="text" name="title" value="{{ document.title }}" maxlength="150" required>
+      </label>
+      <label class="full-field">Isi
+        <textarea class="instruction-textarea" name="content" maxlength="100000" spellcheck="true">{{ document.draft_content }}</textarea>
+        <small>Maksimal 100.000 karakter. Isi draft baru aktif setelah publish.</small>
+      </label>
+      <div class="form-actions split-actions">
+        <span class="form-status">{% if document.published_version_number %}Published v{{ document.published_version_number }}{% else %}Belum pernah publish{% endif %}{% if has_unpublished_changes %} · Ada perubahan draft{% endif %}</span>
+        <div><a class="secondary-button" href="/admin/knowledge/{{ document.company_id }}/{{ document.document_key }}/preview">Preview</a><button class="primary-button" type="submit">Simpan draft</button></div>
+      </div>
+    </form>
+    <aside class="panel instruction-guide">
+      <h3>Yang ditulis di sini</h3>
+      <ul><li>Target, KPI, dan definisi metrik.</li><li>SOP dan kebijakan operasional.</li><li>Produk, layanan, harga, dan batas berlaku.</li><li>Fakta spesifik company yang boleh dirujuk AI.</li></ul>
+      <p>Aturan perilaku AI ditempatkan di Instructions. Jangan memasukkan secret, password, token, atau data pribadi sensitif.</p>
+    </aside>
+  </div>
+
+  <div class="subsection-lead"><h2>Riwayat versi</h2><p>Versi published immutable. Pemulihan selalu masuk ke draft, bukan langsung live.</p></div>
+  <div class="panel table-panel"><div class="table-wrap"><table>
+    <thead><tr><th>Version</th><th>Published</th><th>Isi</th><th>Checksum</th><th>Action</th></tr></thead>
+    <tbody>
+      {% for version in versions %}
+        <tr>
+          <td><strong>v{{ version.version_number }}</strong>{% if version.id == document.published_version_id %} <span class="status-badge active">Live</span>{% endif %}</td>
+          <td>{{ version.published_by }}<small class="block">{{ version.published_at }}</small></td>
+          <td>{{ version.content | length }} karakter<small class="block version-excerpt">{{ version.content | truncate(100, true) }}</small></td>
+          <td><code class="checksum">{{ version.content_sha256[:12] }}…</code></td>
+          <td><form method="post" action="/admin/knowledge/{{ document.company_id }}/{{ document.document_key }}/versions/{{ version.id }}/restore"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="text-button" type="submit">Pulihkan ke draft</button></form></td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5" class="empty-state">Belum ada versi yang dipublikasikan.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table></div></div>
+{% endblock %}

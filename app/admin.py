@@ -19,6 +19,7 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import Settings, load_settings
 from app.database import Database, Membership, User
+from app.document_ingestion import MAX_UPLOAD_BYTES, extract_uploaded_document
 from app.role_profiles import load_role_profiles
 
 
@@ -175,10 +176,22 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
         if redirect:
             return redirect
         rows = database.list_companies_admin()
+        knowledge_summary = {
+            str(item["company_id"]): item
+            for item in database.list_company_knowledge_summary_admin()
+        }
         for row in rows:
-            row["knowledge_count"] = _markdown_count(
-                root, str(row.get("knowledge_dir", ""))
-            )
+            summary = knowledge_summary.get(str(row["company_id"]), {})
+            if int(summary.get("published_document_count", 0)):
+                row["knowledge_count"] = int(
+                    summary.get("live_document_count", 0)
+                )
+                row["knowledge_source"] = "Database live"
+            else:
+                row["knowledge_count"] = _markdown_count(
+                    root, str(row.get("knowledge_dir", ""))
+                )
+                row["knowledge_source"] = "File transisi"
         return templates.TemplateResponse(
             request=request,
             name="admin/companies.html",
@@ -218,12 +231,11 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
         form = await request.form()
         if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
             return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
-        company_id = str(form.get("company_id", ""))
         name = str(form.get("name", ""))
         active = form.get("active") == "1"
         try:
             database.create_company(
-                company_id, name, actor=settings.admin_username, active=active
+                "", name, actor=settings.admin_username, active=active
             )
         except ValueError as exc:
             return templates.TemplateResponse(
@@ -233,7 +245,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                     request,
                     settings,
                     mode="create",
-                    company_id=company_id,
+                    company_id="",
                     name=name,
                     active=active,
                     error=str(exc),
@@ -817,13 +829,302 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             notice="Versi lama dipulihkan sebagai draft. Preview sebelum publish.",
         )
 
+    @app.get("/admin/knowledge", response_class=HTMLResponse)
+    async def knowledge_registry(request: Request):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        rows = database.list_company_knowledge_summary_admin()
+        for row in rows:
+            row["legacy_document_count"] = _markdown_count(
+                root, str(row.get("knowledge_dir", ""))
+            )
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/knowledge.html",
+            context={
+                "active_page": "knowledge",
+                "companies": rows,
+                "admin_username": settings.admin_username,
+                "notice": request.query_params.get("notice", ""),
+                "error": request.query_params.get("error", ""),
+            },
+        )
+
+    @app.get("/admin/knowledge/{company_id}", response_class=HTMLResponse)
+    async def knowledge_documents(request: Request, company_id: str):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        company = database.get_company_admin(company_id)
+        if company is None:
+            return HTMLResponse("Company tidak ditemukan.", status_code=404)
+        summary = next(
+            (
+                item
+                for item in database.list_company_knowledge_summary_admin()
+                if item["company_id"] == company.company_id
+            ),
+            {},
+        )
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/knowledge_documents.html",
+            context={
+                "active_page": "knowledge",
+                "admin_username": settings.admin_username,
+                "csrf_token": _csrf_token(request, settings),
+                "company": company,
+                "summary": summary,
+                "documents": database.list_knowledge_documents_admin(company_id),
+                "legacy_document_count": _markdown_count(
+                    root, company.knowledge_dir
+                ),
+                "notice": request.query_params.get("notice", ""),
+                "error": request.query_params.get("error", ""),
+            },
+        )
+
+    @app.get(
+        "/admin/knowledge/{company_id}/new", response_class=HTMLResponse
+    )
+    async def new_knowledge_document(request: Request, company_id: str):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        company = database.get_company_admin(company_id)
+        if company is None:
+            return HTMLResponse("Company tidak ditemukan.", status_code=404)
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/knowledge_form.html",
+            context=_knowledge_form_context(request, settings, company),
+        )
+
+    @app.post("/admin/knowledge/{company_id}", response_class=HTMLResponse)
+    async def create_knowledge_document(request: Request, company_id: str):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        company = database.get_company_admin(company_id)
+        if company is None:
+            return HTMLResponse("Company tidak ditemukan.", status_code=404)
+        values = {
+            "title": str(form.get("title", "")).strip(),
+            "content": str(form.get("content", "")).strip(),
+        }
+        try:
+            upload = form.get("source_file")
+            upload_name = str(getattr(upload, "filename", "") or "").strip()
+            source_metadata: dict[str, object] = {}
+            if upload_name:
+                if values["content"]:
+                    raise ValueError(
+                        "Pilih salah satu: isi teks langsung atau upload file"
+                    )
+                file_bytes = await upload.read(MAX_UPLOAD_BYTES + 1)
+                extracted = extract_uploaded_document(
+                    upload_name,
+                    getattr(upload, "content_type", ""),
+                    file_bytes,
+                )
+                values["content"] = extracted.text
+                source_metadata = {
+                    "source_filename": extracted.filename,
+                    "source_media_type": extracted.media_type,
+                    "source_size_bytes": extracted.size_bytes,
+                    "source_sha256": extracted.sha256,
+                }
+            document = database.create_knowledge_document(
+                company_id,
+                "",
+                values["title"],
+                values["content"],
+                actor=settings.admin_username,
+                **source_metadata,
+            )
+        except ValueError as exc:
+            return templates.TemplateResponse(
+                request=request,
+                name="admin/knowledge_form.html",
+                context=_knowledge_form_context(
+                    request, settings, company, values=values, error=str(exc)
+                ),
+                status_code=400,
+            )
+        return _knowledge_document_redirect(
+            company_id,
+            str(document["document_key"]),
+            notice="Draft knowledge berhasil dibuat",
+        )
+
+    @app.get(
+        "/admin/knowledge/{company_id}/{document_key}/preview",
+        response_class=HTMLResponse,
+    )
+    async def preview_knowledge_document(
+        request: Request, company_id: str, document_key: str
+    ):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        document = database.get_knowledge_document_admin(company_id, document_key)
+        if document is None:
+            return HTMLResponse("Knowledge document tidak ditemukan.", status_code=404)
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/knowledge_preview.html",
+            context=_knowledge_document_context(
+                request, settings, database, document
+            ),
+        )
+
+    @app.get(
+        "/admin/knowledge/{company_id}/{document_key}",
+        response_class=HTMLResponse,
+    )
+    async def edit_knowledge_document(
+        request: Request, company_id: str, document_key: str
+    ):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        document = database.get_knowledge_document_admin(company_id, document_key)
+        if document is None:
+            return HTMLResponse("Knowledge document tidak ditemukan.", status_code=404)
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/knowledge_editor.html",
+            context=_knowledge_document_context(
+                request,
+                settings,
+                database,
+                document,
+                notice=request.query_params.get("notice", ""),
+                error=request.query_params.get("error", ""),
+            ),
+        )
+
+    @app.post("/admin/knowledge/{company_id}/{document_key}/draft")
+    async def save_knowledge_document_draft(
+        request: Request, company_id: str, document_key: str
+    ):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        try:
+            database.save_knowledge_document_draft(
+                company_id,
+                document_key,
+                form.get("title", ""),
+                form.get("content", ""),
+                actor=settings.admin_username,
+            )
+        except ValueError as exc:
+            return _knowledge_document_redirect(
+                company_id, document_key, error=str(exc)
+            )
+        return _knowledge_document_redirect(
+            company_id, document_key, notice="Draft knowledge berhasil disimpan"
+        )
+
+    @app.post("/admin/knowledge/{company_id}/{document_key}/publish")
+    async def publish_knowledge_document(
+        request: Request, company_id: str, document_key: str
+    ):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        try:
+            version = database.publish_knowledge_document(
+                company_id, document_key, actor=settings.admin_username
+            )
+        except ValueError as exc:
+            return _knowledge_document_redirect(
+                company_id, document_key, error=str(exc)
+            )
+        return _knowledge_document_redirect(
+            company_id,
+            document_key,
+            notice=f"Knowledge versi {version} berhasil dipublikasikan",
+        )
+
+    @app.post("/admin/knowledge/{company_id}/{document_key}/status")
+    async def update_knowledge_document_status(
+        request: Request, company_id: str, document_key: str
+    ):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        target = str(form.get("active", ""))
+        if target not in {"0", "1"}:
+            return _knowledge_company_redirect(
+                company_id, error="Status knowledge tidak valid"
+            )
+        try:
+            database.set_knowledge_document_active(
+                company_id,
+                document_key,
+                target == "1",
+                actor=settings.admin_username,
+            )
+        except ValueError as exc:
+            return _knowledge_company_redirect(company_id, error=str(exc))
+        status = "diaktifkan" if target == "1" else "dinonaktifkan"
+        return _knowledge_company_redirect(
+            company_id, notice=f"Knowledge berhasil {status}"
+        )
+
+    @app.post(
+        "/admin/knowledge/{company_id}/{document_key}/versions/{version_id}/restore"
+    )
+    async def restore_knowledge_document_version(
+        request: Request,
+        company_id: str,
+        document_key: str,
+        version_id: int,
+    ):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        try:
+            database.restore_knowledge_document_version_to_draft(
+                company_id,
+                document_key,
+                version_id,
+                actor=settings.admin_username,
+            )
+        except ValueError as exc:
+            return _knowledge_document_redirect(
+                company_id, document_key, error=str(exc)
+            )
+        return _knowledge_document_redirect(
+            company_id,
+            document_key,
+            notice="Versi lama dipulihkan sebagai draft. Preview sebelum publish.",
+        )
+
     @app.get("/admin/{section}", response_class=HTMLResponse)
     async def placeholder(request: Request, section: str):
         redirect = _login_redirect(request, settings)
         if redirect:
             return redirect
         labels = {
-            "knowledge": "Knowledge",
             "modules": "Modules",
             "activity": "Activity",
         }
@@ -1030,6 +1331,88 @@ def _instruction_redirect(
     suffix = f"?{urlencode(values)}" if values else ""
     return RedirectResponse(
         f"/admin/instructions/{company_id}{suffix}", status_code=303
+    )
+
+
+def _knowledge_form_context(
+    request: Request,
+    settings: Settings,
+    company,
+    *,
+    values: dict[str, str] | None = None,
+    error: str = "",
+) -> dict[str, object]:
+    defaults = {"title": "", "content": ""}
+    defaults.update(values or {})
+    return {
+        "active_page": "knowledge",
+        "admin_username": settings.admin_username,
+        "csrf_token": _csrf_token(request, settings),
+        "company": company,
+        "values": defaults,
+        "error": error,
+    }
+
+
+def _knowledge_document_context(
+    request: Request,
+    settings: Settings,
+    database: Database,
+    document: dict[str, object],
+    *,
+    notice: str = "",
+    error: str = "",
+) -> dict[str, object]:
+    return {
+        "active_page": "knowledge",
+        "admin_username": settings.admin_username,
+        "csrf_token": _csrf_token(request, settings),
+        "document": document,
+        "versions": database.list_knowledge_document_versions(
+            str(document["company_id"]), str(document["document_key"])
+        ),
+        "has_unpublished_changes": (
+            document.get("published_version_id") is None
+            or str(document.get("title", ""))
+            != str(document.get("published_title", ""))
+            or str(document.get("draft_content", ""))
+            != str(document.get("published_content", ""))
+        ),
+        "notice": notice,
+        "error": error,
+    }
+
+
+def _knowledge_company_redirect(
+    company_id: str, notice: str = "", *, error: str = ""
+) -> RedirectResponse:
+    values = {
+        key: value
+        for key, value in {"notice": notice, "error": error}.items()
+        if value
+    }
+    suffix = f"?{urlencode(values)}" if values else ""
+    return RedirectResponse(
+        f"/admin/knowledge/{company_id}{suffix}", status_code=303
+    )
+
+
+def _knowledge_document_redirect(
+    company_id: str,
+    document_key: str,
+    notice: str = "",
+    *,
+    error: str = "",
+) -> RedirectResponse:
+    values = {
+        key: value
+        for key, value in {"notice": notice, "error": error}.items()
+        if value
+    }
+    suffix = f"?{urlencode(values)}" if values else ""
+    return RedirectResponse(
+        f"/admin/knowledge/{company_id}/{document_key}{suffix}",
+        status_code=303,
     )
 
 

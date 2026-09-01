@@ -5,7 +5,7 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 1.2 |
+| Versi | 1.5 |
 | Terakhir diperbarui | 1 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
@@ -34,6 +34,7 @@ Tujuan utama:
 6. MVP memakai komponen minimum yang cukup untuk satu instance.
 7. Mutasi administratif harus tervalidasi, dilindungi CSRF, dan dicatat sebagai audit event.
 8. Draft instruction tidak boleh memengaruhi bot. Runtime hanya membaca versi database yang sudah dipublikasikan atau file transisi bila belum ada versi database.
+9. Draft knowledge tidak boleh memengaruhi bot. Runtime membaca versi published dari dokumen aktif; file transisi hanya dipakai sampai publish knowledge pertama pada company tersebut.
 
 ## 3. Arsitektur logis
 
@@ -66,7 +67,7 @@ Communication Profile
 Custom Instruction per user
     ↓
 Knowledge Loader
-file Markdown perusahaan
+published knowledge database atau file Markdown transisi
     ↓
 Prompt Composer
 global policy + user context + communication profile
@@ -97,7 +98,8 @@ Jawaban ke user
 | User Context | Sudah | Identity global dan membership per perusahaan |
 | Communication Profile | Sudah | Config terpusat dengan override per membership |
 | Custom Instruction | Sudah | Field global user dan field per membership |
-| Knowledge Loader | Sudah | Folder knowledge ditentukan oleh company aktif |
+| Knowledge Loader | Sudah | Published document aktif dari SQLite; folder Markdown menjadi fallback sampai publish pertama |
+| Document Ingestion | Sebagian | Upload PDF, DOCX, TXT, dan Markdown menjadi draft teks; OCR dan `.doc` belum |
 | Chat History | Sudah | SQLite dipisahkan per user dan perusahaan |
 | Provider Abstraction | Sudah | OpenAI dan DeepSeek compatible API |
 | Telegram Response Renderer | Sudah | Safe HTML, split, link preview off, dan fallback plain text |
@@ -107,7 +109,7 @@ Jawaban ke user
 | Company-scoped instruction | Sudah | Draft dan versi publish tersimpan di SQLite; file company menjadi fallback transisi |
 | Authorization per knowledge | Sebagian | Sudah company-scoped; module, division, dan clearance belum |
 | Response Validator | Sebagian | Batas panjang, split, escape HTML, dan fallback; belum ada policy classifier |
-| Admin Panel | Sebagian | Company, user, membership, dan Company Instruction writable; Knowledge, Modules, dan Activity menyusul |
+| Admin Panel | Sebagian | Company, user, membership, Instruction, dan Knowledge writable; Modules dan Activity menyusul |
 | Retrieval/RAG | Belum | Seluruh knowledge dimuat sampai batas karakter |
 
 ## 5. Target arsitektur multi-company
@@ -291,7 +293,8 @@ Folder adalah bentuk transisi yang mudah diaudit. Target produksi skala lanjut m
 | `company_instruction_state` | Draft aktif dan pointer versi live per perusahaan |
 | `company_instruction_versions` | Versi publish immutable per perusahaan |
 | `module_playbooks` | Playbook versioned per modul |
-| `knowledge_documents` | Dokumen dengan scope perusahaan/modul |
+| `knowledge_documents` | Metadata, status, draft, dan pointer versi live per company |
+| `knowledge_document_versions` | Versi published immutable, title, content, checksum, actor, dan waktu publish |
 | `chat_sessions` | Active company, active module, dan summary |
 | `messages` | Audit percakapan |
 
@@ -308,7 +311,7 @@ Empat area utama:
 3. Users & Access: identity dan company membership;
 4. Activity: perubahan konfigurasi, versi, dan error operasional.
 
-Instruction memakai alur Draft → Preview → Publish → Restore to Draft. Knowledge akan mengikuti pola publish yang setara ketika modulnya dibangun. Edit draft tidak langsung memengaruhi bot produksi.
+Instruction dan Knowledge memakai alur Draft → Preview → Publish → Restore to Draft. Edit draft tidak langsung memengaruhi bot produksi.
 
 Versi admin saat ini menyediakan:
 
@@ -319,8 +322,10 @@ Versi admin saat ini menyediakan:
 - halaman Companies untuk tambah, ubah nama, aktivasi, dan nonaktivasi;
 - halaman Users & Access untuk tambah/ubah user, status whitelist, serta membership;
 - halaman Company Instructions untuk menyimpan draft, preview, publish, dan riwayat versi;
+- halaman Knowledge untuk membuat dokumen per company, menyimpan draft, preview, publish, aktivasi/nonaktivasi, dan riwayat versi;
+- form Knowledge menerima teks langsung atau upload PDF, DOCX, TXT, dan Markdown maksimal 10 MB;
 - restore versi lama ke draft agar selalu melewati preview sebelum dipublikasikan kembali;
-- placeholder navigasi Knowledge, Modules, dan Activity;
+- placeholder navigasi Modules dan Activity;
 - security headers dan health endpoint.
 - CSRF token untuk seluruh mutasi Company;
 - audit event untuk create, update, activate, dan deactivate Company.
@@ -328,6 +333,8 @@ Versi admin saat ini menyediakan:
 - membership tambahan dapat mengatur jabatan, divisi, role level, communication profile, custom instruction, status, dan default.
 - bot hanya membaca `published_version_id`; draft tersimpan terpisah dan tidak masuk ke system prompt.
 - file instruction tetap dibaca sebagai fallback selama suatu company belum mempunyai versi database yang dipublikasikan.
+- bot hanya membaca knowledge published dari dokumen aktif dan selalu memfilternya dengan `company_id`;
+- file knowledge tetap menjadi fallback sampai company mempunyai publish knowledge pertama. Setelah itu database tetap menjadi sumber aktif meskipun semua dokumen dinonaktifkan.
 
 Admin dan bot sementara berjalan dalam satu container dan memakai SQLite yang sama. SQLite menjadi source of truth runtime. `config/companies.json` dan `config/users.json` hanya diimpor ketika tabel terkait masih kosong, sehingga restart atau redeploy tidak menimpa perubahan admin.
 
@@ -347,6 +354,29 @@ Bot memakai versi live pada pesan berikutnya
 ```
 
 Setiap publish selalu menambah `version_number`; versi lama tidak diubah atau dihapus. Aksi restore hanya menyalin isi versi yang dipilih ke draft. Admin wajib melakukan preview dan publish untuk menjadikannya live. Jika `published_version_id` belum tersedia, runtime memakai `companies.instruction_file` sebagai fallback transisi. Nilai draft tidak pernah menjadi fallback runtime.
+
+### 5.9.2 Lifecycle Knowledge Document
+
+```text
+Editor admin per company
+    ↓ Buat atau simpan draft
+knowledge_documents.title + draft_content
+    ↓ Preview
+Tampilan read-only, belum dibaca bot
+    ↓ Publish dalam satu transaksi
+knowledge_document_versions versi immutable baru
+    + update knowledge_documents.published_version_id
+    ↓
+Bot menggabungkan versi live dari dokumen aktif company tersebut
+```
+
+`document_key` immutable dan unik di dalam satu company, tetapi key yang sama boleh dipakai company lain. Setiap versi menyimpan SHA-256 content agar integritas isi dapat diperiksa tanpa memasukkan isi penuh ke audit event. Restore menyalin judul dan isi versi lama ke draft.
+
+Upload tidak disimpan sebagai file runtime. Server memvalidasi extension dan signature dasar, membatasi ukuran, mengekstrak teks, lalu menyimpan teks tersebut sebagai draft. Metadata source berupa filename aman, media type, ukuran, dan SHA-256 file disimpan pada `knowledge_documents` dan audit event. Admin tetap wajib memeriksa hasil ekstraksi sebelum publish.
+
+Format yang didukung adalah PDF dengan text layer, Word Open XML `.docx`, UTF-8 `.txt`, dan `.md`. PDF scan tanpa text layer membutuhkan OCR yang belum diimplementasikan. Format Word binary lama `.doc` ditolak dan harus disimpan ulang sebagai `.docx`.
+
+Sebelum publish pertama pada suatu company, runtime memakai folder Markdown transisi. Publish pertama memindahkan company ke mode database. Setelah mode database aktif, hasil knowledge dapat kosong bila seluruh dokumen dinonaktifkan; runtime tidak boleh membangkitkan kembali file transisi secara implisit.
 
 ### 5.10 Target persistence multi-tenant
 
@@ -370,8 +400,8 @@ Implementasi dilakukan bertahap:
 1. schema database multi-tenant dan repository/service layer disiapkan — selesai untuk company, user, membership, session, message, dan audit event;
 2. data JSON diimpor hanya saat registry database kosong — selesai;
 3. runtime bot membaca SQLite sebagai source of truth — selesai;
-4. admin panel menulis entitas secara bertahap ke database — Company, user, membership, dan Company Instruction selesai;
-5. instruction memakai draft, preview, immutable published version, dan restore-to-draft — selesai; knowledge belum;
+4. admin panel menulis entitas secara bertahap ke database — Company, user, membership, Company Instruction, dan Knowledge selesai;
+5. instruction dan knowledge memakai draft, preview, immutable published version, dan restore-to-draft — selesai;
 6. PostgreSQL menjadi target ketika bot dan admin dipisahkan menjadi service berbeda — belum.
 
 ## 6. Pemisahan konsep user
@@ -573,6 +603,9 @@ SQLite menjadi source of truth runtime dan menyimpan:
 - audit event perubahan administratif.
 - draft Company Instruction dan pointer versi yang sedang live;
 - versi Company Instruction yang sudah dipublikasikan dan bersifat immutable.
+- metadata, status, draft, dan pointer versi live Knowledge Document per company;
+- versi Knowledge Document immutable beserta SHA-256 content.
+- metadata source upload Knowledge tanpa menyimpan file mentah.
 
 Railway Volume dipasang pada `/app/data` agar database bertahan saat redeploy.
 
@@ -627,6 +660,14 @@ Sudah diterapkan:
 - publish instruction membuat versi immutable baru dan mengubah pointer live secara atomik;
 - restore versi lama hanya menyalin isinya ke draft, sehingga tetap harus dipreview dan dipublikasikan kembali;
 - mutasi instruction memakai CSRF dan audit event tanpa menyimpan isi instruction ke audit details.
+- semua query knowledge database memakai filter `company_id` langsung atau relasi dokumen yang tervalidasi;
+- draft knowledge tidak pernah dibaca runtime;
+- publish knowledge membuat versi immutable baru dan mengubah pointer live secara atomik;
+- deactivate knowledge menghentikan pemakaian dokumen tanpa menghapus draft atau riwayat versi;
+- restore knowledge lintas company ditolak oleh filter tenant pada query;
+- audit knowledge menyimpan metadata, jumlah karakter, dan checksum, bukan isi dokumen penuh.
+- upload knowledge dibatasi 10 MB, filename dibersihkan, extension dan struktur file divalidasi, serta hasil ekstraksi dibatasi 100.000 karakter;
+- file upload tidak menjadi instruction dan tidak langsung live; hanya teks draft yang telah dipublish yang dibaca runtime.
 
 Belum diterapkan:
 
@@ -644,10 +685,11 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 - satu provider aktif untuk seluruh bot;
 - satu instance Railway;
 - seluruh knowledge company aktif dimuat sampai `KNOWLEDGE_MAX_CHARS`;
-- Company, user, membership, communication profile, dan Company Instruction dikelola melalui admin;
+- upload knowledge mendukung PDF text layer, DOCX, TXT, dan Markdown; OCR serta `.doc` lama belum;
+- Company, user, membership, communication profile, Company Instruction, dan Knowledge dikelola melalui admin;
 - modul, module access, dan module-scoped knowledge belum diimplementasikan;
 - combined legacy Funnel Coach masih dipakai sebagai instruction DK Corp Group sampai dokumen dipisahkan;
-- Company Instruction sudah writable dan versioned; Knowledge, Modules, dan Activity masih tahap berikutnya.
+- Company Instruction dan Knowledge sudah writable dan versioned; Modules dan Activity masih tahap berikutnya.
 - concurrency masih berada dalam satu process dan belum memakai durable application queue terpisah.
 
 ## 14. Roadmap
@@ -666,6 +708,7 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 - master company dan user-company membership; selesai untuk company scope;
 - active company router; selesai melalui `/company`;
 - company instruction terpisah dan versioned; selesai, migrasi isi legacy per company dilakukan melalui editor admin;
+- company knowledge terpisah dan versioned; selesai untuk company scope, dengan fallback file selama transisi;
 - active module router dan module playbook;
 - knowledge metadata per division;
 - authorization policy dan clearance;
@@ -674,10 +717,10 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 
 ### Fase 3 — Scalable Knowledge
 
-- document ingestion;
+- document ingestion file/upload di luar editor teks;
 - retrieval/RAG;
 - citation ke sumber internal;
-- freshness dan versioning knowledge;
+- freshness policy knowledge; versioning dasar sudah selesai;
 - evaluasi kualitas jawaban per role.
 
 ### Fase 4 — Operational Platform
@@ -724,8 +767,46 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 | ADR-031 | Publish membuat versi immutable baru | Riwayat perubahan tetap dapat diaudit dan versi lama tidak ditimpa |
 | ADR-032 | Restore menyalin versi lama ke draft | Rollback tetap melewati preview dan publish, bukan mengganti runtime secara diam-diam |
 | ADR-033 | Database instruction mengalahkan file transisi hanya setelah publish | Company lama tetap berjalan sebelum migrasi, sedangkan draft baru aman dari runtime |
+| ADR-034 | Draft Knowledge dipisahkan dari versi live | Edit fakta bisnis tidak boleh mengubah konteks bot sebelum preview dan publish |
+| ADR-035 | Publish Knowledge pertama mengaktifkan mode database per company | Migrasi dapat dilakukan bertahap tanpa mematikan file transisi sebelum data baru siap |
+| ADR-036 | Document key unik dalam scope company | Identitas dokumen stabil sekaligus mengizinkan taxonomy key yang sama pada tenant berbeda |
+| ADR-037 | Mode database tidak kembali ke fallback ketika seluruh dokumen inactive | Deactivation yang disengaja tidak boleh diam-diam menghidupkan data file lama |
+| ADR-038 | Versi Knowledge immutable dan menyimpan SHA-256 | Riwayat dapat diaudit serta integritas isi dapat diperiksa tanpa menaruh dokumen penuh di audit log |
+| ADR-039 | Upload diekstrak menjadi draft, bukan disimpan sebagai konteks file mentah | Admin dapat memeriksa hasil parsing dan alur publish tetap menjadi satu-satunya jalan menuju runtime |
+| ADR-040 | MVP upload mendukung PDF text layer dan DOCX, bukan `.doc` atau OCR | Parsing tetap portable pada container Railway tanpa binary office/OCR tambahan |
+| ADR-041 | Source upload menyimpan metadata dan SHA-256, bukan file asli | Provenance dan audit tersedia tanpa memperbesar SQLite dengan binary document |
+| ADR-042 | Company ID dan document key dibuat server dari nama atau judul | Admin tidak perlu memahami slug teknis dan request yang dimanipulasi tidak dapat menentukan tenant key |
+| ADR-043 | Collision identifier memakai suffix numerik deterministik | Nama yang sama tetap dapat dibuat tanpa meminta admin menyusun key manual |
 
 ## 16. Changelog dokumen
+
+### 1.5 — 1 September 2026
+
+- menghapus input Company ID dan document key dari form create;
+- membuat identifier di sisi server dari nama company atau judul knowledge;
+- menambahkan suffix `-2`, `-3`, dan seterusnya ketika identifier sudah digunakan;
+- mempertahankan Telegram ID sebagai input eksternal dari Telegram dan seluruh secret di environment variables;
+- menambahkan pengujian bahwa nilai identifier hasil manipulasi form diabaikan server.
+
+### 1.4 — 1 September 2026
+
+- menambahkan upload PDF, DOCX, TXT, dan Markdown pada form Knowledge;
+- mengekstrak file menjadi teks draft yang tetap melewati preview dan publish;
+- menambahkan batas file 10 MB, batas 500 halaman PDF, batas uncompressed DOCX, validasi struktur, dan batas hasil 100.000 karakter;
+- menolak Word `.doc`, file dengan extension palsu, PDF encrypted, dan PDF scan tanpa text layer dengan pesan yang dapat ditindaklanjuti;
+- menyimpan filename, media type, ukuran, serta SHA-256 source tanpa menyimpan binary file;
+- menambahkan dependency `pypdf` dan `python-docx` serta pengujian parser dan workflow upload admin;
+- memperbarui status implementasi, lifecycle knowledge, security boundary, batas MVP, dan keputusan arsitektur.
+
+### 1.3 — 1 September 2026
+
+- membuka Knowledge Management per company pada admin;
+- menambahkan dokumen draft, preview, publish, status aktif/nonaktif, immutable version history, dan restore-to-draft;
+- menjadikan published knowledge database sebagai konteks runtime setelah publish pertama, dengan file Markdown sebagai fallback transisi sebelumnya;
+- memastikan draft, dokumen inactive, dan data company lain tidak masuk ke prompt;
+- menambahkan checksum SHA-256 per versi serta audit event tanpa isi dokumen penuh;
+- menambahkan pengujian fallback, tenant isolation, versioning, runtime switching, CSRF, dan workflow admin;
+- memperbarui status implementasi, persistence, security boundary, batas MVP, roadmap, dan keputusan arsitektur.
 
 ### 1.2 — 1 September 2026
 

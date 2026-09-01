@@ -2,16 +2,21 @@ import asyncio
 import json
 import re
 import sqlite3
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
+from docx import Document
 from fastapi.testclient import TestClient
+from pypdf import PdfWriter
+from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from app.admin import create_admin_app
 from app.bot import InternalBot, _split_message
 from app.company_context import CompanyContent, load_company_content
 from app.config import Settings
 from app.database import Company, Database, Membership, User
+from app.document_ingestion import extract_uploaded_document
 from app.knowledge import load_knowledge
 from app.prompts import build_system_prompt
 from app.role_profiles import load_role_profiles, resolve_communication_profile
@@ -431,6 +436,7 @@ def test_admin_company_management_and_csrf(tmp_path):
 
         response = client.get("/admin/companies/new")
         assert response.status_code == 200
+        assert 'name="company_id"' not in response.text
         csrf = re.search(r'name="csrf_token" value="([a-f0-9]+)"', response.text)
         assert csrf is not None
         csrf_token = csrf.group(1)
@@ -445,7 +451,7 @@ def test_admin_company_management_and_csrf(tmp_path):
             "/admin/companies",
             data={
                 "csrf_token": csrf_token,
-                "company_id": "company-b",
+                "company_id": "id-yang-dipalsukan",
                 "name": "Company B",
                 "active": "1",
             },
@@ -487,6 +493,37 @@ def test_admin_company_management_and_csrf(tmp_path):
     )
     assert database.bootstrap_companies(companies_file) == 0
     assert database.get_company_admin("company-a").name == "Company A"
+
+
+def test_server_generated_identifiers_and_collision_suffixes(tmp_path):
+    database = Database(tmp_path / "generated-identifiers.db")
+    database.initialize()
+
+    first_company = database.create_company(
+        "", "Amazing Malang", actor="admin"
+    )
+    second_company = database.create_company(
+        "", "Amazing Malang", actor="admin"
+    )
+    assert first_company.company_id == "amazing-malang"
+    assert second_company.company_id == "amazing-malang-2"
+
+    first_document = database.create_knowledge_document(
+        first_company.company_id,
+        "",
+        "Target Omzet 2026",
+        "Target pertama.",
+        actor="admin",
+    )
+    second_document = database.create_knowledge_document(
+        first_company.company_id,
+        "",
+        "Target Omzet 2026",
+        "Target kedua.",
+        actor="admin",
+    )
+    assert first_document["document_key"] == "target-omzet-2026"
+    assert second_document["document_key"] == "target-omzet-2026-2"
 
 
 def test_admin_user_and_membership_management(tmp_path):
@@ -776,6 +813,343 @@ def test_admin_company_instruction_workflow(tmp_path):
         "company_instruction.published",
         "company_instruction.draft_saved",
     ]
+
+
+def test_knowledge_publish_runtime_fallback_and_tenant_isolation(tmp_path):
+    companies_file = tmp_path / "companies.json"
+    for company_id, file_content in (
+        ("company-a", "Knowledge file A"),
+        ("company-b", "Knowledge file B"),
+    ):
+        knowledge_dir = tmp_path / "companies" / company_id / "knowledge"
+        knowledge_dir.mkdir(parents=True)
+        (knowledge_dir / "legacy.md").write_text(file_content, encoding="utf-8")
+    companies_file.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "company-a",
+                    "name": "Company A",
+                    "knowledge_dir": "companies/company-a/knowledge",
+                },
+                {
+                    "id": "company-b",
+                    "name": "Company B",
+                    "knowledge_dir": "companies/company-b/knowledge",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    database = Database(tmp_path / "knowledge.db")
+    database.initialize()
+    database.bootstrap_companies(companies_file)
+    company_a = database.get_company_admin("company-a")
+    company_b = database.get_company_admin("company-b")
+    assert company_a is not None and company_b is not None
+
+    assert database.get_published_company_knowledge("company-a", 10_000) is None
+    fallback_a = load_company_content(company_a, tmp_path, 10_000).knowledge
+    assert "Knowledge file A" in fallback_a
+    database.create_knowledge_document(
+        "company-a", "sales-target", "Sales Target", "Target A v1", "admin"
+    )
+    assert database.get_published_company_knowledge("company-a", 10_000) is None
+    assert database.publish_knowledge_document(
+        "company-a", "sales-target", "admin"
+    ) == 1
+    published_a = database.get_published_company_knowledge("company-a", 10_000)
+    assert published_a is not None
+    assert "Target A v1" in published_a
+    assert "Knowledge file A" not in published_a
+    assert load_company_content(
+        company_a, tmp_path, 10_000, None, published_a
+    ).knowledge == published_a
+
+    assert database.get_published_company_knowledge("company-b", 10_000) is None
+    fallback_b = load_company_content(company_b, tmp_path, 10_000).knowledge
+    assert "Knowledge file B" in fallback_b
+    database.create_knowledge_document(
+        "company-b", "sales-target", "Sales Target", "Target B", "admin"
+    )
+    database.publish_knowledge_document("company-b", "sales-target", "admin")
+    assert "Target B" not in database.get_published_company_knowledge(
+        "company-a", 10_000
+    )
+
+    database.save_knowledge_document_draft(
+        "company-a", "sales-target", "Sales Target", "Target A v2", "admin"
+    )
+    assert "Target A v1" in database.get_published_company_knowledge(
+        "company-a", 10_000
+    )
+    assert database.publish_knowledge_document(
+        "company-a", "sales-target", "admin"
+    ) == 2
+    versions = database.list_knowledge_document_versions(
+        "company-a", "sales-target"
+    )
+    assert [row["version_number"] for row in versions] == [2, 1]
+    assert all(len(str(row["content_sha256"])) == 64 for row in versions)
+    database.restore_knowledge_document_version_to_draft(
+        "company-a", "sales-target", versions[1]["id"], "admin"
+    )
+    document = database.get_knowledge_document_admin(
+        "company-a", "sales-target"
+    )
+    assert document is not None
+    assert document["draft_content"] == "Target A v1"
+    assert document["published_content"] == "Target A v2"
+
+    try:
+        database.restore_knowledge_document_version_to_draft(
+            "company-b", "sales-target", versions[1]["id"], "admin"
+        )
+        assert False, "Cross-tenant restore seharusnya ditolak"
+    except ValueError as exc:
+        assert "tidak ditemukan" in str(exc)
+
+    database.set_knowledge_document_active(
+        "company-a", "sales-target", False, "admin"
+    )
+    assert database.get_published_company_knowledge("company-a", 10_000) == ""
+    assert load_company_content(company_a, tmp_path, 10_000, None, "").knowledge == ""
+
+
+def test_admin_knowledge_document_workflow(tmp_path):
+    companies_file = tmp_path / "companies.json"
+    companies_file.write_text(
+        json.dumps([{"id": "company-a", "name": "Company A"}]),
+        encoding="utf-8",
+    )
+    users_file = tmp_path / "users.json"
+    users_file.write_text("[]", encoding="utf-8")
+    database = Database(tmp_path / "knowledge-admin.db")
+    database.initialize()
+    database.bootstrap_companies(companies_file)
+    settings = _test_settings(
+        tmp_path,
+        users_file,
+        companies_file,
+        database_path=tmp_path / "knowledge-admin.db",
+        project_root=Path("."),
+    )
+    app = create_admin_app(settings, database)
+    with TestClient(app) as client:
+        response = client.post(
+            "/admin/login",
+            data={"username": "admin", "password": "strong-password"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert client.get("/admin/knowledge").status_code == 200
+        response = client.get("/admin/knowledge/company-a/new")
+        assert response.status_code == 200
+        assert 'name="document_key"' not in response.text
+        csrf = re.search(r'name="csrf_token" value="([a-f0-9]+)"', response.text)
+        assert csrf is not None
+        csrf_token = csrf.group(1)
+
+        response = client.post(
+            "/admin/knowledge/company-a",
+            data={
+                "document_key": "target-2026",
+                "title": "Target 2026",
+                "content": "Target omzet bulanan Rp500 juta.",
+            },
+        )
+        assert response.status_code == 403
+        response = client.post(
+            "/admin/knowledge/company-a",
+            data={
+                "csrf_token": csrf_token,
+                "document_key": "key-yang-dipalsukan",
+                "title": "Target 2026",
+                "content": "Target omzet bulanan Rp500 juta.",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert response.headers["location"].startswith(
+            "/admin/knowledge/company-a/target-2026"
+        )
+        assert database.get_published_company_knowledge("company-a", 10_000) is None
+
+        response = client.get(
+            "/admin/knowledge/company-a/target-2026/preview"
+        )
+        assert response.status_code == 200
+        assert "Rp500 juta" in response.text
+        response = client.post(
+            "/admin/knowledge/company-a/target-2026/publish",
+            data={"csrf_token": csrf_token},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert "Rp500 juta" in database.get_published_company_knowledge(
+            "company-a", 10_000
+        )
+        response = client.get("/admin/knowledge/company-a/target-2026")
+        assert response.status_code == 200
+        assert "Published v1" in response.text
+        assert "Live" in response.text
+
+        response = client.post(
+            "/admin/knowledge/company-a/target-2026/status",
+            data={"csrf_token": csrf_token, "active": "0"},
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert database.get_published_company_knowledge("company-a", 10_000) == ""
+
+    actions = [row["action"] for row in database.list_admin_audit_events()]
+    assert actions[:3] == [
+        "knowledge_document.deactivated",
+        "knowledge_document.published",
+        "knowledge_document.created",
+    ]
+    audit_payload = " ".join(
+        str(row["details_json"]) for row in database.list_admin_audit_events()
+    )
+    assert "Target omzet bulanan Rp500 juta." not in audit_payload
+
+
+def test_document_ingestion_pdf_docx_and_invalid_formats():
+    pdf_buffer = BytesIO()
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=612, height=792)
+    font = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
+    page[NameObject("/Resources")] = DictionaryObject(
+        {
+            NameObject("/Font"): DictionaryObject(
+                {NameObject("/F1"): font}
+            )
+        }
+    )
+    content = DecodedStreamObject()
+    content.set_data(
+        b"BT /F1 12 Tf 72 720 Td (Target PDF Rp700 juta) Tj ET"
+    )
+    page[NameObject("/Contents")] = content
+    writer.write(pdf_buffer)
+    pdf = extract_uploaded_document(
+        "target.pdf", "application/pdf", pdf_buffer.getvalue()
+    )
+    assert "Target PDF Rp700 juta" in pdf.text
+    assert len(pdf.sha256) == 64
+
+    docx_buffer = BytesIO()
+    document = Document()
+    document.add_heading("Brand Identity", level=1)
+    document.add_paragraph("Amazing Malang memakai tone hangat dan informatif.")
+    table = document.add_table(rows=1, cols=2)
+    table.cell(0, 0).text = "Warna"
+    table.cell(0, 1).text = "Ungu"
+    document.save(docx_buffer)
+    docx = extract_uploaded_document(
+        "brand.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        docx_buffer.getvalue(),
+    )
+    assert "Brand Identity" in docx.text
+    assert "Warna | Ungu" in docx.text
+
+    for filename, data, expected in (
+        ("legacy.doc", b"legacy", "Simpan ulang sebagai .docx"),
+        ("fake.pdf", b"not-a-pdf", "tidak cocok dengan format PDF"),
+        ("scan.pdf", _blank_pdf_bytes(), "tidak mengandung teks"),
+    ):
+        try:
+            extract_uploaded_document(filename, "application/octet-stream", data)
+            assert False, f"{filename} seharusnya ditolak"
+        except ValueError as exc:
+            assert expected in str(exc)
+
+
+def test_admin_knowledge_docx_upload_creates_reviewable_draft(tmp_path):
+    companies_file = tmp_path / "companies.json"
+    companies_file.write_text(
+        json.dumps([{"id": "company-a", "name": "Company A"}]),
+        encoding="utf-8",
+    )
+    users_file = tmp_path / "users.json"
+    users_file.write_text("[]", encoding="utf-8")
+    database = Database(tmp_path / "upload-admin.db")
+    database.initialize()
+    database.bootstrap_companies(companies_file)
+    settings = _test_settings(
+        tmp_path,
+        users_file,
+        companies_file,
+        database_path=tmp_path / "upload-admin.db",
+        project_root=Path("."),
+    )
+    app = create_admin_app(settings, database)
+    docx_buffer = BytesIO()
+    source_document = Document()
+    source_document.add_paragraph("Brand voice Amazing Malang bersifat hangat.")
+    source_document.save(docx_buffer)
+    payload = docx_buffer.getvalue()
+
+    with TestClient(app) as client:
+        assert client.post(
+            "/admin/login",
+            data={"username": "admin", "password": "strong-password"},
+            follow_redirects=False,
+        ).status_code == 303
+        form_page = client.get("/admin/knowledge/company-a/new")
+        csrf = re.search(
+            r'name="csrf_token" value="([a-f0-9]+)"', form_page.text
+        )
+        assert csrf is not None
+        response = client.post(
+            "/admin/knowledge/company-a",
+            data={
+                "csrf_token": csrf.group(1),
+                "document_key": "key-yang-dipalsukan",
+                "title": "Brand Identity",
+                "content": "",
+            },
+            files={
+                "source_file": (
+                    "brand.docx",
+                    payload,
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                )
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        stored = database.get_knowledge_document_admin(
+            "company-a", "brand-identity"
+        )
+        assert stored is not None
+        assert "Brand voice Amazing Malang" in stored["draft_content"]
+        assert stored["source_filename"] == "brand.docx"
+        assert stored["source_size_bytes"] == len(payload)
+        assert len(str(stored["source_sha256"])) == 64
+        assert database.get_published_company_knowledge("company-a", 10_000) is None
+        editor = client.get("/admin/knowledge/company-a/brand-identity")
+        assert "Source upload" in editor.text
+        assert "brand.docx" in editor.text
+
+    audit = database.list_admin_audit_events()[0]
+    assert "brand.docx" in str(audit["details_json"])
+    assert "Brand voice Amazing Malang" not in str(audit["details_json"])
+
+
+def _blank_pdf_bytes() -> bytes:
+    output = BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.write(output)
+    return output.getvalue()
 
 
 def test_bot_serializes_same_user_and_allows_different_users(tmp_path):
