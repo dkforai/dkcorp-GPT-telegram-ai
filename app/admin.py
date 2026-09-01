@@ -789,6 +789,10 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             )
         except ValueError as exc:
             return _instruction_redirect(company_id, error=str(exc))
+        if str(form.get("submit_action", "")) == "preview":
+            return RedirectResponse(
+                f"/admin/instructions/{company_id}/preview", status_code=303
+            )
         return _instruction_redirect(company_id, notice="Draft berhasil disimpan")
 
     @app.get(
@@ -1063,6 +1067,11 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             return _knowledge_document_redirect(
                 company_id, document_key, error=str(exc)
             )
+        if str(form.get("submit_action", "")) == "preview":
+            return RedirectResponse(
+                f"/admin/knowledge/{company_id}/{document_key}/preview",
+                status_code=303,
+            )
         return _knowledge_document_redirect(
             company_id, document_key, notice="Draft knowledge berhasil disimpan"
         )
@@ -1291,6 +1300,11 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             )
         except ValueError as exc:
             return _module_redirect(company_id, module_id, error=str(exc))
+        if str(form.get("submit_action", "")) == "preview":
+            return RedirectResponse(
+                f"/admin/modules/{company_id}/{module_id}/preview",
+                status_code=303,
+            )
         return _module_redirect(
             company_id, module_id, notice="Draft playbook berhasil disimpan"
         )

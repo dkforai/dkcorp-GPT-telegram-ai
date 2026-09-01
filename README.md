@@ -180,6 +180,8 @@ Profile masih berbasis file dan dibaca ulang pada setiap pertanyaan. Hanya conte
 
 Module dikelola melalui admin dengan alur **Draft → Preview → Publish** untuk playbook. Module baru tidak dapat dipilih bot sebelum playbook dipublikasikan dan aksesnya dicentang pada membership. Memilih `/company` mereset module ke `General`; mengganti module tidak menghapus history lama, tetapi memakai ruang history yang terpisah. Knowledge khusus module belum tersedia, sehingga module aktif masih memakai Knowledge company yang sama ditambah playbook module.
 
+Pada ketiga editor tersebut, admin dapat memilih **Simpan draft** untuk pekerjaan yang belum selesai atau **Review untuk publish**. Tombol Review menyimpan isi terbaru lalu langsung membuka Preview, sehingga konten yang siap cukup melewati dua tindakan: Review lalu Publish. Publish tetap menjadi tindakan terpisah agar perubahan tidak langsung masuk ke bot secara tidak sengaja.
+
 MVP ini sengaja belum memakai embeddings/vector database. Seluruh knowledge company aktif dimasukkan ke prompt sampai batas `KNOWLEDGE_MAX_CHARS`. Jika knowledge mulai besar, langkah berikutnya adalah retrieval dengan filter wajib `company_id`, lalu `module_id` bila relevan.
 
 `knowledge/company.md` saat ini masih menjadi combined legacy Funnel Coach untuk `dk-corp-group`. Ini menjaga perilaku bot lama selama transisi. Arsitektur final tetap memisahkan Company Instruction, Module Playbook, dan Business Knowledge.

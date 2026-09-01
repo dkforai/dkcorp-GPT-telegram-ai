@@ -25,7 +25,7 @@
       </label>
       <div class="form-actions split-actions">
         <span class="form-status">{% if document.published_version_number %}Published v{{ document.published_version_number }}{% else %}Belum pernah publish{% endif %}{% if has_unpublished_changes %} · Ada perubahan draft{% endif %}</span>
-        <div><a class="secondary-button" href="/admin/knowledge/{{ document.company_id }}/{{ document.document_key }}/preview">Preview</a><button class="primary-button" type="submit">Simpan draft</button></div>
+        <div><button class="secondary-button" type="submit" name="submit_action" value="save">Simpan draft</button><button class="primary-button" type="submit" name="submit_action" value="preview">Review untuk publish</button></div>
       </div>
     </form>
     <aside class="panel instruction-guide">

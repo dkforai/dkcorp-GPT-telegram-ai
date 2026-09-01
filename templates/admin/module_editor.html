@@ -35,7 +35,7 @@
     <label class="full-field no-margin">Playbook<textarea class="instruction-textarea" name="content" maxlength="50000" spellcheck="true">{{ draft_content }}</textarea><small>Maksimal 50.000 karakter. Jangan taruh fakta bisnis yang seharusnya berada di Knowledge.</small></label>
     <div class="form-actions split-actions">
       <span class="form-status">{% if state.published_version_number %}Published v{{ state.published_version_number }}{% else %}Belum pernah publish{% endif %}{% if has_unpublished_changes %} · Ada perubahan draft{% endif %}</span>
-      <div>{% if state.draft_content is not none %}<a class="secondary-button" href="/admin/modules/{{ state.company_id }}/{{ state.module_id }}/preview">Preview</a>{% endif %}<button class="primary-button" type="submit">Simpan draft</button></div>
+      <div><button class="secondary-button" type="submit" name="submit_action" value="save">Simpan draft</button><button class="primary-button" type="submit" name="submit_action" value="preview">Review untuk publish</button></div>
     </div>
   </form>
 

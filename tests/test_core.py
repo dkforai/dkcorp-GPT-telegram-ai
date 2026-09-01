@@ -960,6 +960,7 @@ def test_admin_company_instruction_workflow(tmp_path):
 
         response = client.get("/admin/instructions/company-a")
         assert response.status_code == 200
+        assert "Review untuk publish" in response.text
         csrf = re.search(r'name="csrf_token" value="([a-f0-9]+)"', response.text)
         assert csrf is not None
         csrf_token = csrf.group(1)
@@ -974,13 +975,17 @@ def test_admin_company_instruction_workflow(tmp_path):
             data={
                 "csrf_token": csrf_token,
                 "content": "Jawab sesuai kebijakan Company A.",
+                "submit_action": "preview",
             },
             follow_redirects=False,
         )
         assert response.status_code == 303
+        assert response.headers["location"] == (
+            "/admin/instructions/company-a/preview"
+        )
         assert database.get_published_company_instruction("company-a") is None
 
-        response = client.get("/admin/instructions/company-a/preview")
+        response = client.get(response.headers["location"])
         assert response.status_code == 200
         assert "Jawab sesuai kebijakan Company A." in response.text
         response = client.post(
@@ -1084,18 +1089,23 @@ def test_admin_module_playbook_and_membership_access_workflow(tmp_path):
         )
         assert database.get_module_admin("company-a", "forged-id") is None
 
-        assert client.post(
+        response = client.post(
             "/admin/modules/company-a/marketing/draft",
             data={
                 "csrf_token": csrf_token,
                 "content": "Playbook marketing yang hanya boleh muncul setelah publish.",
+                "submit_action": "preview",
             },
             follow_redirects=False,
-        ).status_code == 303
+        )
+        assert response.status_code == 303
+        assert response.headers["location"] == (
+            "/admin/modules/company-a/marketing/preview"
+        )
         assert database.get_published_module_playbook(
             "company-a", "marketing"
         ) is None
-        preview = client.get("/admin/modules/company-a/marketing/preview")
+        preview = client.get(response.headers["location"])
         assert preview.status_code == 200
         assert "hanya boleh muncul setelah publish" in preview.text
         assert client.post(
@@ -1287,18 +1297,33 @@ def test_admin_knowledge_document_workflow(tmp_path):
         )
         assert database.get_published_company_knowledge("company-a", 10_000) is None
 
-        response = client.get(
+        editor = client.get("/admin/knowledge/company-a/target-2026")
+        assert "Review untuk publish" in editor.text
+        response = client.post(
+            "/admin/knowledge/company-a/target-2026/draft",
+            data={
+                "csrf_token": csrf_token,
+                "title": "Target 2026 Final",
+                "content": "Target omzet bulanan Rp550 juta.",
+                "submit_action": "preview",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 303
+        assert response.headers["location"] == (
             "/admin/knowledge/company-a/target-2026/preview"
         )
+        response = client.get(response.headers["location"])
         assert response.status_code == 200
-        assert "Rp500 juta" in response.text
+        assert "Target 2026 Final" in response.text
+        assert "Rp550 juta" in response.text
         response = client.post(
             "/admin/knowledge/company-a/target-2026/publish",
             data={"csrf_token": csrf_token},
             follow_redirects=False,
         )
         assert response.status_code == 303
-        assert "Rp500 juta" in database.get_published_company_knowledge(
+        assert "Rp550 juta" in database.get_published_company_knowledge(
             "company-a", 10_000
         )
         response = client.get("/admin/knowledge/company-a/target-2026")
@@ -1315,15 +1340,16 @@ def test_admin_knowledge_document_workflow(tmp_path):
         assert database.get_published_company_knowledge("company-a", 10_000) == ""
 
     actions = [row["action"] for row in database.list_admin_audit_events()]
-    assert actions[:3] == [
+    assert actions[:4] == [
         "knowledge_document.deactivated",
         "knowledge_document.published",
+        "knowledge_document.draft_saved",
         "knowledge_document.created",
     ]
     audit_payload = " ".join(
         str(row["details_json"]) for row in database.list_admin_audit_events()
     )
-    assert "Target omzet bulanan Rp500 juta." not in audit_payload
+    assert "Target omzet bulanan Rp550 juta." not in audit_payload
 
 
 def test_document_ingestion_pdf_docx_and_invalid_formats():

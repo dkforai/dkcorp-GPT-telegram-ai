@@ -189,7 +189,7 @@ tbody tr:hover { background: #fcfcfe; }
 .primary-button, .secondary-button { display: inline-block; padding: 10px 14px; border-radius: 9px; font: inherit; font-size: 11px; font-weight: 750; }
 .primary-button { color: white; background: var(--purple); border: 0; cursor: pointer; }
 .primary-button:disabled { opacity: .45; cursor: not-allowed; }
-.secondary-button { color: #626b7b; background: #f1f3f6; }
+.secondary-button { color: #626b7b; background: #f1f3f6; border: 0; cursor: pointer; text-decoration: none; }
 
 .login-body { background: #111625; }
 .login-layout { display: grid; grid-template-columns: minmax(390px, .9fr) minmax(420px, 1.1fr); min-height: 100vh; }

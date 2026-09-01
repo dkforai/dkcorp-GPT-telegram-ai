@@ -31,8 +31,8 @@
           {% if has_unpublished_changes %} · Ada perubahan draft{% endif %}
         </span>
         <div>
-          {% if state.draft_content is not none %}<a class="secondary-button" href="/admin/instructions/{{ state.company_id }}/preview">Preview</a>{% endif %}
-          <button class="primary-button" type="submit">Simpan draft</button>
+          <button class="secondary-button" type="submit" name="submit_action" value="save">Simpan draft</button>
+          <button class="primary-button" type="submit" name="submit_action" value="preview">Review untuk publish</button>
         </div>
       </div>
     </form>

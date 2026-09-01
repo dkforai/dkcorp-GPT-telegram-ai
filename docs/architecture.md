@@ -5,7 +5,7 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 1.7 |
+| Versi | 1.8 |
 | Terakhir diperbarui | 2 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
@@ -317,7 +317,7 @@ Empat area utama:
 3. Users & Access: identity dan company membership;
 4. Activity: perubahan konfigurasi, versi, dan error operasional.
 
-Instruction, Knowledge, dan Module Playbook memakai alur Draft → Preview → Publish → Restore to Draft. Edit draft tidak langsung memengaruhi bot produksi.
+Instruction, Knowledge, dan Module Playbook memakai alur Draft → Preview → Publish → Restore to Draft. Edit draft tidak langsung memengaruhi bot produksi. Pada editor, **Review untuk publish** menyimpan isi terbaru dan langsung membuka Preview; Publish tetap menjadi tindakan terpisah.
 
 Versi admin saat ini menyediakan:
 
@@ -822,8 +822,17 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 | ADR-049 | Module runtime membutuhkan status aktif, akses aktif, dan playbook published | Draft atau module tanpa otorisasi tidak boleh muncul pada daftar Telegram maupun masuk ke prompt |
 | ADR-050 | History memakai scope user, company, dan module | Perpindahan antara General dan workflow module tidak boleh mencampur konteks percakapan |
 | ADR-051 | Perubahan company atau hilangnya module access mereset active module | Session tidak boleh mempertahankan pointer menuju konteks yang tidak lagi valid atau diizinkan |
+| ADR-052 | Review untuk publish menyimpan draft lalu membuka Preview | Mengurangi alur konten siap dari tiga tindakan menjadi dua tanpa menghilangkan pemeriksaan terakhir atau membuat publish tidak sengaja |
 
 ## 16. Changelog dokumen
+
+### 1.8 — 2 September 2026
+
+- mengganti link Preview terpisah dengan tombol `Review untuk publish` pada editor Instruction, Knowledge, dan Module Playbook;
+- membuat tindakan Review menyimpan isi editor terbaru sebelum redirect ke halaman Preview;
+- mempertahankan `Simpan draft` untuk pekerjaan belum selesai dan Publish sebagai tindakan eksplisit terpisah;
+- menambahkan pengujian bahwa isi terbaru tersimpan, tampil di Preview, dan belum live sebelum Publish;
+- memperbarui dokumentasi workflow serta keputusan arsitektur.
 
 ### 1.7 — 2 September 2026
 
