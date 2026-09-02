@@ -25,7 +25,8 @@ from app.config import Settings, load_settings
 from app.credentials import PROVIDERS, encryption_is_ready
 from app.database import AIRuntimeProfile, Database, Membership, User
 from app.document_ingestion import MAX_UPLOAD_BYTES, extract_uploaded_document
-from app.providers import AI_TEST_MESSAGES, runtime_profile_is_configured, test_ai_connection
+from app.providers import runtime_profile_is_configured
+from app.model_catalog import CATALOG_MESSAGES, discover_models
 from app.role_profiles import load_role_profiles
 from app.user_import import MAX_USER_IMPORT_BYTES, UserImportValidationError, read_user_import
 
@@ -1291,16 +1292,8 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
         values = _runtime_profile_form_values(form)
         try:
-            profile = database.create_ai_runtime_profile(
-                "",
-                values["label"],
-                values["provider"],
-                values["api_key_env"],
-                values["model"],
-                values["base_url"],
-                actor=settings.admin_username,
-                active=values["active"] == "1",
-                api_key=str(form.get("api_key", "")) if "api_key" in form else None,
+            profile = database.create_ai_connection(
+                values["provider"], str(form.get("api_key", "")), settings.admin_username,
             )
         except ValueError as exc:
             return templates.TemplateResponse(
@@ -1315,7 +1308,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 ),
                 status_code=400,
             )
-        return _ai_settings_redirect(notice=f"AI {profile.label} disimpan. Klik Tes koneksi sebelum digunakan.")
+        return _ai_settings_redirect(notice=f"{profile.label} aktif. Klik Tes & ambil model sebelum memilih model di Module.")
 
     @app.get(
         "/admin/runtime-profiles/{profile_id}/edit",
@@ -1360,13 +1353,17 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
         values = _runtime_profile_form_values(form)
         try:
+            if values["provider"] != current_profile.provider:
+                raise ValueError("Provider koneksi lama tidak dapat diganti. Tambahkan koneksi provider baru.")
+            if not str(form.get("api_key", "")).strip():
+                return _ai_settings_redirect(notice="Key dan daftar model sebelumnya dipertahankan.")
             database.update_ai_runtime_profile(
                 profile_id,
-                values["label"],
-                values["provider"],
-                values["api_key_env"],
-                values["model"],
-                values["base_url"],
+                current_profile.label,
+                current_profile.provider,
+                current_profile.api_key_env,
+                current_profile.model,
+                "" if str(form.get("api_key", "")).strip() else current_profile.base_url,
                 actor=settings.admin_username,
                 api_key=str(form.get("api_key", "")) or None,
             )
@@ -1385,7 +1382,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 ),
                 status_code=400,
             )
-        return _ai_settings_redirect(notice="AI berhasil diperbarui. Tes koneksi ulang untuk memeriksa konfigurasi baru.")
+        return _ai_settings_redirect(notice="Key berhasil disimpan. Klik Tes & ambil model untuk memperbarui daftar model.")
 
     @app.post("/admin/runtime-profiles/{profile_id}/status")
     async def update_runtime_profile_status(request: Request, profile_id: str):
@@ -1423,6 +1420,8 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             profile = None
         if profile is None:
             return HTMLResponse("AI tidak ditemukan.", status_code=404)
+        if not profile.active:
+            return _ai_settings_redirect(error="Aktifkan provider sebelum menjalankan tes.")
         if (profile_id in ai_tests_running or len(ai_tests_running) >= 2
                 or ai_test_limiter.blocked(profile_id) or ai_test_limiter.blocked("__all__")):
             return HTMLResponse("Tes sedang berjalan atau batas tes tercapai. Coba lagi satu menit lagi.", status_code=429)
@@ -1430,13 +1429,16 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
         ai_test_limiter.failure("__all__")
         ai_tests_running.add(profile_id)
         try:
-            status = await test_ai_connection(profile)
-            recorded = database.record_ai_connection_test(profile, status, settings.admin_username)
+            result = await discover_models(profile)
+            status = result.status
+            recorded = database.record_model_catalog(profile, result, settings.admin_username)
         finally:
             ai_tests_running.discard(profile_id)
         if not recorded:
             return _ai_settings_redirect(error="Konfigurasi berubah selama tes. Ulangi tes untuk konfigurasi terbaru.")
-        message = f"{profile.label}: {AI_TEST_MESSAGES[status]}"
+        message = f"{profile.label}: {CATALOG_MESSAGES[status]}"
+        if status == "success":
+            message += f" {len(result.models)} model, {sum(m.selectable for m in result.models)} mendukung adapter bot."
         return _ai_settings_redirect(notice=message) if status == "success" else _ai_settings_redirect(error=message)
 
     @app.get("/admin/modules/new", response_class=HTMLResponse)
@@ -1476,6 +1478,8 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 actor=settings.admin_username,
                 ai_runtime_profile_id=values["ai_runtime_profile_id"],
                 backup_ai_runtime_profile_id=values["backup_ai_runtime_profile_id"],
+                ai_model=values["ai_model"],
+                backup_ai_model=values["backup_ai_model"],
                 active=values["active"] == "1",
             )
         except ValueError as exc:
@@ -1532,14 +1536,18 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
         if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
             return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
         try:
+            values = _module_form_values(form)
             database.update_module(
                 company_id,
                 module_id,
                 form.get("name", ""),
                 form.get("description", ""),
                 actor=settings.admin_username,
-                ai_runtime_profile_id=form.get("ai_runtime_profile_id", ""),
-                backup_ai_runtime_profile_id=form.get("backup_ai_runtime_profile_id"),
+                ai_runtime_profile_id=values["ai_runtime_profile_id"],
+                backup_ai_runtime_profile_id=(values["backup_ai_runtime_profile_id"]
+                    if "backup_ai_selection" in form or "backup_ai_runtime_profile_id" in form else None),
+                ai_model=values["ai_model"],
+                backup_ai_model=values["backup_ai_model"],
             )
         except ValueError as exc:
             return _module_redirect(company_id, module_id, error=str(exc))
@@ -2012,17 +2020,19 @@ def _knowledge_document_redirect(
     )
 
 
-def _module_form_values(form) -> dict[str, str]:
+def _module_form_values(form) -> dict[str, str | None]:
+    primary, _, model = str(form.get("ai_selection", "")).partition("|")
+    backup, _, backup_model = str(form.get("backup_ai_selection", "")).partition("|")
     return {
         "company_id": str(form.get("company_id", "")).strip(),
         "name": str(form.get("name", "")).strip(),
         "description": str(form.get("description", "")).strip(),
-        "ai_runtime_profile_id": str(
-            form.get("ai_runtime_profile_id", "")
-        ).strip(),
-        "backup_ai_runtime_profile_id": str(
-            form.get("backup_ai_runtime_profile_id", "")
-        ).strip(),
+        "ai_runtime_profile_id": primary.strip() if "ai_selection" in form else str(form.get("ai_runtime_profile_id", "")).strip(),
+        "backup_ai_runtime_profile_id": backup.strip() if "backup_ai_selection" in form else str(form.get("backup_ai_runtime_profile_id", "")).strip(),
+        "ai_model": model if "ai_selection" in form else None,
+        "backup_ai_model": backup_model if "backup_ai_selection" in form else None,
+        "ai_selection": str(form.get("ai_selection", form.get("ai_runtime_profile_id", ""))),
+        "backup_ai_selection": str(form.get("backup_ai_selection", form.get("backup_ai_runtime_profile_id", ""))),
         "active": "1" if form.get("active") == "1" else "0",
     }
 
@@ -2042,6 +2052,8 @@ def _module_form_context(
         "description": "",
         "ai_runtime_profile_id": "",
         "backup_ai_runtime_profile_id": "",
+        "ai_selection": "",
+        "backup_ai_selection": "",
         "active": "1",
     }
     defaults.update({key: value for key, value in (values or {}).items() if value})
@@ -2050,7 +2062,7 @@ def _module_form_context(
         "admin_username": settings.admin_username,
         "csrf_token": _csrf_token(request, settings),
         "companies": companies,
-        "runtime_profiles": _runtime_profile_views(database, active_only=True),
+        "runtime_profiles": _module_model_options(database),
         "values": defaults,
         "error": error,
     }
@@ -2072,7 +2084,9 @@ def _module_editor_context(
         "admin_username": settings.admin_username,
         "csrf_token": _csrf_token(request, settings),
         "state": state,
-        "runtime_profiles": _runtime_profile_views(database, active_only=True),
+        "runtime_profiles": _module_model_options(database),
+        "ai_selection": _model_selection_value(state["ai_runtime_profile_id"], state["selected_ai_model"]),
+        "backup_ai_selection": _model_selection_value(state["backup_ai_runtime_profile_id"], state["selected_backup_ai_model"]),
         "draft_content": draft_content,
         "versions": database.list_module_playbook_versions(
             str(state["company_id"]), str(state["module_id"])
@@ -2104,7 +2118,10 @@ def _runtime_profile_views(
             "configured": runtime_profile_is_configured(profile),
             "provider_label": PROVIDERS.get(profile.provider, (profile.provider, ""))[0],
             "encrypted": bool(profile.api_key_ciphertext),
-            "test_message": AI_TEST_MESSAGES.get(profile.last_test_status, "Belum diuji"),
+            "models": database.list_ai_models(profile.profile_id),
+            "catalog_at": profile.catalog_updated_at,
+            "test_message": ("Tes model lama; katalog belum diambil" if profile.last_test_status == "success"
+                             and not profile.catalog_updated_at else CATALOG_MESSAGES.get(profile.last_test_status, "Belum diuji")),
             "test_status": profile.last_test_status,
             "test_at": profile.last_test_at,
         }
@@ -2114,13 +2131,35 @@ def _runtime_profile_views(
 
 def _runtime_profile_form_values(form) -> dict[str, str]:
     return {
-        "label": str(form.get("label", "")).strip(),
         "provider": str(form.get("provider", "openai")).strip().casefold(),
-        "api_key_env": str(form.get("api_key_env", "")).strip().upper(),
-        "model": str(form.get("model", "")).strip(),
-        "base_url": str(form.get("base_url", "")).strip(),
-        "active": "1" if form.get("active") == "1" else "0",
     }
+
+
+def _model_selection_value(profile_id: object, model: object) -> str:
+    if not profile_id:
+        return ""
+    return f"{profile_id}|{model}" if model else str(profile_id)
+
+
+def _module_model_options(database: Database) -> list[dict[str, object]]:
+    options = []
+    for profile in database.list_ai_runtime_profiles():
+        if not profile.active:
+            continue
+        label = PROVIDERS.get(profile.provider, (profile.provider, ""))[0]
+        configured = runtime_profile_is_configured(profile)
+        # A legacy selection remains explicit, including after a catalog refresh.
+        if profile.model:
+            options.append({"value": profile.profile_id, "label": profile.label,
+                            "model": profile.model, "disabled": False,
+                            "reason": "Konfigurasi lama", "profile_id": profile.profile_id})
+        for model in database.list_ai_models(profile.profile_id):
+            options.append({"value": _model_selection_value(profile.profile_id, model["model_id"]),
+                            "label": label, "model": model["model_id"],
+                            "disabled": not model["selectable"] or not configured,
+                            "reason": model["reason"] if configured else "Key belum siap",
+                            "profile_id": profile.profile_id})
+    return options
 
 
 async def _credential_form(request: Request):
@@ -2150,7 +2189,7 @@ def _runtime_profile_form_context(
         "label": profile.label if profile else "",
         "provider": profile.provider if profile else "openai",
         "api_key_env": profile.api_key_env if profile else "",
-        "model": profile.model if profile else "gpt-5.4-mini",
+        "model": profile.model if profile else "",
         "base_url": profile.base_url if profile else "",
         "active": "1" if profile is None or profile.active else "0",
     }
@@ -2205,6 +2244,7 @@ def _module_redirect(
 
 
 _ACTIVITY_ACTION_LABELS = {
+    "ai_models.refreshed": "Katalog model AI diperiksa",
     "ai_runtime_profile.tested": "Koneksi AI diuji",
     "users.imported": "Import user baru",
     "company.created": "Company dibuat",

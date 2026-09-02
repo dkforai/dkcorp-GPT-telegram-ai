@@ -18,6 +18,7 @@ from app.credentials import (
     ENCRYPTION_KEY_ENV, PROVIDERS, CredentialStorageError, resolve_api_key,
 )
 from app.database import Database
+from app.model_catalog import CatalogResult
 from app import providers
 
 SECRET = "synthetic-secret-not-a-real-api-key"
@@ -150,23 +151,26 @@ def test_settings_auth_csrf_forms_and_never_echo_key(client, db, monkeypatch):
     assert client.get("/admin/settings/ai", follow_redirects=False).status_code == 303
     assert client.post("/admin/runtime-profiles/unknown/test", follow_redirects=False).status_code == 303
     csrf = login(client)
-    values = dict(label="Registered AI", provider="gemini", model="test-model", api_key=SECRET, active="1")
+    values = dict(provider="gemini", api_key=SECRET)
     assert client.post("/admin/runtime-profiles", data=values).status_code == 403
     values["csrf_token"] = csrf
-    invalid = client.post("/admin/runtime-profiles", data={**values, "model": ""})
+    invalid = client.post("/admin/runtime-profiles", data={**values, "provider": "unsupported"})
     assert invalid.status_code == 400 and SECRET not in invalid.text
     saved = client.post("/admin/runtime-profiles", data=values)
     assert saved.status_code == 200 and SECRET not in saved.text
     assert saved.url.path == "/admin/settings/ai"
-    profile = db.get_ai_runtime_profile("registered-ai")
-    for url in ("/admin/settings/ai", "/admin/runtime-profiles/registered-ai/edit", "/admin/activity", "/admin/modules/new"):
+    profile = db.list_ai_runtime_profiles()[0]
+    assert profile.active and not profile.model
+    for url in ("/admin/settings/ai", f"/admin/runtime-profiles/{profile.profile_id}/edit", "/admin/activity", "/admin/modules/new"):
         page = client.get(url)
         assert page.status_code == 200
         assert SECRET not in page.text and profile.api_key_ciphertext not in page.text
-    assert "Registered AI" in client.get("/admin/modules/new").text
-    response = client.post("/admin/runtime-profiles/registered-ai", data={**values, "api_key": "", "label": "Renamed"})
+    form = client.get("/admin/runtime-profiles/new")
+    assert 'name="label"' not in form.text and 'name="model"' not in form.text
+    assert f'value="{profile.profile_id}"' not in client.get("/admin/modules/new").text
+    response = client.post(f"/admin/runtime-profiles/{profile.profile_id}", data={**values, "api_key": ""})
     assert response.status_code == 200
-    assert resolve_api_key(db.get_ai_runtime_profile("registered-ai")) == SECRET
+    assert resolve_api_key(db.get_ai_runtime_profile(profile.profile_id)) == SECRET
     monkeypatch.delenv(ENCRYPTION_KEY_ENV)
     invalid = client.post("/admin/runtime-profiles", data=values)
     assert invalid.status_code == 400 and SECRET not in invalid.text
@@ -181,8 +185,8 @@ def test_form_limits_and_probe_rate_limit(client, db, monkeypatch):
     calls = []
     async def probe(profile):
         calls.append(profile.profile_id)
-        return "success"
-    monkeypatch.setattr("app.admin.test_ai_connection", probe)
+        return CatalogResult("success")
+    monkeypatch.setattr("app.admin.discover_models", probe)
     url = f"/admin/runtime-profiles/{profile.profile_id}/test"
     assert client.post(url).status_code == 403
     for _ in range(3):
@@ -285,8 +289,8 @@ def test_probe_concurrency_and_stale_result(client, db, monkeypatch):
             if count == 2:
                 started.set()
             await release.wait()
-            return "success"
-        monkeypatch.setattr("app.admin.test_ai_connection", probe)
+            return CatalogResult("success")
+        monkeypatch.setattr("app.admin.discover_models", probe)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=client.app), base_url="http://testserver", cookies=client.cookies) as browser:
             def url(profile):
                 return f"/admin/runtime-profiles/{profile.profile_id}/test"
@@ -355,7 +359,7 @@ def test_encrypted_failure_cannot_fall_back_to_legacy_env(db, monkeypatch):
         resolve_api_key(broken)
 
 
-def test_inactive_profile_not_selectable_but_admin_can_probe(client, db, monkeypatch):
+def test_inactive_profile_not_selectable_and_cannot_probe(client, db, monkeypatch):
     db.create_company("company-a", "Company A", actor="tester")
     profile = registered(db, active=False)
     csrf = login(client)
@@ -363,8 +367,8 @@ def test_inactive_profile_not_selectable_but_admin_can_probe(client, db, monkeyp
     with pytest.raises(providers.RuntimeCredentialError):
         providers.ModuleProviderResolver().resolve(profile)
     async def probe(profile):
-        assert not profile.active
-        return "success"
-    monkeypatch.setattr("app.admin.test_ai_connection", probe)
-    assert client.post(f"/admin/runtime-profiles/{profile.profile_id}/test", data={"csrf_token": csrf}).status_code == 200
+        raise AssertionError("Inactive provider must not be contacted")
+    monkeypatch.setattr("app.admin.discover_models", probe)
+    response = client.post(f"/admin/runtime-profiles/{profile.profile_id}/test", data={"csrf_token": csrf})
+    assert response.status_code == 200 and "Aktifkan provider" in response.text
     assert not db.get_ai_runtime_profile(profile.profile_id).active

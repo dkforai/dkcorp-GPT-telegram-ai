@@ -329,15 +329,11 @@ class InternalBot:
 
         try:
             if active_module:
-                runtime_profile = self.database.get_ai_runtime_profile(
-                    active_module.ai_runtime_profile_id
-                )
+                runtime_profile = self.database.get_module_ai_profile(active_module)
                 answer = await self.module_provider_resolver.generate(
                     runtime_profile,
                     lambda: (
-                        self.database.get_ai_runtime_profile(
-                            active_module.backup_ai_runtime_profile_id
-                        ) if active_module.backup_ai_runtime_profile_id else None
+                        self.database.get_module_ai_profile(active_module, backup=True)
                     ),
                     system_prompt, history, user_text,
                 )

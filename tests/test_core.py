@@ -1271,20 +1271,11 @@ def test_admin_module_playbook_and_membership_access_workflow(tmp_path):
         )
         assert credential_csrf is not None
         csrf_token = credential_csrf.group(1)
-        credential_response = client.post(
-            "/admin/runtime-profiles",
-            data={
-                "csrf_token": csrf_token,
-                "label": "Marketing OpenAI",
-                "provider": "openai",
-                "api_key_env": "AI_KEY_MARKETING",
-                "model": "gpt-5.4-mini",
-                "base_url": "",
-                "active": "1",
-            },
-            follow_redirects=False,
+        # Existing environment profiles remain usable after the new two-field UI.
+        database.create_ai_runtime_profile(
+            "marketing-openai", "Marketing OpenAI", "openai", "AI_KEY_MARKETING",
+            "gpt-5.4-mini", "", actor="tester",
         )
-        assert credential_response.status_code == 303
         profile = database.get_ai_runtime_profile("marketing-openai")
         assert profile is not None
         assert profile.api_key_env == "AI_KEY_MARKETING"

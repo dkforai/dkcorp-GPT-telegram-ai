@@ -5,7 +5,7 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 1.13.1 |
+| Versi | 1.14 |
 | Terakhir diperbarui | 2 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
@@ -109,7 +109,7 @@ Jawaban ke user
 | Document Ingestion | Sebagian | Upload PDF, DOCX, TXT, dan Markdown menjadi draft teks; OCR dan `.doc` belum |
 | Chat History | Sudah | SQLite dipisahkan per user, perusahaan, dan module; General memakai scope kosong tersendiri |
 | Provider Abstraction | Implementasi v1.13 | OpenAI/DeepSeek/Gemini compatible API; Claude native Messages; General tetap OpenAI/DeepSeek |
-| Settings AI | Produksi v1.13.1 | API key terenkripsi, empat provider, endpoint otomatis, tes koneksi manual; master key server terpasang dan readiness admin produksi terverifikasi |
+| Settings AI | Rilis v1.14 dalam proses deployment; produksi terakhir terverifikasi v1.13.1 | Form Provider + API Key, discovery model, pilihan model per Module; 183 tes lokal lulus. Verifikasi produksi v1.14 masih menunggu deployment |
 | AI utama dan cadangan per Module | Sudah | Dua pilihan dari AI terdaftar; cadangan opsional, failover terbatas, tanpa fallback global; encrypted key atau legacy environment |
 | Telegram Response Renderer | Sudah | Safe HTML, split, link preview off, dan fallback plain text |
 | Conversation Delivery Policy | Belum | Akan mengatur panjang, ritme, dan progressive disclosure |
@@ -299,8 +299,9 @@ Folder adalah bentuk transisi yang mudah diaudit. Target produksi skala lanjut m
 | `users` | Identitas Telegram global |
 | `companies` | Master perusahaan |
 | `user_company_memberships` | Jabatan, divisi, level, dan profile per perusahaan |
-| `modules` | Modul milik perusahaan; `ai_runtime_profile_id` untuk AI utama dan nullable `backup_ai_runtime_profile_id` untuk AI cadangan |
-| `ai_runtime_profiles` | Metadata provider/model/endpoint, ciphertext API key atau referensi environment lama, status tes dan timestamp |
+| `modules` | Modul milik perusahaan; pasangan `ai_runtime_profile_id`/`ai_model` untuk utama dan `backup_ai_runtime_profile_id`/`backup_ai_model` untuk cadangan; model kosong mempertahankan fixed-model legacy |
+| `ai_runtime_profiles` | Koneksi provider/endpoint, ciphertext API key atau environment lama, status tes dan timestamp katalog; model hanya untuk kompatibilitas profile lama |
+| `ai_model_catalog` | Snapshot model per koneksi provider, flag kompatibilitas adapter chat, alasan dan timestamp; bukan daftar model hardcoded |
 | `module_access` | Hak membership terhadap modul |
 | `company_instruction_state` | Draft aktif dan pointer versi live per perusahaan |
 | `company_instruction_versions` | Versi publish immutable per perusahaan |
@@ -671,17 +672,21 @@ Railway Volume dipasang pada `/app/data` agar database bertahan saat redeploy.
 
 AI terdaftar menyimpan metadata dan API key terenkripsi di SQLite. Profile lama tetap membaca Railway Variables atau `.env` lewat `api_key_env`. Mode General memakai global `AI_*`; request Module tidak mencoba credential General ketika panggilan AI gagal.
 
-### Settings AI, encryption, dan adapter (v1.13)
+### Settings AI, encryption, dan adapter (v1.14)
 
-- `/admin/settings/ai` adalah registry bersama untuk admin. Tambah AI meminta label, provider, ID model manual dari akun provider, password field API key dan status aktif. Endpoint resmi otomatis; tidak ada auto-discovery model atau arbitrary provider/plugin.
+- `/admin/settings/ai` adalah registry bersama untuk admin. Tambah AI hanya meminta Provider dan API Key; label/ID dan endpoint resmi otomatis, status awal aktif. Provider berbeda didaftarkan sebagai koneksi baru; form edit existing tidak boleh mengganti provider. Tidak ada input nama AI/model/base URL. Beberapa koneksi provider yang sama diperbolehkan dengan ID otomatis unik untuk membedakannya.
 - Migrasi additive/idempotent menambah `api_key_ciphertext`, `last_test_status`, `last_test_at` (TEXT default kosong). `api_key_env` kosong untuk encrypted profile. Referensi Module, playbook, akses, session, history dan credential lama dipertahankan.
 - Fernet payload version 1 mengikat profile ID/provider. Ciphertext yang dipindahkan ke profile/provider lain ditolak. Master `AI_CREDENTIAL_ENCRYPTION_KEY` berada hanya di environment, terpisah dari SQLite dan admin session secret. Ciphertext tidak masuk HTML, audit atau repr profile.
 - Master tidak dibuat/diganti otomatis. Master tidak valid/hilang memblokir encrypted save/decrypt, tanpa fallback environment pada ciphertext rusak. Legacy tetap bekerja. Backup master terpisah wajib; rotasi master otomatis belum tersedia. Jangan mengganti variable tanpa migrasi ciphertext/backup.
-- Edit dengan key kosong mempertahankan key lama; key baru mengganti/converts legacy. Mengganti provider terenkripsi memerlukan key baru. Metadata+key disimpan dalam write transaction. Audit hanya sumber/penggantian key, bukan nilai. Edit menghapus status tes.
+- Form edit dengan key kosong mempertahankan key, katalog dan status lama; key baru mengganti/converts legacy ke endpoint resmi. Metadata+key disimpan dalam write transaction. Audit hanya sumber/penggantian key, bukan nilai. Update credential menghapus katalog dan status tes; Module yang memakai pilihan katalog perlu tes ulang sebelum runtime berjalan. Profile fixed-model lama tetap dapat digunakan tanpa katalog.
 - Encrypted key hanya menuju endpoint resmi. Custom endpoint tetap khusus legacy environment. HTTP redirect client Module/probe tidak diikuti. Startup bot/admin menonaktifkan HTTP/SDK DEBUG logging agar body/header sensitif tidak tercatat.
 - Registry `openai`, `anthropic`, `deepseek`, `gemini`. Gemini memakai `https://generativelanguage.googleapis.com/v1beta/openai/`. Claude memakai native `/v1/messages`, `x-api-key`, version header, system terpisah, hanya text block, maksimum output chat 4096 token. Tools/multimodal tidak ditambahkan; General global tetap OpenAI/DeepSeek.
-- POST Tes koneksi membutuhkan admin+CSRF dan profile tersimpan, termasuk nonaktif untuk tes sebelum aktivasi. Prompt sintetis `Reply OK.`, output limit 64, satu percobaan maksimal 30 detik tanpa fallback atau data perusahaan. Biaya kecil mungkin timbul. AI aktif muncul pada dropdown tanpa gating hasil tes.
-- Status tes enum aman (`success`, `authentication`, `rate_limit`, `unavailable`, `configuration`, `request`, `response`) dan waktu UTC, bukan body error. Hasil hanya diterapkan jika `updated_at` sama dengan snapshot sebelum request. Key environment yang diganti di luar admin perlu dites ulang; hasil bukan jaminan saldo/uptime.
+- POST **Tes & ambil model** membutuhkan admin+CSRF dan provider aktif. Tes tidak lagi menghasilkan teks; hanya GET katalog provider memakai key tersimpan tanpa data bisnis, retry atau fallback. OpenAI/DeepSeek memakai `/models`, Claude `/v1/models` dengan `after_id`, Gemini native `/v1beta/models` dengan `pageToken` dan header `x-goog-api-key` (bukan key di URL). Tombol sama untuk refresh manual; tidak ada polling otomatis saat GET halaman.
+- Migrasi v1.14 additive/idempotent menambah tabel `ai_model_catalog`, timestamp `ai_runtime_profiles.catalog_updated_at`, serta `modules.ai_model` dan `modules.backup_ai_model` default kosong. Module menyimpan ID koneksi dan ID model secara terpisah; key tidak disalin untuk tiap model. Profile baru memakai kolom model kosong; pilihan Module lama dengan kolom model kosong membaca fixed-model profile lama. Tidak ada reset, auto-switch model, atau perubahan company/membership/playbook/history.
+- Semua model yang dikembalikan provider tampil di Settings. Dropdown Module menampilkan seluruh model provider aktif; model non-chat atau belum didukung ditampilkan disabled beserta alasan. Gemini menggunakan `supportedGenerationMethods` ditambah pemilahan keluarga; OpenAI/Claude/DeepSeek memakai kebijakan keluarga adapter eksplisit karena metadata endpoint tidak seragam. Ini bukan jaminan endpoint/saldo/izin inferensi. OpenAI Responses-only (pro/Codex/deep-research), audio/realtime, image, embeddings, dan keluarga belum dikenal tidak selectable. Model lama ditandai **Konfigurasi lama** dan tetap tersedia. Tidak menambahkan Responses API atau kemampuan multimedia.
+- Snapshot diganti atomik hanya setelah semua halaman valid. Batas 30 detik total, 15 detik per HTTP request, 20 halaman, 5.000 model dan 2 MiB per halaman; cursor berulang, ID malformed, respons parsial/terlalu besar ditolak tanpa mengganti katalog. Tidak mengikuti redirect atau URL halaman dari respons. Label provider/model response bebas tidak disimpan; ID valid ditampilkan dengan escaping template. Audit katalog hanya status dan jumlah model.
+- Gagal refresh mempertahankan snapshot terakhir, timestamp dan pilihan Module. Refresh sukses kosong/yang menghapus model mencabut ketersediaan pilihan itu; runtime fail-closed sampai admin memilih ulang, tidak mengubah pilihan tersimpan atau berpindah ke General. Tes katalog membuktikan akses metadata, bukan saldo/chat. Uji inferensi dilakukan terpisah lewat bot setelah model dipilih. Kontrol model tetap milik admin Module, bukan pemilih model baru di Telegram.
+- Status tes enum aman (`success`, `authentication`, `rate_limit`, `unavailable`, `configuration`, `request`, `response`) dan waktu UTC, bukan body error. Hasil katalog hanya diterapkan jika `updated_at` sama dengan snapshot sebelum request dan provider tetap aktif. Timestamp katalog terpisah membedakan snapshot kosong valid, belum tes katalog, dan tes inferensi versi lama. Key environment yang diganti di luar admin perlu dites ulang; hasil bukan jaminan saldo/uptime.
 - Form credential maksimal 16 KiB sebelum parsing, tanpa file/field ganda. Tes maksimal tiga/menit total dan per profile, dua bersamaan, satu per profile, in-memory satu-process. Batas reset saat restart, bukan distributed limiter. Client probe ditutup setelah selesai.
 - Failover mempertahankan ADR-060/061. Error koneksi/408/429/5xx Claude dinormalisasi setara provider compatible; auth/dekripsi/invalid request/empty/refusal tidak memicu backup. Cache key fingerprint berubah saat rotasi. API key tidak masuk prompt.
 - Implementasi diuji dengan SQLite sementara dan HTTP mock. Rilis v1.13 melalui GitHub → Railway tanpa reset data. Pada 2 September 2026, master produksi yang sebelumnya belum ada dipasang melalui Railway CLI terautentikasi dengan target project/service/environment eksplisit. Key dibuat dalam memori dan dikirim melalui stdin, bukan argumen perintah, output, file repository, atau database; variable existing dipertahankan.
@@ -690,9 +695,11 @@ AI terdaftar menyimpan metadata dan API key terenkripsi di SQLite. Profile lama 
 
 Referensi resmi: [OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create), [Claude Messages](https://platform.claude.com/docs/en/api/messages/create), [Gemini compatibility](https://ai.google.dev/gemini-api/docs/openai), [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/), [Fernet](https://cryptography.io/en/latest/fernet/).
 
+Discovery: [OpenAI Models](https://developers.openai.com/api/reference/python/resources/models/methods/list), [Claude Models](https://platform.claude.com/docs/en/api/models/list), [DeepSeek Models](https://api-docs.deepseek.com/api/list-models/), [Gemini Models](https://ai.google.dev/api/models). Implementasi v1.14 diverifikasi lokal dengan HTTP simulasi/SQLite sementara. Deployment melalui GitHub → Railway telah diotorisasi DK dan sedang difinalisasi; verifikasi produksi masih menunggu deployment. Tes akun provider nyata belum dilakukan untuk perubahan ini.
+
 ### 10.1. AI utama dan AI cadangan Module
 
-- AI utama wajib dipilih. AI cadangan opsional, harus berbeda ID, dan keduanya harus merujuk profile aktif saat disimpan. Admin memilih nama AI dan model tanpa mengisi key di form Module.
+- AI utama wajib dipilih. AI cadangan opsional, harus berbeda pasangan koneksi+model efektif. Koneksi yang sama boleh digunakan dengan model berbeda, tetapi dapat terkena gangguan/limit yang sama. Keduanya harus merujuk profile aktif dan model selectable dalam katalog koneksi itu saat disimpan (kecuali fixed-model legacy). Server memvalidasi pasangan, bukan mempercayai dropdown. Admin memilih provider+model tanpa mengisi key di Module.
 - Kolom lama `modules.ai_runtime_profile_id` tetap menjadi AI utama. Migrasi idempotent menambah `backup_ai_runtime_profile_id TEXT REFERENCES ai_runtime_profiles(profile_id)` dengan nilai awal `NULL`, tanpa menghapus atau mengganti Module, versi, akses, maupun riwayat yang sudah ada.
 - Update dari form/client lama yang tidak mengirim field cadangan mempertahankan pilihan cadangan existing. Menghapus cadangan memerlukan nilai kosong eksplisit; validasi dan update pasangan AI berada dalam write transaction.
 - AI terdaftar dapat dipakai bersama oleh beberapa Module. Perubahan metadata AI berlaku pada semua referensi; perubahan pilihan utama/cadangan pada Module berlaku pada pesan berikutnya tanpa publish ulang playbook.
@@ -916,8 +923,18 @@ Status catatan ini hanya persetujuan rencana. Tidak ada perubahan kode, database
 | ADR-062 | Key Settings memakai Fernet, master terpisah di environment | Blank preserves, fail-closed decrypt, endpoint resmi, tanpa plaintext SQLite, legacy tetap berjalan |
 | ADR-063 | Empat provider dengan adapter protocol eksplisit | Claude native Messages; GPT/DeepSeek/Gemini compatible. General tidak dimigrasikan otomatis |
 | ADR-064 | Tes manual, sintetis, terbatas, dan revision-aware | Mencegah pengiriman data bisnis, biaya retry diam-diam, error mentah, dan status tes usang |
+| ADR-065 | Registrasi Provider + API Key dan katalog model dari API resmi | Menghilangkan input nama/model, memisahkan koneksi dari model, serta menampilkan kapabilitas adapter secara jujur; v1.14 mengganti tes inferensi UI ADR-064 menjadi tes katalog read-only |
+| ADR-066 | Module memilih pasangan koneksi+model, dengan legacy fallback eksplisit | Satu key untuk banyak model; pemilihan server-validated, snapshot atomik/revision-aware, key rotation menginvalidasi katalog, dan pilihan lama tidak diubah diam-diam |
 
 ## 16. Changelog dokumen
+
+### 2 September 2026 — v1.14 (rilis dalam proses deployment)
+
+- Tambah AI hanya Provider + API Key, nama/ID otomatis dan aktif saat disimpan; perubahan provider existing ditolak oleh form/server;
+- Tes & ambil model membaca katalog empat provider, termasuk pagination berbatas, tanpa inferensi berbayar/data perusahaan; snapshot atomik dan invalidasi credential revision;
+- katalog model dan pilihan model utama/cadangan per Module, kompatibilitas legacy, validasi pasangan dan penolakan model non-chat/unsupported;
+- 183 tes otomatis lulus, termasuk HTTP mock provider/pagination, respons gagal/malformed, batas katalog, timeout/cancellation, preservasi pilihan, rotasi key, stale test, penolakan secret yang dipantulkan sebagai cursor URL, serta alur form sampai runtime. Migrasi profile/module lama dan preservasi ciphertext/playbook diuji berulang. Satu warning deprecation Starlette/httpx yang sudah ada tetap muncul;
+- DK mengotorisasi finalisasi dan deployment melalui GitHub → Railway. Release tidak mereset database atau mengganti master encryption key. Verifikasi produksi v1.14 masih menunggu deployment; tes memakai API key provider nyata belum dilakukan.
 
 ### 2 September 2026 — v1.13.1
 

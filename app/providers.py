@@ -212,7 +212,7 @@ class ModuleProviderResolver:
             self._cache = {
                 key: value
                 for key, value in self._cache.items()
-                if key[0] != profile.profile_id
+                if key[0] != profile.profile_id or (key[2] != profile.model and key[4] == key_fingerprint)
             }
             provider = self._provider_factory(
                 profile.provider,
@@ -249,7 +249,7 @@ class ModuleProviderResolver:
         backup = backup_loader()
         if backup is None:
             raise ModuleGenerationError("AI utama tidak tersedia dan tidak ada AI cadangan")
-        if backup.profile_id == primary.profile_id:
+        if (backup.profile_id, backup.model) == (primary.profile_id, primary.model):
             raise RuntimeCredentialError("AI utama dan AI cadangan harus berbeda")
         backup_provider = self.resolve(backup)
         logger.warning(

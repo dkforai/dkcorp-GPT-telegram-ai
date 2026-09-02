@@ -3,7 +3,7 @@
 {% block page_title %}{% if mode == 'create' %}Tambah{% else %}Edit{% endif %} AI{% endblock %}
 {% block content %}
   <div class="page-lead">
-    <div><h2>AI terdaftar</h2><p>Daftarkan sekali, lalu pilih namanya sebagai AI utama atau cadangan pada Module.</p></div>
+    <div><h2>Koneksi provider</h2><p>Cukup provider dan API key. Model diambil otomatis melalui tes setelah disimpan.</p></div>
     <a class="secondary-link back-link" href="/admin/settings/ai">Kembali</a>
   </div>
   {% if not encryption_ready %}<div class="notice error" role="alert">Penyimpanan API key baru belum siap. Administrator server perlu mengatur <code>AI_CREDENTIAL_ENCRYPTION_KEY</code> sekali di environment. Credential environment lama tetap bisa dipakai.</div>{% endif %}
@@ -12,17 +12,14 @@
     {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
     {% if mode == 'edit' %}<div class="notice {% if configured %}success{% else %}error{% endif %}">ID <code>{{ profile.profile_id }}</code> dikunci. {% if configured %}Key tersedia{% else %}Key belum siap dibaca server{% endif %}. Nilai key tidak ditampilkan kembali.</div>{% endif %}
     <div class="form-grid">
-      <label>Nama AI<input name="label" type="text" value="{{ values.label }}" minlength="2" maxlength="100" required autofocus><small>Nama ini muncul pada pilihan AI di Module. ID dibuat otomatis dan dikunci.</small></label>
       <label>Provider<select name="provider" required>{% for provider_id, details in providers.items() %}<option value="{{ provider_id }}" {% if values.provider == provider_id %}selected{% endif %}>{{ details[0] }}</option>{% endfor %}</select></label>
-      <label>Model<input name="model" type="text" value="{{ values.model }}" maxlength="150" required><small>Isi ID model persis dari akun provider. Pilih model yang mendukung chat teks; ketersediaan bergantung pada akun Anda.</small></label>
-      <label>API key {% if mode == 'edit' %}<span class="optional">Isi hanya untuk mengganti key</span>{% endif %}<input name="api_key" type="password" autocomplete="new-password" maxlength="4096" {% if mode == 'create' %}required{% endif %}><small>{% if mode == 'edit' %}Kosongkan untuk mempertahankan key lama. Mengganti provider membutuhkan key baru.{% else %}Disimpan terenkripsi. Jangan masukkan key ke nama AI, model, atau isi Module.{% endif %}</small></label>
+      <label>API key {% if mode == 'edit' %}<span class="optional">Isi hanya untuk mengganti key</span>{% endif %}<input name="api_key" type="password" autocomplete="new-password" maxlength="4096" {% if mode == 'create' %}required{% endif %}><small>{% if mode == 'edit' %}Kosongkan untuk mempertahankan key dan katalog lama. Provider tidak dapat diganti pada koneksi yang sudah dibuat.{% else %}Disimpan terenkripsi dan tidak ditampilkan kembali.{% endif %}</small></label>
     </div>
     {% if profile and not profile.api_key_ciphertext %}
-      <div class="notice">Credential lama masih membaca <code>{{ profile.api_key_env }}</code> dari environment. Isi API key di atas untuk beralih ke penyimpanan terenkripsi. Alamat custom harus dikosongkan saat beralih.</div>
-      <label class="full-field">Base URL credential lama <span class="optional">Opsional</span><input name="base_url" type="url" value="{{ values.base_url }}" maxlength="500"><small>Kosongkan untuk memakai alamat resmi provider.</small></label>
+      <div class="notice">Credential lama masih membaca <code>{{ profile.api_key_env }}</code> dari environment. Isi key baru untuk beralih ke penyimpanan terenkripsi dan endpoint resmi. Pilihan model lama pada Module tetap dipertahankan.</div>
     {% else %}<p class="muted-text">Alamat API otomatis menggunakan endpoint resmi provider.</p>{% endif %}
-    {% if mode == 'create' %}<label class="checkbox-row"><input name="active" type="checkbox" value="1" {% if values.active == '1' %}checked{% endif %}><span><strong>Aktifkan AI</strong><small>AI aktif langsung tersedia di pilihan Module. Tes koneksi sebelum dipakai.</small></span></label>{% else %}<p class="muted-text">Perubahan berlaku untuk semua Module yang memakai AI ini. Status aktif dikelola di Settings.</p>{% endif %}
+    {% if mode == 'create' %}<p class="muted-text">Provider otomatis aktif setelah disimpan. Klik Tes &amp; ambil model di Settings agar model tersedia di Module.</p>{% else %}<p class="muted-text">Mengganti key memerlukan tes ulang dan berlaku untuk semua Module yang memakai koneksi ini. Status aktif dikelola di Settings.</p>{% endif %}
     <div class="form-actions"><a class="secondary-button" href="/admin/settings/ai">Batal</a><button class="primary-button" type="submit">Simpan AI</button></div>
-    <p class="muted-text">Sesudah disimpan, gunakan Tes koneksi di Settings. Tes memakai sedikit kuota API dan tidak mengirim data perusahaan.</p>
+    <p class="muted-text">Tes hanya membaca daftar model dari provider, tidak menghasilkan jawaban dan tidak mengirim data perusahaan. Tes ini bukan pemeriksaan saldo atau jaminan semua model bisa digunakan akun Anda.</p>
   </form>
 {% endblock %}
