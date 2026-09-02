@@ -7,7 +7,10 @@
       <h2>User directory</h2>
       <p>Whitelist Telegram dan membership perusahaan.</p>
     </div>
-    <a class="primary-link" href="/admin/users/new">Tambah user</a>
+    <div class="row-actions">
+      <a class="secondary-button" href="/admin/users/import">Import user</a>
+      <a class="primary-link" href="/admin/users/new">Tambah user</a>
+    </div>
   </div>
 
   {% if notice %}<div class="notice success" role="status">{{ notice }}</div>{% endif %}

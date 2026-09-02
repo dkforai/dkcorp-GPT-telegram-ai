@@ -5,7 +5,7 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 1.9 |
+| Versi | 1.11 |
 | Terakhir diperbarui | 2 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
@@ -100,7 +100,9 @@ Jawaban ke user
 | Update Reliability | Sudah | Pending update dipertahankan, concurrency terbatas, dan serialization per user |
 | Authentication | Sudah | Whitelist Telegram ID |
 | User Context | Sudah | Identity global dan membership per perusahaan |
+| Import user Excel | Sudah | `.xls`/`.xlsx`, lima kolom, insert-only untuk ID baru, validasi atomik dan skip total ID lama melalui `/admin/users/import` |
 | Communication Profile | Sudah | Config terpusat dengan override per membership |
+| Penyederhanaan form user/membership | Disetujui, ditunda | Saat penyempurnaan sistem: hilangkan input Divisi dan Communication profile; profile mengikuti Role level. Belum diterapkan; lihat roadmap dan ADR-057 |
 | Custom Instruction | Sudah | Field global user dan field per membership |
 | Knowledge Loader | Sudah | Published document aktif dari SQLite; folder Markdown menjadi fallback sampai publish pertama |
 | Document Ingestion | Sebagian | Upload PDF, DOCX, TXT, dan Markdown menjadi draft teks; OCR dan `.doc` belum |
@@ -413,6 +415,22 @@ Module hanya dapat dipilih ketika company dan membership aktif, module aktif, pl
 
 Mode `/module general` mengosongkan `active_module_id` dan memakai history General. Perubahan `/company`, pencabutan module access, atau nonaktivasi module juga mengosongkan pointer module. Data history lama tidak dihapus dan tetap dapat digunakan kembali jika akses module diberikan lagi.
 
+### 5.9.4 Import user Excel
+
+Admin membuka **Users & Access → Import user**, memilih file dan pengaturan batch, lalu menekan **Import user baru**. Route GET/POST `/admin/users/import` membutuhkan session admin; POST memvalidasi CSRF. Hasil menampilkan jumlah user/membership baru, nomor baris ID lama yang dilewati, dan duplikat identik. Tidak ada preview atau simpan parsial; error validasi menampilkan baris untuk diperbaiki dan mewajibkan upload ulang.
+
+Kontrak file saat ini memakai **Nama, Telegram ID, Perusahaan, Jabatan, Divisi**. Tab `Data_User` dipilih secara eksplisit; jika hanya satu tab, nama bebas. File multi-tab tanpa `Data_User` ditolak untuk mencegah tab contoh terimpor. Header harus lengkap tanpa kolom tambahan berisi data, dengan urutan fleksibel. Baris kosong diabaikan, maksimal baris 501 termasuk header pada baris 1.
+
+Parser `app/user_import.py` menggunakan `openpyxl` untuk `.xlsx` dan `xlrd` untuk `.xls`; `defusedxml` mengamankan pembacaan XML. Upload maksimal 5 MB; jumlah byte request sebenarnya dibatasi sebelum multipart parsing (tambahan 64 KiB untuk form), bukan hanya mempercayai Content-Length. Maksimal satu file, delapan form fields, dan 20 MB expanded ZIP/1000 entries. Parser tidak menjalankan macro/formula atau mengambil external links; `.xlsx` formula/error ditolak, `.xls` membaca cached values. File rusak, password, tipe sel tidak didukung, ID pecahan/invalid, serta ID numerik lebih dari 15 digit ditolak; ID panjang harus berupa teks agar presisi tidak hilang.
+
+`Database.import_new_users` mengambil write lock SQLite (`BEGIN IMMEDIATE`) sebelum memeriksa ID, memvalidasi seluruh data baru, lalu melakukan insert user, membership, dan audit dalam satu transaksi. Tidak ada UPDATE/UPSERT user lama. Semua baris Telegram ID yang sudah ada, termasuk ID nonaktif, dilewati sebelum validasi atribut bisnis sehingga tidak mengganti identitas, status, membership, default, instruction, session, history, atau akses module. Jika satu baris user baru tidak valid atau penulisan gagal, seluruh batch rollback. Impor ulang maupun import bersamaan tidak menimpa data.
+
+Nama perusahaan dicocokkan secara exact setelah normalisasi spasi/case dengan company aktif; Company ID juga diterima. Kecocokan ambigu, tidak ada, atau company nonaktif ditolak; company tidak dibuat otomatis. Satu ID baru dapat memiliki beberapa membership jika nama konsisten; company pertama menjadi default. Duplikat identik ID/company dilewati dan konflik atribut ditolak.
+
+Role level, Communication profile, dan whitelist dipilih admin pada form untuk user baru dalam batch, default `staff`, `staff`, whitelist nonaktif. Membership baru aktif, custom instruction kosong, dan akses module tetap default-deny. Jabatan tidak digunakan untuk menebak hak akses/profile. Admin dapat menyesuaikan per user setelah import. Data upload tidak disimpan permanen; audit batch menyimpan nama file, SHA-256, pengaturan batch, serta jumlah user/membership/skip/duplikat, bukan isi workbook.
+
+Tidak ada migrasi schema. Penyederhanaan form/profile ADR-057 tetap ditunda dan tidak diterapkan oleh fitur import ini.
+
 ### 5.10 Target persistence multi-tenant
 
 Target final menggunakan database multi-tenant dengan `company_id` sebagai tenant boundary utama. Semua entitas yang membawa data perusahaan wajib mempunyai scope company secara langsung atau melalui relasi yang tidak ambigu.
@@ -538,6 +556,8 @@ Tujuan tugas
 Dipakai ketika profile tidak dikenali. Jawaban bersifat seimbang, praktis, dan tidak mengasumsikan senioritas user.
 
 ## 8. Resolusi profile dan prioritas instruksi
+
+Bagian ini menjelaskan perilaku saat ini. Rencana profile otomatis berdasarkan `role_level` telah disetujui tetapi ditunda sampai tahap penyempurnaan sistem (ADR-057); belum mengubah resolusi runtime.
 
 Pemilihan profile:
 
@@ -740,6 +760,19 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 
 ## 14. Roadmap
 
+### Catatan penyempurnaan yang disetujui DK, belum dikerjakan
+
+Keputusan 2 September 2026: pilih opsi 1, sederhanakan form tetapi pertahankan data lama. Kerjakan sebagai satu paket saat DK meminta penyempurnaan sistem, bukan sekarang.
+
+- Hilangkan input **Divisi** dan pilihan **Communication profile** dari form tambah/edit user serta membership. Pertahankan **Role level** yang ditetapkan admin.
+- Tentukan profile secara konsisten dari Role level membership aktif: `gm` → `executive`, `manager` → `manager`, `staff` → `staff`. Jangan menebak dari teks jabatan atau membiarkan override profile lama mengalahkan pemetaan ini.
+- Pertahankan kolom dan nilai divisi/profile lama di database agar perubahan dapat dikembalikan; tidak menghapus data. Setelah penyederhanaan diterapkan, divisi tidak lagi dimasukkan ke konteks AI.
+- Selaraskan validasi backend, penyimpanan membership, resolusi runtime, form admin, serta proses import dalam perubahan yang sama. Status aktif, default company, dan akses module tetap dikelola admin; pemetaan profile tidak memberikan hak akses baru.
+- Sederhanakan template import menjadi **Nama, Telegram ID, Perusahaan, Jabatan** saat paket ini dikerjakan. Template lima kolom tetap dipakai oleh importer yang ditambahkan terpisah pada v1.11; perubahan menjadi empat kolom masih ditunda.
+- Verifikasi user baru/lama, perubahan Role level, dan user dengan membership beberapa company. Pastikan data lama tetap utuh dan aturan akses tidak berubah.
+
+Status catatan ini hanya persetujuan rencana. Tidak ada perubahan kode, database, form, template, maupun deployment pada pencatatan keputusan ini.
+
 ### Fase 1 — Context-aware MVP
 
 - whitelist dan user context;
@@ -757,6 +790,7 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 - company knowledge terpisah dan versioned; selesai untuk company scope, dengan fallback file selama transisi;
 - active module router, default-deny access, dan versioned module playbook; selesai melalui `/module` dan admin;
 - credential profile per Module dengan named environment secret dan fail-closed runtime; selesai;
+- import user baru dari Excel dengan skip ID lama dan transaksi atomik; selesai untuk template lima kolom;
 - knowledge metadata per division;
 - authorization policy dan clearance;
 - admin command atau admin panel;
@@ -837,8 +871,25 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 | ADR-054 | Nilai API key Module berada pada named environment variable | Secret lifecycle tetap dikelola Railway atau `.env`, terpisah dari data aplikasi |
 | ADR-055 | Mode General tetap memakai credential global | Perilaku dasar tetap kompatibel dan custom Module dapat memakai billing/provider berbeda |
 | ADR-056 | Kegagalan credential Module bersifat fail-closed tanpa fallback | Salah konfigurasi tidak boleh mengalihkan traffic, biaya, atau data ke credential lain secara diam-diam |
+| ADR-057 | Disetujui, ditunda: hilangkan input Divisi dan Communication profile; profile otomatis dari Role level, data lama dipertahankan | Menyederhanakan administrasi MVP tanpa penghapusan data. Dikerjakan serentak pada form, backend, runtime, dan import saat penyempurnaan sistem; perilaku saat ini termasuk ADR-005 belum diubah |
+| ADR-058 | Import Excel insert-only, ID lama dilewati seluruhnya di dalam write transaction | Memenuhi larangan menimpa data existing, termasuk user nonaktif/membership lama, dan mencegah race antara pengecekan ID dan penyimpanan |
+| ADR-059 | Batch import atomik dengan pengaturan akses eksplisit di form admin | Kesalahan baris tidak menghasilkan simpan parsial; jabatan dari spreadsheet tidak boleh otomatis menaikkan akses. Whitelist awal nonaktif dan akses module tetap default-deny |
 
 ## 16. Changelog dokumen
+
+### 1.11 — 2 September 2026
+
+- menambahkan tombol dan halaman import Excel `.xls`/`.xlsx` pada Users & Access dengan lima kolom template sederhana;
+- menambahkan parser berbatas ukuran/baris, validasi perusahaan/ID, dan laporan hasil atau error per baris;
+- menerapkan skip total ID lama, transaksi atomik, dukungan multi-company untuk user baru, dan audit metadata;
+- menambahkan pengujian format Excel, autentikasi/CSRF, upload, presisi ID, duplikat, rollback, import ulang, serta concurrent import;
+- mempertahankan rencana penyederhanaan ADR-057 sebagai pekerjaan tertunda; tidak mengubah form user/membership lama atau schema database.
+
+### 1.10 — 2 September 2026
+
+- mencatat persetujuan DK untuk opsi 1 penyederhanaan user/membership sebagai pekerjaan tertunda saat penyempurnaan sistem;
+- menetapkan rencana pemetaan Role level ke Communication profile, penghilangan input divisi, pelestarian data lama, dan penyelarasan import;
+- hanya memperbarui dokumentasi; tidak menerapkan perubahan aplikasi, database, template, atau deployment.
 
 ### 1.9 — 2 September 2026
 

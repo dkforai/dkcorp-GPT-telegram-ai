@@ -168,6 +168,9 @@ tbody tr:hover { background: #fcfcfe; }
 .form-panel input[type="text"], .form-panel input[type="number"], .form-panel select, .form-panel textarea { width: 100%; margin-top: 7px; padding: 12px 13px; color: var(--ink); background: #fbfbfd; border: 1px solid #dfe2e9; border-radius: 9px; outline: none; font: inherit; }
 .form-panel textarea { min-height: 108px; resize: vertical; line-height: 1.55; }
 .form-panel select { appearance: auto; }
+.file-input { display: block; width: 100%; margin-top: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: #fbfbfd; font: inherit; }
+.import-rules { padding-left: 18px; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.import-rules li { margin-bottom: 8px; }
 .form-panel input[type="text"]:focus, .form-panel input[type="number"]:focus, .form-panel select:focus, .form-panel textarea:focus { background: white; border-color: var(--purple); box-shadow: 0 0 0 3px rgba(118,87,246,.1); }
 .form-panel input[readonly] { color: #777f8e; background: #f1f3f6; cursor: not-allowed; }
 .form-panel label small { display: block; margin-top: 6px; color: #8c94a3; font-size: 9px; font-weight: 500; }

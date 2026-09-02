@@ -1,0 +1,80 @@
+{% extends "admin/base.html" %}
+{% block title %}Import User · DK Corp AI Admin{% endblock %}
+{% block page_title %}Import User{% endblock %}
+{% block content %}
+  <div class="page-lead">
+    <div>
+      <h2>Import user dari Excel</h2>
+      <p>Hanya menambahkan user baru. Data dan membership Telegram ID yang sudah terdaftar tidak diubah.</p>
+    </div>
+    <a class="secondary-button" href="/admin/users">Kembali ke Users &amp; Access</a>
+  </div>
+
+  {% if error %}
+    <div class="notice error" role="alert">
+      {{ error }}
+      {% if errors %}<ul>{% for message in errors %}<li>{{ message }}</li>{% endfor %}</ul>{% endif %}
+      <p>Tidak ada data import yang disimpan. Perbaiki file lalu pilih kembali untuk mengulang.</p>
+    </div>
+  {% endif %}
+  {% if report %}
+    <div class="notice success" role="status">
+      Import selesai. <strong>{{ report.created_users }} user baru</strong> dan
+      <strong>{{ report.created_memberships }} membership baru</strong> disimpan.
+      {{ report.skipped_rows | length }} baris dilewati karena Telegram ID sudah terdaftar;
+      {{ report.duplicate_rows | length }} baris duplikat identik dalam file dilewati.
+      {% if report.skipped_rows %}<p>Baris ID lama yang tidak diubah: {{ report.skipped_rows | join(', ') }}.</p>{% endif %}
+      {% if report.duplicate_rows %}<p>Baris duplikat identik: {{ report.duplicate_rows | join(', ') }}.</p>{% endif %}
+      {% if report.created_users and values.active != '1' %}<p>Whitelist user baru masih nonaktif. Aktifkan setelah pemeriksaan melalui Users &amp; Access.</p>{% endif %}
+      <p>Akses module belum diberikan. Gunakan Kelola untuk menyesuaikan pengaturan per user.</p>
+    </div>
+  {% endif %}
+
+  <form class="panel form-panel" method="post" action="/admin/users/import" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="form-section-title">
+      <h3>1. Pilih file</h3>
+      <p>Excel .xls atau .xlsx, maksimal 5 MB dan 500 baris data. Baris pertama adalah judul kolom.</p>
+    </div>
+    <label class="full-field">
+      File data user
+      <input class="file-input" type="file" name="file" accept=".xls,.xlsx" required>
+      <small>Lima kolom: Nama, Telegram ID, Perusahaan, Jabatan, Divisi. Isi Telegram ID angka, bukan nomor HP/@username.</small>
+    </label>
+    <div class="form-section-title separated">
+      <h3>2. Pengaturan untuk semua user baru dalam file ini</h3>
+      <p>Role dan profil tidak ditebak dari jabatan. Pilih di sini, lalu sesuaikan per user lewat Kelola jika diperlukan.</p>
+    </div>
+    <div class="form-grid">
+      <label>Role level
+        <select name="role_level" required>
+          {% for option in role_options %}<option value="{{ option.id }}" {% if values.role_level == option.id %}selected{% endif %}>{{ option.label }}</option>{% endfor %}
+        </select>
+      </label>
+      <label>Communication profile
+        <select name="communication_profile" required>
+          {% for option in profile_options %}<option value="{{ option.id }}" {% if values.communication_profile == option.id %}selected{% endif %}>{{ option.label }}</option>{% endfor %}
+        </select>
+      </label>
+    </div>
+    <label class="checkbox-row">
+      <input name="active" type="checkbox" value="1" {% if values.active == '1' %}checked{% endif %}>
+      <span><strong>Aktifkan whitelist user baru</strong><small>Jika tidak dicentang, user disimpan tetapi belum dapat memakai bot. Tidak memengaruhi user lama.</small></span>
+    </label>
+    <div class="form-section-title separated">
+      <h3>Aturan import</h3>
+      <ul class="import-rules">
+        <li>Isi tab Data_User. Jika file hanya memiliki satu tab, nama tab bebas.</li>
+        <li>Nama perusahaan harus cocok dengan company aktif di aplikasi; Company ID juga diterima. Company tidak dibuat otomatis.</li>
+        <li>Satu orang di beberapa perusahaan ditulis pada beberapa baris dengan ID dan nama yang sama. Untuk user baru, baris perusahaan pertama menjadi default.</li>
+        <li>Seluruh baris milik ID yang sudah terdaftar, termasuk user nonaktif, dilewati. Tidak menambah membership atau mengganti data user tersebut.</li>
+        <li>Membership baru aktif, tetapi penggunaan bot tetap memerlukan whitelist aktif. Akses module diatur terpisah setelah import.</li>
+        <li>Gunakan nilai biasa, bukan formula. Jika ada data user baru yang tidak valid, seluruh import dibatalkan.</li>
+      </ul>
+    </div>
+    <div class="form-actions">
+      <a class="secondary-button" href="/admin/users">Batal</a>
+      <button class="primary-button" type="submit">Import user baru</button>
+    </div>
+  </form>
+{% endblock %}

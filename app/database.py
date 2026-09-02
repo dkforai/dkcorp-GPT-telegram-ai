@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import sqlite3
 import unicodedata
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+
+from app.user_import import (
+    MAX_USER_IMPORT_ROWS, UserImportReport, UserImportRow, UserImportValidationError,
+)
 
 
 COMPANY_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
@@ -690,6 +696,119 @@ class Database:
         if user is None:
             raise RuntimeError("User gagal disimpan")
         return user
+
+    def import_new_users(
+        self,
+        rows: list[UserImportRow],
+        *,
+        role_level: str,
+        communication_profile: str,
+        active: bool,
+        actor: str,
+        source_filename: str = "",
+        source_sha256: str = "",
+    ) -> UserImportReport:
+        """Insert-only, all-or-nothing import. Existing identities are never mutated."""
+        if not rows or len(rows) > MAX_USER_IMPORT_ROWS:
+            raise ValueError("Import membutuhkan 1–500 baris data.")
+        if role_level not in ROLE_LEVELS or communication_profile not in COMMUNICATION_PROFILES:
+            raise ValueError("Role level atau communication profile tidak valid.")
+        if not isinstance(active, bool):
+            raise ValueError("Status whitelist tidak valid.")
+        skipped: list[int] = []
+        duplicates: list[int] = []
+        errors: list[str] = []
+        new_users: dict[int, str] = {}
+        memberships: dict[tuple[int, str], dict[str, str]] = {}
+        with closing(self._connect()) as connection, connection:
+            # Lock before checking IDs: concurrent imports/manual creation cannot
+            # turn a checked-new identity into an update or a partially saved batch.
+            connection.execute("BEGIN IMMEDIATE")
+            companies: dict[str, set[str]] = {}
+            for company in connection.execute("SELECT company_id, name FROM companies WHERE active = 1"):
+                for value in (company["name"], company["company_id"]):
+                    key = " ".join(value.split()).casefold()
+                    companies.setdefault(key, set()).add(company["company_id"])
+            for row in rows:
+                try:
+                    raw_id = row.telegram_id
+                    if isinstance(raw_id, (int, float)) and not isinstance(raw_id, bool) and raw_id > 999_999_999_999_999:
+                        raise ValueError("Telegram ID lebih dari 15 digit harus disimpan sebagai teks di Excel agar tidak dibulatkan.")
+                    if isinstance(raw_id, float):
+                        if not math.isfinite(raw_id) or not raw_id.is_integer():
+                            raise ValueError("Telegram ID harus angka bulat, bukan pecahan.")
+                        raw_id = int(raw_id)
+                    if isinstance(raw_id, bool) or not re.fullmatch(r"[0-9]+", str(raw_id).strip()):
+                        raise ValueError("Telegram ID harus ID angka, bukan nomor berformat atau @username.")
+                    telegram_id = _validate_telegram_id(raw_id)
+                    # Include inactive users. Ignore all remaining Excel values for
+                    # existing IDs, including company, name, status, and membership.
+                    if connection.execute(
+                        "SELECT 1 FROM users WHERE telegram_id = ?", (telegram_id,)
+                    ).fetchone():
+                        skipped.append(row.row_number)
+                        continue
+                    name = _validate_user_name(row.name)
+                    matches = companies.get(" ".join(str(row.company or "").split()).casefold(), set())
+                    if not matches:
+                        raise ValueError("Perusahaan tidak ditemukan atau nonaktif. Cocokkan dengan halaman Companies.")
+                    if len(matches) != 1:
+                        raise ValueError("Nama perusahaan ambigu. Isi Company ID yang tepat pada kolom Perusahaan.")
+                    company_id = next(iter(matches))
+                    membership = _validate_membership_fields(
+                        company_id, row.job_title, row.division, role_level,
+                        communication_profile, "",
+                    )
+                    if telegram_id in new_users and new_users[telegram_id] != name:
+                        raise ValueError("Nama berbeda untuk Telegram ID yang sama dalam file.")
+                    key = (telegram_id, company_id)
+                    if key in memberships:
+                        if memberships[key] != membership:
+                            raise ValueError("Data membership berbeda untuk Telegram ID dan perusahaan yang sama.")
+                        duplicates.append(row.row_number)
+                        continue
+                    new_users[telegram_id] = name
+                    memberships[key] = membership
+                except ValueError as exc:
+                    errors.append(f"Baris {row.row_number}: {exc}")
+            if errors:
+                raise UserImportValidationError(errors)
+
+            now = _now()
+            for telegram_id, name in new_users.items():
+                connection.execute(
+                    "INSERT INTO users (telegram_id, name, active, updated_at) VALUES (?, ?, ?, ?)",
+                    (telegram_id, name, int(active), now),
+                )
+                _write_audit(connection, actor, "user.created", "user", str(telegram_id),
+                             {"name": name, "active": active})
+            assigned_default: set[int] = set()
+            for (telegram_id, company_id), membership in memberships.items():
+                is_default = telegram_id not in assigned_default
+                assigned_default.add(telegram_id)
+                connection.execute(
+                    """
+                    INSERT INTO user_company_memberships (
+                        telegram_id, company_id, job_title, division, role_level,
+                        communication_profile, custom_instruction, is_default, active, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, '', ?, 1, ?)
+                    """,
+                    (telegram_id, company_id, membership["job_title"], membership["division"],
+                     role_level, communication_profile, int(is_default), now),
+                )
+                _write_audit(connection, actor, "membership.created", "membership",
+                             f"{telegram_id}:{company_id}",
+                             _membership_audit_details(membership, is_default=is_default))
+            report = UserImportReport(len(new_users), len(memberships), tuple(skipped), tuple(duplicates))
+            _write_audit(
+                connection, actor, "users.imported", "user_import", source_sha256[:64],
+                {"source_filename": Path(source_filename.replace("\\", "/")).name[:255],
+                 "source_sha256": source_sha256[:64], "created_users": report.created_users,
+                 "created_memberships": report.created_memberships, "skipped_rows": len(skipped),
+                 "duplicate_rows": len(duplicates), "active": active,
+                 "role_level": role_level, "communication_profile": communication_profile},
+            )
+        return report
 
     def update_user(self, telegram_id: int, name: object, actor: str) -> User:
         normalized_id = _validate_telegram_id(telegram_id)

@@ -37,6 +37,7 @@ Pemrosesan update memakai controlled concurrency. User berbeda dapat diproses pa
 - Admin web dengan login, dashboard, company registry, dan user access directory
 - Company Management untuk menambah, mengganti nama, mengaktifkan, dan menonaktifkan tenant
 - Users & Access Management untuk whitelist dan membership per company
+- Import user baru dari Excel `.xls`/`.xlsx`, tanpa menimpa Telegram ID yang sudah terdaftar
 - Company Instruction Management dengan draft, preview, publish, dan riwayat versi
 - Knowledge Management per company dengan draft, preview, publish, status, dan riwayat versi
 - Upload PDF, DOCX, TXT, atau Markdown menjadi draft Knowledge yang dapat diperiksa sebelum publish
@@ -224,6 +225,7 @@ Halaman yang tersedia:
 - `/admin/companies/new` untuk menambah company;
 - `/admin/users` untuk user dan membership;
 - `/admin/users/new` untuk menambah whitelist user dan membership pertama;
+- `/admin/users/import` untuk upload Excel dan import user baru tanpa mengubah user lama;
 - `/admin/instructions` untuk status instruction semua company;
 - `/admin/instructions/<company-id>` untuk draft, preview, publish, dan riwayat versi;
 - `/admin/knowledge` untuk status knowledge semua company;
@@ -236,6 +238,25 @@ Halaman yang tersedia:
 - `/health` untuk health check Railway.
 
 Company, user whitelist, membership, Company Instruction, Knowledge, Module, dan akses Module sudah dapat dikelola melalui admin. Company ID, document key, dan Module ID dibuat otomatis oleh server lalu dikunci. Telegram ID berasal dari Telegram dan dikunci setelah user dibuat. Versi instruction, knowledge, atau playbook lama dapat dipulihkan ke draft, lalu harus dipreview dan dipublikasikan kembali.
+
+### Import user dari Excel
+
+Di **Users & Access → Import user**, upload file `.xls` atau `.xlsx` dengan lima kolom berikut pada baris pertama. Urutan kolom boleh berbeda; nama kolom jangan diganti.
+
+| Nama | Telegram ID | Perusahaan | Jabatan | Divisi |
+|---|---|---|---|---|
+
+- Gunakan tab `Data_User`; file dengan satu tab boleh memakai nama tab lain. Tab contoh/petunjuk tidak dibaca jika `Data_User` tersedia.
+- Maksimal 5 MB dan 500 baris data (baris 2–501). Isi nilai biasa, bukan formula atau error Excel. `.xlsx` dengan formula ditolak; `.xls` hanya dibaca nilainya yang tersimpan, tidak menjalankan formula/macro.
+- Telegram ID adalah ID numerik Telegram, bukan nomor telepon atau `@username`. Gunakan format teks terutama untuk ID lebih dari 15 digit agar Excel tidak membulatkan digitnya.
+- Isi nama perusahaan yang sudah aktif di Companies, dengan ejaan sama; huruf besar/kecil dan spasi berlebih diabaikan. Company ID juga diterima. Nama ambigu atau perusahaan tidak ditemukan/nonaktif menghasilkan error, bukan membuat company otomatis.
+- Admin memilih Role level, Communication profile, dan aktivasi whitelist di halaman import untuk seluruh user baru dalam batch. Default `staff`/`staff` dan whitelist nonaktif. Pengaturan per user dapat disesuaikan melalui Kelola setelah import. Jabatan tidak otomatis menentukan role/profile.
+- Telegram ID yang sudah ada, termasuk user nonaktif, **dilewati seluruhnya**. Nama, status, membership, default company, custom instruction, session, history, dan akses module lama tidak berubah; perusahaan baru pada baris tersebut tidak ditambahkan.
+- Untuk ID baru di beberapa perusahaan, ulangi ID dan nama pada beberapa baris. Satu user dibuat dengan beberapa membership aktif; perusahaan pada baris pertama menjadi default. Duplikat identik dilewati; data yang bertentangan ditolak.
+- Klik **Import user baru** untuk menyimpan langsung. Jika ada data user baru tidak valid, seluruh batch dibatalkan tanpa simpan parsial. Hasil menampilkan jumlah user/membership baru dan nomor baris yang dilewati.
+- Akses module tidak diberikan otomatis. Upload tidak disimpan permanen dan isi file tidak dimasukkan audit; audit mencatat metadata/checksum dan jumlah hasil import.
+
+Rencana menghilangkan Divisi dan menyamakan Communication profile dengan Role level masih ditunda (ADR-057). Import saat ini tetap memakai template lima kolom.
 
 ## Deploy ke Railway
 

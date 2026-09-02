@@ -14,16 +14,19 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import UploadFile
 
 from app.config import Settings, load_settings
 from app.database import AIRuntimeProfile, Database, Membership, User
 from app.document_ingestion import MAX_UPLOAD_BYTES, extract_uploaded_document
 from app.providers import runtime_profile_is_configured
 from app.role_profiles import load_role_profiles
+from app.user_import import MAX_USER_IMPORT_BYTES, UserImportValidationError, read_user_import
 
 
 logger = logging.getLogger(__name__)
@@ -354,6 +357,65 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 "error": request.query_params.get("error", ""),
             },
         )
+
+    def user_import_page(request: Request, *, values=None, error="", errors=None, report=None, status_code=200):
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/user_import.html",
+            context={
+                "active_page": "users",
+                "admin_username": settings.admin_username,
+                "csrf_token": _csrf_token(request, settings),
+                "role_options": _role_options(),
+                "profile_options": profile_options,
+                "values": values or {"role_level": "staff", "communication_profile": "staff", "active": "0"},
+                "error": error, "errors": errors or [], "report": report,
+            },
+            status_code=status_code,
+        )
+
+    @app.get("/admin/users/import", response_class=HTMLResponse)
+    async def new_user_import(request: Request):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        return user_import_page(request)
+
+    @app.post("/admin/users/import", response_class=HTMLResponse)
+    async def import_users(request: Request):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        # Bound the actual stream, not just Content-Length, before multipart
+        # parsing can spool an arbitrarily large upload to disk.
+        limited_request = await _bounded_import_request(request)
+        async with limited_request.form(max_files=1, max_fields=8, max_part_size=8192) as form:
+            if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+                return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+            values = {key: str(form.get(key, default)) for key, default in (
+                ("role_level", "staff"), ("communication_profile", "staff"), ("active", "0"),
+            )}
+            try:
+                if values["active"] not in {"0", "1"}:
+                    raise ValueError("Status whitelist tidak valid.")
+                upload = form.get("file")
+                if not isinstance(upload, UploadFile) or not upload.filename:
+                    raise ValueError("Pilih file Excel .xls atau .xlsx terlebih dahulu.")
+                data = await upload.read(MAX_USER_IMPORT_BYTES + 1)
+                rows = await run_in_threadpool(read_user_import, upload.filename, data)
+                report = await run_in_threadpool(
+                    database.import_new_users, rows,
+                    role_level=values["role_level"],
+                    communication_profile=values["communication_profile"],
+                    active=values["active"] == "1", actor=settings.admin_username,
+                    source_filename=upload.filename,
+                    source_sha256=hashlib.sha256(data).hexdigest(),
+                )
+            except UserImportValidationError as exc:
+                return user_import_page(request, values=values, error=str(exc), errors=exc.errors, status_code=400)
+            except ValueError as exc:
+                return user_import_page(request, values=values, error=str(exc), status_code=400)
+        return user_import_page(request, values=values, report=report)
 
     @app.get("/admin/users/new", response_class=HTMLResponse)
     async def new_user(request: Request):
@@ -2051,6 +2113,7 @@ def _module_redirect(
 
 
 _ACTIVITY_ACTION_LABELS = {
+    "users.imported": "Import user baru",
     "company.created": "Company dibuat",
     "company.updated": "Company diperbarui",
     "company.activated": "Company diaktifkan",
@@ -2087,6 +2150,10 @@ _ACTIVITY_ACTION_LABELS = {
 }
 
 _ACTIVITY_DETAIL_LABELS = {
+    "created_users": "User baru",
+    "created_memberships": "Membership baru",
+    "skipped_rows": "Baris ID sudah terdaftar",
+    "duplicate_rows": "Baris duplikat dalam file",
     "active": "Aktif",
     "character_count": "Karakter",
     "communication_profile": "Profil komunikasi",
@@ -2322,6 +2389,24 @@ def _membership_form_context(
         "notice": notice,
         "error": error,
     }
+
+
+async def _bounded_import_request(request: Request) -> Request:
+    limit = MAX_USER_IMPORT_BYTES + 64 * 1024
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > limit:
+            raise HTTPException(status_code=413, detail="Upload terlalu besar. File Excel maksimal 5 MB.")
+        body.extend(chunk)
+    payload = bytes(body)
+    del body
+
+    async def receive():
+        nonlocal payload
+        current, payload = payload, b""
+        return {"type": "http.request", "body": current, "more_body": False}
+
+    return Request(request.scope, receive=receive)
 
 
 def _role_options() -> list[dict[str, str]]:
