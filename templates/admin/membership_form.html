@@ -26,9 +26,7 @@
           {% endif %}
         </label>
         <label>Jabatan<input name="job_title" type="text" value="{{ values.job_title }}" minlength="2" maxlength="100" required></label>
-        <label>Divisi<input name="division" type="text" value="{{ values.division }}" minlength="2" maxlength="100" required></label>
-        <label>Role level<select name="role_level" required>{% for option in role_options %}<option value="{{ option.id }}" {% if values.role_level == option.id %}selected{% endif %}>{{ option.label }}</option>{% endfor %}</select></label>
-        <label>Communication profile<select name="communication_profile" required>{% for option in profile_options %}<option value="{{ option.id }}" {% if values.communication_profile == option.id %}selected{% endif %}>{{ option.label }}</option>{% endfor %}</select></label>
+        <label>Role level<select name="role_level" required>{% for option in role_options %}<option value="{{ option.id }}" {% if values.role_level == option.id %}selected{% endif %}>{{ option.label }}</option>{% endfor %}</select><small>Gaya jawaban otomatis: GM strategis, Manager taktis, Staff operasional. Tidak ditentukan dari teks jabatan.</small></label>
       </div>
       <label class="full-field">Custom instruction membership <span class="optional">Opsional</span><textarea name="custom_instruction" maxlength="5000" rows="6">{{ values.custom_instruction }}</textarea></label>
       <label class="checkbox-row">

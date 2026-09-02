@@ -23,7 +23,6 @@ def build_system_prompt(
         f"Perusahaan aktif: {company.name} ({company.company_id})",
         f"User saat ini: {user.name}",
         f"Jabatan pada perusahaan aktif: {membership.job_title or '-'}",
-        f"Division pada perusahaan aktif: {membership.division or '-'}",
         f"Role level: {membership.role_level or '-'}",
         TELEGRAM_MARKUP_CONTRACT,
     ]
@@ -54,7 +53,7 @@ def build_system_prompt(
         )
     if communication_profile:
         parts.append(
-            "Aturan penyampaian jawaban berdasarkan jabatan user pada perusahaan aktif:\n"
+            "Aturan penyampaian jawaban berdasarkan Role level membership aktif:\n"
             f"{communication_profile.as_prompt()}"
         )
     if user.custom_instruction:

@@ -55,16 +55,9 @@
             <input name="job_title" type="text" value="{{ values.job_title }}" minlength="2" maxlength="100" placeholder="Contoh: General Manager" required>
           </label>
           <label>
-            Divisi
-            <input name="division" type="text" value="{{ values.division }}" minlength="2" maxlength="100" placeholder="Contoh: Management" required>
-          </label>
-          <label>
             Role level
             <select name="role_level" required>{% for option in role_options %}<option value="{{ option.id }}" {% if values.role_level == option.id %}selected{% endif %}>{{ option.label }}</option>{% endfor %}</select>
-          </label>
-          <label>
-            Communication profile
-            <select name="communication_profile" required>{% for option in profile_options %}<option value="{{ option.id }}" {% if values.communication_profile == option.id %}selected{% endif %}>{{ option.label }}</option>{% endfor %}</select>
+            <small>Gaya jawaban otomatis: GM strategis, Manager taktis, Staff operasional.</small>
           </label>
         </div>
         <label class="full-field">
@@ -84,20 +77,19 @@
 
   {% if mode == 'edit' %}
     <div class="page-lead subsection-lead">
-      <div><h2>Company membership</h2><p>Jabatan, divisi, level komunikasi, dan company default user.</p></div>
+      <div><h2>Company membership</h2><p>Jabatan, Role level, dan company default user. Gaya jawaban otomatis mengikuti Role level.</p></div>
       <a class="primary-link" href="/admin/users/{{ user.telegram_id }}/memberships/new">Tambah membership</a>
     </div>
     <div class="panel table-panel">
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Company</th><th>Jabatan · Divisi</th><th>Role</th><th>Profile</th><th>Default</th><th>Status</th><th>Action</th></tr></thead>
+          <thead><tr><th>Company</th><th>Jabatan</th><th>Role level</th><th>Default</th><th>Status</th><th>Action</th></tr></thead>
           <tbody>
             {% for membership in memberships %}
               <tr>
                 <td><strong>{{ membership.company_name }}</strong><small class="block">{{ membership.company_id }}</small></td>
-                <td>{{ membership.job_title }}<small class="block">{{ membership.division }}</small></td>
+                <td>{{ membership.job_title }}</td>
                 <td>{{ membership.role_level }}</td>
-                <td>{{ membership.communication_profile }}</td>
                 <td>{% if membership.is_default %}<span class="status-badge default">Default</span>{% else %}-{% endif %}</td>
                 <td>{% if membership.active %}<span class="status-badge active">Active</span>{% else %}<span class="status-badge">Inactive</span>{% endif %}</td>
                 <td><div class="row-actions">
@@ -109,7 +101,7 @@
                   </form>
                 </div></td>
               </tr>
-            {% else %}<tr><td colspan="7" class="empty-state">User belum mempunyai membership.</td></tr>{% endfor %}
+            {% else %}<tr><td colspan="6" class="empty-state">User belum mempunyai membership.</td></tr>{% endfor %}
           </tbody>
         </table>
       </div>

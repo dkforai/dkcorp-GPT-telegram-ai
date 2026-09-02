@@ -16,7 +16,7 @@ from starlette.requests import Request
 from app.admin import _bounded_import_request, create_admin_app
 from app.database import Database
 from app.user_import import (
-    HEADERS, MAX_USER_IMPORT_BYTES, UserImportRow,
+    HEADERS as SIMPLE_HEADERS, LEGACY_HEADERS as HEADERS, MAX_USER_IMPORT_BYTES, UserImportRow,
     UserImportValidationError, read_user_import,
 )
 from test_core import _test_settings
@@ -81,6 +81,43 @@ def test_both_excel_formats(writer, extension):
     assert result == [UserImportRow(2, "Ajeng", "106545875", "Company A", "Manager", "Marketing")]
 
 
+@pytest.mark.parametrize("writer, extension", [(xlsx, ".xlsx"), (xls, ".xls")])
+@pytest.mark.parametrize("role, expected", [("gm", "executive"), ("manager", "manager"), ("staff", "staff")])
+def test_four_column_import_uses_role_and_ignores_forged_profile(database, tmp_path, writer, extension, role, expected):
+    content = writer([SIMPLE_HEADERS, ["Ajeng", "106545875", "Company A", "Owner"]])
+    parsed = read_user_import("users" + extension, content)
+    assert parsed[0].division == ""
+    settings = _test_settings(tmp_path, tmp_path / "users.json", tmp_path / "companies.json", database_path=database.path)
+    with TestClient(create_admin_app(settings, database)) as client:
+        client.post("/admin/login", data={"username": "admin", "password": "strong-password"})
+        page = client.get("/admin/users/import")
+        assert 'name="communication_profile"' not in page.text
+        assert 'Empat kolom' in page.text
+        csrf = re.search(r'name="csrf_token" value="([a-f0-9]+)"', page.text).group(1)
+        response = client.post("/admin/users/import", data={
+            "csrf_token": csrf, "role_level": role, "communication_profile": "forged", "active": "1",
+        }, files={"file": ("users" + extension, content)})
+        assert response.status_code == 200
+        membership = database.get_membership_admin(106545875, "company-a")
+        assert membership.communication_profile == expected and membership.division == ""
+        before = snapshot(database)
+        retry = client.post("/admin/users/import", data={
+            "csrf_token": csrf, "role_level": "staff",
+        }, files={"file": ("users" + extension, content)})
+        assert retry.status_code == 200 and '0 user baru' in retry.text
+        assert snapshot(database) == before
+
+
+def test_new_headers_reordered_and_old_division_optional(database):
+    data = xlsx([["Jabatan", "Perusahaan", "Nama", "Telegram ID"], ["Owner", "Company A", "DK", "42"]])
+    assert read_user_import("simple.xlsx", data)[0] == UserImportRow(2, "DK", "42", "Company A", "Owner")
+    data = xlsx([HEADERS, ["DK", "42", "Company A", "Owner", None]])
+    assert run_import(database, read_user_import("old.xlsx", data)).created_users == 1
+    assert database.get_membership_admin(42, "company-a").division == ""
+    with pytest.raises(ValueError, match="di luar"):
+        read_user_import("extra.xlsx", xlsx([SIMPLE_HEADERS, ["DK", "42", "Company A", "Owner", "extra"]]))
+
+
 def test_parser_blank_rows_numeric_id_reordered_headers_and_selected_tab():
     payload = xlsx([
         ["telegram id", "nama", "perusahaan", "divisi", "jabatan"],
@@ -101,8 +138,8 @@ def test_parser_blank_rows_numeric_id_reordered_headers_and_selected_tab():
 @pytest.mark.parametrize("payload, message", [
     ([], "header"),
     ([HEADERS], "Belum ada"),
-    ([["Nama", "Telegram ID", "Perusahaan", "Jabatan"]], "lima kolom"),
-    ([["Nama", "Telegram ID", "Perusahaan", "Jabatan", "Nama"]], "lima kolom"),
+    ([["Nama", "Telegram ID", "Perusahaan"]], "empat kolom"),
+    ([["Nama", "Telegram ID", "Perusahaan", "Jabatan", "Nama"]], "empat kolom"),
     ([HEADERS, ["=1+1", 123, "Company A", "Staff", "Marketing"]], "formula"),
     ([HEADERS, ["User", True, "Company A", "Staff", "Marketing"]], "boolean"),
     ([HEADERS, ["User", 123, "Company A", "Staff", "Marketing", "secret"]], "di luar"),
@@ -198,7 +235,7 @@ def test_mixed_existing_and_new_does_not_modify_existing(database):
 @pytest.mark.parametrize("invalid", [
     row(3, 234, "Missing"), row(3, "@username"), row(3, 1.5), row(3, 0),
     row(3, 2**53), row(3, float("nan")), row(3, True),
-    row(3, 234, name="A"), row(3, 234, division=""),
+    row(3, 234, name="A"), row(3, 234, division="X"),
     row(3, name="Different"), row(3, job_title="Different"),
 ])
 def test_invalid_new_rows_roll_back_entire_batch(database, invalid):

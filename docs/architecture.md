@@ -5,8 +5,8 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 1.14 |
-| Terakhir diperbarui | 2 September 2026 |
+| Versi | 1.15 |
+| Terakhir diperbarui | 3 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
 
@@ -19,7 +19,7 @@ DK Corp Telegram AI adalah asisten internal yang menyediakan akses AI melalui sa
 Tujuan utama:
 
 - user tidak perlu menulis system prompt atau mengunggah knowledge sendiri;
-- jawaban menyesuaikan jabatan, divisi, dan level komunikasi;
+- jawaban menyesuaikan konteks jabatan dan gaya komunikasi otomatis dari Role level membership;
 - GM menerima jawaban strategis, manager menerima jawaban taktis, dan staff menerima jawaban operasional;
 - provider AI dapat diganti tanpa mengubah alur Telegram;
 - MVP mudah dijalankan, diaudit, dan dikembangkan.
@@ -27,7 +27,7 @@ Tujuan utama:
 ## 2. Prinsip desain
 
 1. Identitas, hak akses, gaya komunikasi, dan knowledge adalah empat konsep berbeda.
-2. Jabatan tidak menentukan gaya secara hardcoded. User mempunyai `communication_profile` tersendiri.
+2. Jabatan tidak menentukan gaya secara hardcoded. Profile efektif diturunkan dari Role level membership aktif; teks jabatan dan override profile lama tidak mengalahkan pemetaan tersebut.
 3. Informasi yang tidak tersedia tidak boleh dikarang.
 4. Knowledge merupakan referensi data, bukan instruksi yang boleh mengambil alih system prompt.
 5. SQLite menjadi source of truth runtime pada fase satu-container. JSON hanya dipakai untuk bootstrap ketika registry database masih kosong.
@@ -102,8 +102,8 @@ Jawaban ke user
 | Authentication | Sudah | Whitelist Telegram ID |
 | User Context | Sudah | Identity global dan membership per perusahaan |
 | Import user Excel | Sudah | `.xls`/`.xlsx`, lima kolom, insert-only untuk ID baru, validasi atomik dan skip total ID lama melalui `/admin/users/import` |
-| Communication Profile | Sudah | Config terpusat dengan override per membership |
-| Penyederhanaan form user/membership | Disetujui, ditunda | Saat penyempurnaan sistem: hilangkan input Divisi dan Communication profile; profile mengikuti Role level. Belum diterapkan; lihat roadmap dan ADR-057 |
+| Communication Profile | Sudah | Config isi profile terpusat; pilihan profile efektif otomatis dari Role level membership aktif |
+| Penyederhanaan form user/membership | Implementasi v1.15, deployment diotorisasi | Divisi/profile tidak lagi diinput, runtime berbasis Role level, import empat kolom dengan kompatibilitas lima kolom lama. Data legacy dipertahankan; 198 tes lokal lulus |
 | Custom Instruction | Sudah | Field global user dan field per membership |
 | Knowledge Loader | Sudah | Published document aktif dari SQLite; folder Markdown menjadi fallback sampai publish pertama |
 | Document Ingestion | Sebagian | Upload PDF, DOCX, TXT, dan Markdown menjadi draft teks; OCR dan `.doc` belum |
@@ -133,7 +133,7 @@ Telegram ID
 User
     ↓
 User–Company Membership
-company + job title + division + role level
+company + job title + role level
     ↓
 Active Company Context
     ├── Company Profile
@@ -156,7 +156,7 @@ Telegram Response Renderer
 
 ### 5.1 User dan membership
 
-Identitas user bersifat global, tetapi jabatan, divisi, role level, dan akses bersifat per perusahaan.
+Identitas user bersifat global, tetapi jabatan, Role level, dan akses bersifat per perusahaan. Kolom divisi/profile pada contoh data legacy berikut tetap tersimpan untuk kompatibilitas, bukan input admin atau sumber profile efektif sejak v1.15.
 
 ```json
 {
@@ -348,7 +348,7 @@ Versi admin saat ini menyediakan:
 - CSRF token untuk seluruh mutasi Company;
 - audit event untuk create, update, activate, dan deactivate Company.
 - tambah user selalu membuat membership pertama sebagai company default;
-- membership tambahan dapat mengatur jabatan, divisi, role level, communication profile, custom instruction, status, dan default.
+- membership tambahan dapat mengatur jabatan, Role level, custom instruction, status, dan default. Divisi/profile dihilangkan dari form serta tabel membership; gaya jawaban otomatis dari role.
 - bot hanya membaca `published_version_id`; draft tersimpan terpisah dan tidak masuk ke system prompt.
 - file instruction tetap dibaca sebagai fallback selama suatu company belum mempunyai versi database yang dipublikasikan.
 - bot hanya membaca knowledge published dari dokumen aktif dan selalu memfilternya dengan `company_id`;
@@ -424,7 +424,7 @@ Mode `/module general` mengosongkan `active_module_id` dan memakai history Gener
 
 Admin membuka **Users & Access → Import user**, memilih file dan pengaturan batch, lalu menekan **Import user baru**. Route GET/POST `/admin/users/import` membutuhkan session admin; POST memvalidasi CSRF. Hasil menampilkan jumlah user/membership baru, nomor baris ID lama yang dilewati, dan duplikat identik. Tidak ada preview atau simpan parsial; error validasi menampilkan baris untuk diperbaiki dan mewajibkan upload ulang.
 
-Kontrak file saat ini memakai **Nama, Telegram ID, Perusahaan, Jabatan, Divisi**. Tab `Data_User` dipilih secara eksplisit; jika hanya satu tab, nama bebas. File multi-tab tanpa `Data_User` ditolak untuk mencegah tab contoh terimpor. Header harus lengkap tanpa kolom tambahan berisi data, dengan urutan fleksibel. Baris kosong diabaikan, maksimal baris 501 termasuk header pada baris 1.
+Kontrak file saat ini memakai **Nama, Telegram ID, Perusahaan, Jabatan**. Kolom kelima **Divisi** opsional hanya untuk kompatibilitas file lama; nilai kosong diperbolehkan, nilai nonkosong disimpan sebagai legacy dan tidak masuk konteks AI. Tab `Data_User` dipilih secara eksplisit; jika hanya satu tab, nama bebas. File multi-tab tanpa `Data_User` ditolak untuk mencegah tab contoh terimpor. Header harus lengkap, tanpa duplikat/kolom tambahan, dengan urutan fleksibel. Baris kosong diabaikan, maksimal baris 501 termasuk header pada baris 1.
 
 Parser `app/user_import.py` menggunakan `openpyxl` untuk `.xlsx` dan `xlrd` untuk `.xls`; `defusedxml` mengamankan pembacaan XML. Upload maksimal 5 MB; jumlah byte request sebenarnya dibatasi sebelum multipart parsing (tambahan 64 KiB untuk form), bukan hanya mempercayai Content-Length. Maksimal satu file, delapan form fields, dan 20 MB expanded ZIP/1000 entries. Parser tidak menjalankan macro/formula atau mengambil external links; `.xlsx` formula/error ditolak, `.xls` membaca cached values. File rusak, password, tipe sel tidak didukung, ID pecahan/invalid, serta ID numerik lebih dari 15 digit ditolak; ID panjang harus berupa teks agar presisi tidak hilang.
 
@@ -432,9 +432,9 @@ Parser `app/user_import.py` menggunakan `openpyxl` untuk `.xlsx` dan `xlrd` untu
 
 Nama perusahaan dicocokkan secara exact setelah normalisasi spasi/case dengan company aktif; Company ID juga diterima. Kecocokan ambigu, tidak ada, atau company nonaktif ditolak; company tidak dibuat otomatis. Satu ID baru dapat memiliki beberapa membership jika nama konsisten; company pertama menjadi default. Duplikat identik ID/company dilewati dan konflik atribut ditolak.
 
-Role level, Communication profile, dan whitelist dipilih admin pada form untuk user baru dalam batch, default `staff`, `staff`, whitelist nonaktif. Membership baru aktif, custom instruction kosong, dan akses module tetap default-deny. Jabatan tidak digunakan untuk menebak hak akses/profile. Admin dapat menyesuaikan per user setelah import. Data upload tidak disimpan permanen; audit batch menyimpan nama file, SHA-256, pengaturan batch, serta jumlah user/membership/skip/duplikat, bukan isi workbook.
+Role level dan whitelist dipilih admin pada form untuk user baru dalam batch, default `staff` dan whitelist nonaktif. Communication profile diturunkan server dari role; field profile kiriman browser diabaikan. Membership baru aktif, custom instruction kosong, dan akses module tetap default-deny. Jabatan tidak digunakan untuk menebak hak akses/profile. Admin dapat menyesuaikan per user setelah import. Data upload tidak disimpan permanen; audit batch menyimpan nama file, SHA-256, pengaturan batch, serta jumlah user/membership/skip/duplikat, bukan isi workbook.
 
-Tidak ada migrasi schema. Penyederhanaan form/profile ADR-057 tetap ditunda dan tidak diterapkan oleh fitur import ini.
+Tidak ada migrasi schema atau backfill. Penyederhanaan ADR-057 diterapkan pada v1.15 bersama form dan runtime, tanpa mengubah aturan insert-only/atomic import.
 
 ### 5.10 Target persistence multi-tenant
 
@@ -464,7 +464,7 @@ Implementasi dilakukan bertahap:
 
 ## 6. Pemisahan konsep user
 
-Contoh satu user:
+Contoh representasi legacy satu user (kolom role/divisi/profile global dipertahankan untuk kompatibilitas; konteks efektif menggunakan membership aktif):
 
 ```json
 {
@@ -485,8 +485,8 @@ Makna field:
 | `telegram_id` | Identitas autentikasi Telegram |
 | `name` | Nama yang digunakan dalam konteks percakapan |
 | `role` | Jabatan atau fungsi organisasi sebenarnya |
-| `division` | Unit bisnis atau divisi |
-| `communication_profile` | Level kedalaman dan bentuk jawaban |
+| `division` | Data legacy, tidak lagi diinput atau dimasukkan ke konteks AI |
+| `communication_profile` | Nilai legacy tersimpan; profile efektif diturunkan dari Role level membership aktif |
 | `custom_instruction` | Kebutuhan khusus individual |
 | `active` | Status akses bot |
 
@@ -562,13 +562,15 @@ Dipakai ketika profile tidak dikenali. Jawaban bersifat seimbang, praktis, dan t
 
 ## 8. Resolusi profile dan prioritas instruksi
 
-Bagian ini menjelaskan perilaku saat ini. Rencana profile otomatis berdasarkan `role_level` telah disetujui tetapi ditunda sampai tahap penyempurnaan sistem (ADR-057); belum mengubah resolusi runtime.
+Sejak v1.15, ADR-057 menjadi perilaku aktif. `profile_id_for_role` pada `app/role_profiles.py` menjadi pemetaan terpusat bagi form, import, dan runtime bot.
 
 Pemilihan profile:
 
-1. Jika user memiliki `communication_profile`, gunakan profile tersebut.
-2. Jika kosong, cocokkan `role` dengan alias pada `config/role_profiles.json`.
-3. Jika tidak ada kecocokan, gunakan `default`.
+1. Ambil `role_level` membership company aktif: `gm` → `executive`, `manager` → `manager`, `staff` → `staff`.
+2. Ambil isi profile dari `config/role_profiles.json`. Role legacy kosong/tidak dikenal atau ID profile tidak tersedia memakai profile default, tanpa fallback jabatan/override global.
+3. Field `communication_profile` global/membership lama tidak memengaruhi pemilihan profile. Fungsi resolver alias lama tetap tersedia untuk kompatibilitas kode, tetapi bot selalu memberinya ID hasil pemetaan role.
+
+Form tambah user dan membership mengabaikan field divisi/profile yang disisipkan pada request; membership baru tanpa Divisi disimpan dengan string kosong dan profile hasil pemetaan role. Form edit membership memvalidasi role baru, lalu mempertahankan nilai mentah divisi/profile existing dalam write transaction (`BEGIN IMMEDIATE`) agar tidak tertimpa field yang sudah dihilangkan. Tidak ada backfill/reset data. Profile efektif langsung mengikuti role baru meskipun kolom profile legacy masih berisi nilai lama. Divisi tidak lagi disisipkan ke system prompt atau `/whoami`; riwayat chat/knowledge lama tidak dihapus atau disaring ulang. Status whitelist, membership, default company, dan module access tetap independen.
 
 Urutan komposisi prompt:
 
@@ -806,18 +808,18 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 
 ## 14. Roadmap
 
-### Catatan penyempurnaan yang disetujui DK, belum dikerjakan
+### Penyederhanaan user/membership, diterapkan pada v1.15
 
-Keputusan 2 September 2026: pilih opsi 1, sederhanakan form tetapi pertahankan data lama. Kerjakan sebagai satu paket saat DK meminta penyempurnaan sistem, bukan sekarang.
+Keputusan 2 September 2026 memilih opsi 1, sederhanakan form tetapi pertahankan data lama. DK meminta penerapannya pada 3 September 2026 dan mengotorisasi commit/deploy setelah tes lulus.
 
 - Hilangkan input **Divisi** dan pilihan **Communication profile** dari form tambah/edit user serta membership. Pertahankan **Role level** yang ditetapkan admin.
 - Tentukan profile secara konsisten dari Role level membership aktif: `gm` → `executive`, `manager` → `manager`, `staff` → `staff`. Jangan menebak dari teks jabatan atau membiarkan override profile lama mengalahkan pemetaan ini.
 - Pertahankan kolom dan nilai divisi/profile lama di database agar perubahan dapat dikembalikan; tidak menghapus data. Setelah penyederhanaan diterapkan, divisi tidak lagi dimasukkan ke konteks AI.
 - Selaraskan validasi backend, penyimpanan membership, resolusi runtime, form admin, serta proses import dalam perubahan yang sama. Status aktif, default company, dan akses module tetap dikelola admin; pemetaan profile tidak memberikan hak akses baru.
-- Sederhanakan template import menjadi **Nama, Telegram ID, Perusahaan, Jabatan** saat paket ini dikerjakan. Template lima kolom tetap dipakai oleh importer yang ditambahkan terpisah pada v1.11; perubahan menjadi empat kolom masih ditunda.
+- Template import menjadi **Nama, Telegram ID, Perusahaan, Jabatan**. File lima kolom lama tetap diterima; Divisi lama opsional dan tidak menjadi konteks AI.
 - Verifikasi user baru/lama, perubahan Role level, dan user dengan membership beberapa company. Pastikan data lama tetap utuh dan aturan akses tidak berubah.
 
-Status catatan ini hanya persetujuan rencana. Tidak ada perubahan kode, database, form, template, maupun deployment pada pencatatan keputusan ini.
+Paket form/backend/runtime/import telah diterapkan dan diuji lokal. Deployment produksi diotorisasi dan menunggu finalisasi; tidak ada migrasi schema, penghapusan, atau backfill data existing.
 
 ### Fase 1 — Context-aware MVP
 
@@ -917,7 +919,7 @@ Status catatan ini hanya persetujuan rencana. Tidak ada perubahan kode, database
 | ADR-054 | Named environment untuk legacy credential | Tetap didukung; pendaftaran baru memakai encrypted registry ADR-062 |
 | ADR-055 | Mode General tetap memakai credential global | Perilaku dasar tetap kompatibel dan custom Module dapat memakai billing/provider berbeda |
 | ADR-056 | Kegagalan konfigurasi credential Module tetap fail-closed; pengecualian operasional dibatasi ADR-060 | Key salah/kosong dan pencabutan akses tidak boleh memicu fallback. Cadangan harus dipilih eksplisit oleh admin |
-| ADR-057 | Disetujui, ditunda: hilangkan input Divisi dan Communication profile; profile otomatis dari Role level, data lama dipertahankan | Menyederhanakan administrasi MVP tanpa penghapusan data. Dikerjakan serentak pada form, backend, runtime, dan import saat penyempurnaan sistem; perilaku saat ini termasuk ADR-005 belum diubah |
+| ADR-057 | Diterapkan v1.15: hilangkan input Divisi dan Communication profile; profile otomatis dari Role level, data lama dipertahankan | Form/backend/runtime/import diselaraskan. Override lama tidak mengalahkan role, tidak ada backfill atau perubahan akses. Menggantikan pemilihan profile terpisah pada ADR-005 |
 | ADR-058 | Import Excel insert-only, ID lama dilewati seluruhnya di dalam write transaction | Memenuhi larangan menimpa data existing, termasuk user nonaktif/membership lama, dan mencegah race antara pengecekan ID dan penyimpanan |
 | ADR-059 | Batch import atomik dengan pengaturan akses eksplisit di form admin | Kesalahan baris tidak menghasilkan simpan parsial; jabatan dari spreadsheet tidak boleh otomatis menaikkan akses. Whitelist awal nonaktif dan akses module tetap default-deny |
 | ADR-060 | Module memilih AI utama dan cadangan opsional dari AI terdaftar | Menyederhanakan form menjadi dua pilihan nama, mempertahankan Module lama, dan hanya mengalihkan kegagalan koneksi/timeout/408/429/5xx ke cadangan yang dipilih admin |
@@ -929,6 +931,15 @@ Status catatan ini hanya persetujuan rencana. Tidak ada perubahan kode, database
 | ADR-066 | Module memilih pasangan koneksi+model, dengan legacy fallback eksplisit | Satu key untuk banyak model; pemilihan server-validated, snapshot atomik/revision-aware, key rotation menginvalidasi katalog, dan pilihan lama tidak diubah diam-diam |
 
 ## 16. Changelog dokumen
+
+### 3 September 2026 — v1.15
+
+- menerapkan ADR-057 pada form tambah user, tambah/edit membership, daftar membership, dan import Excel;
+- communication profile otomatis mengikuti Role level membership aktif, tidak lagi memakai override legacy/global atau teks jabatan; divisi tidak disisipkan ke prompt dan `/whoami`;
+- mempertahankan nilai divisi/profile lama saat edit dan restart, tanpa migrasi schema/backfill/reset. Role baru langsung memengaruhi profile efektif; akses/default/whitelist tetap terpisah;
+- import empat kolom dengan kompatibilitas file lima kolom lama. Telegram ID existing tetap dilewati tanpa modifikasi. Field profile request browser tidak bisa mengalahkan role;
+- 198 tes lokal lulus, termasuk tiga role, role legacy tidak dikenal, manipulasi field lama, preservasi nilai mentah, invalid role/CSRF, beberapa company, serta import empat/lima kolom `.xls`/`.xlsx`. Warning deprecation Starlette/httpx existing tetap ada;
+- commit/deploy diotorisasi DK setelah tes; verifikasi produksi v1.15 menunggu deployment.
 
 ### 2 September 2026 — v1.14
 

@@ -1,4 +1,4 @@
-"""Bounded Excel decoding for the five-column user template; no database writes."""
+"""Bounded four-column Excel import; optional legacy Divisi is preserved."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,7 +10,8 @@ MAX_USER_IMPORT_BYTES = 5 * 1024 * 1024
 MAX_USER_IMPORT_ROWS = 500
 MAX_EXPANDED_BYTES = 20 * 1024 * 1024
 MAX_COLUMNS = 10
-HEADERS = ("Nama", "Telegram ID", "Perusahaan", "Jabatan", "Divisi")
+HEADERS = ("Nama", "Telegram ID", "Perusahaan", "Jabatan")
+LEGACY_HEADERS = (*HEADERS, "Divisi")
 
 
 @dataclass(frozen=True)
@@ -20,7 +21,7 @@ class UserImportRow:
     telegram_id: object
     company: object
     job_title: object
-    division: object
+    division: object = ""
 
 
 @dataclass(frozen=True)
@@ -69,10 +70,11 @@ def read_user_import(filename: str, data: bytes) -> list[UserImportRow]:
     while header and not header[-1]:
         header.pop()
     required = [_header(value) for value in HEADERS]
-    if len(header) != len(required) or set(header) != set(required):
+    if (len(header) != len(set(header))
+            or set(header) not in (set(required), set(required) | {"divisi"})):
         raise ValueError(
-            "Baris 1 harus berisi tepat lima kolom: Nama, Telegram ID, "
-            "Perusahaan, Jabatan, Divisi. Gunakan template sederhana."
+            "Baris 1 harus berisi empat kolom: Nama, Telegram ID, "
+            "Perusahaan, Jabatan. Kolom Divisi hanya opsional untuk file lama."
         )
     positions = [header.index(label) for label in required]
     rows = []
@@ -80,9 +82,10 @@ def read_user_import(filename: str, data: bytes) -> list[UserImportRow]:
         if not any(_has_value(value) for value in values):
             continue
         if any(_has_value(value) for value in values[len(header):]):
-            raise ValueError(f"Baris {number}: ada data di luar lima kolom template.")
+            raise ValueError(f"Baris {number}: ada data di luar kolom template.")
         padded = values + [None] * (len(header) - len(values))
-        rows.append(UserImportRow(number, *(padded[i] for i in positions)))
+        division = padded[header.index("divisi")] if "divisi" in header else ""
+        rows.append(UserImportRow(number, *(padded[i] for i in positions), division=division))
     if not rows:
         raise ValueError("Belum ada data user. Isi mulai baris 2.")
     return rows
@@ -116,7 +119,7 @@ def _read_xlsx(data: bytes) -> list[list[object]]:
             if number > MAX_USER_IMPORT_ROWS + 1:
                 raise ValueError("Excel maksimal 500 baris data (baris 2–501).")
             if len(cells) > MAX_COLUMNS:
-                raise ValueError("Terlalu banyak kolom. Gunakan template lima kolom.")
+                raise ValueError("Terlalu banyak kolom. Gunakan template empat kolom (Divisi lama opsional).")
             if any(cell.data_type in {"f", "e"} for cell in cells):
                 raise ValueError(f"Baris {number}: gunakan nilai biasa, bukan formula/error Excel.")
             values = [cell.value for cell in cells]
@@ -142,7 +145,7 @@ def _read_xls(data: bytes) -> list[list[object]]:
         else:
             raise ValueError("Untuk file multi-sheet, beri nama tab data user Data_User.")
         if sheet.nrows > MAX_USER_IMPORT_ROWS + 1 or sheet.ncols > MAX_COLUMNS:
-            raise ValueError("Excel maksimal 500 baris data dan memakai template lima kolom.")
+            raise ValueError("Excel maksimal 500 baris data dan memakai template empat kolom (Divisi lama opsional).")
         grid = []
         for index in range(sheet.nrows):
             cells = sheet.row(index)

@@ -5,6 +5,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+ROLE_PROFILE_IDS = {"gm": "executive", "manager": "manager", "staff": "staff"}
+
+
+def profile_id_for_role(role_level: object) -> str:
+    """Membership role is authoritative; legacy overrides/job titles are ignored."""
+    return ROLE_PROFILE_IDS.get(str(role_level or "").strip().casefold(), "default")
+
+
 @dataclass(frozen=True)
 class CommunicationProfile:
     profile_id: str
@@ -83,4 +91,3 @@ def _string_tuple(value: object) -> tuple[str, ...]:
     if not isinstance(value, list):
         raise ValueError("Field profile harus berupa array")
     return tuple(str(item).strip() for item in value if str(item).strip())
-

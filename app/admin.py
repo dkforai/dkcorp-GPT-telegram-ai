@@ -27,7 +27,7 @@ from app.database import AIRuntimeProfile, Database, Membership, User
 from app.document_ingestion import MAX_UPLOAD_BYTES, extract_uploaded_document
 from app.providers import runtime_profile_is_configured
 from app.model_catalog import CATALOG_MESSAGES, discover_models
-from app.role_profiles import load_role_profiles
+from app.role_profiles import load_role_profiles, profile_id_for_role
 from app.user_import import MAX_USER_IMPORT_BYTES, UserImportValidationError, read_user_import
 
 
@@ -401,8 +401,9 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
                 return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
             values = {key: str(form.get(key, default)) for key, default in (
-                ("role_level", "staff"), ("communication_profile", "staff"), ("active", "0"),
+                ("role_level", "staff"), ("active", "0"),
             )}
+            values["communication_profile"] = profile_id_for_role(values["role_level"])
             try:
                 if values["active"] not in {"0", "1"}:
                     raise ValueError("Status whitelist tidak valid.")
@@ -686,6 +687,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 values["custom_instruction"],
                 is_default=values["is_default"] == "1",
                 actor=settings.admin_username,
+                preserve_legacy_context=True,
             )
         except ValueError as exc:
             return templates.TemplateResponse(
@@ -2411,14 +2413,13 @@ def _user_form_values(form) -> dict[str, str]:
 
 
 def _membership_form_values(form, *, company_id: str = "") -> dict[str, str]:
+    role_level = str(form.get("role_level", "staff")).strip().casefold()
     return {
         "company_id": company_id or str(form.get("company_id", "")).strip(),
         "job_title": str(form.get("job_title", "")).strip(),
-        "division": str(form.get("division", "")).strip(),
-        "role_level": str(form.get("role_level", "staff")).strip(),
-        "communication_profile": str(
-            form.get("communication_profile", "staff")
-        ).strip(),
+        "division": "",
+        "role_level": role_level,
+        "communication_profile": profile_id_for_role(role_level),
         "custom_instruction": str(form.get("custom_instruction", "")).strip(),
         "is_default": "1" if form.get("is_default") == "1" else "0",
     }

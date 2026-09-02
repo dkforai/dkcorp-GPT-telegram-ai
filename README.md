@@ -1,6 +1,6 @@
 # Internal Telegram AI Bot
 
-MVP bot Telegram internal multi-company dengan whitelist user, membership per perusahaan, communication profile berbasis jabatan, custom instruction, knowledge dari file Markdown, history sederhana di SQLite, dan AI provider yang bisa diganti antara OpenAI dan DeepSeek.
+MVP bot Telegram internal multi-company dengan whitelist user, membership per perusahaan, communication profile otomatis dari Role level, custom instruction, knowledge dari file Markdown, history sederhana di SQLite, dan AI provider yang bisa diganti antara OpenAI dan DeepSeek.
 
 Dokumen arsitektur dan konsep aplikasi dipelihara di `docs/architecture.md`. Dokumen Markdown tersebut adalah source of truth selama pengembangan dan akan dibuat menjadi PDF setelah konsep stabil.
 
@@ -25,7 +25,7 @@ Pemrosesan update memakai controlled concurrency. User berbeda dapat diproses pa
 - Whitelist berdasarkan Telegram ID
 - Master perusahaan dan membership user per perusahaan
 - Perusahaan aktif dapat dilihat atau diganti melalui `/company`
-- Jabatan, divisi, role level, profile, dan custom instruction per membership
+- Jabatan, Role level, dan custom instruction per membership; profile otomatis mengikuti role
 - Communication profile `executive`, `manager`, `staff`, atau `default`
 - Company profile, instruction, dan knowledge dari path yang dikonfigurasi per perusahaan
 - History chat dipisahkan per user, perusahaan, dan module aktif di SQLite
@@ -162,7 +162,7 @@ Aturan terpusat berada di `config/role_profiles.json`:
 | `staff` | Operasional, langkah, checklist, contoh, dan standar selesai |
 | `default` | Seimbang ketika profile tidak dikenali |
 
-Jika `communication_profile` membership kosong, aplikasi mencoba mencocokkan `job_title` dengan `role_aliases`. Jika tidak ditemukan, aplikasi memakai `default`. Custom instruction membership hanya berlaku pada perusahaan tersebut.
+Profile selalu mengikuti `role_level` membership aktif: `gm` → `executive`, `manager` → `manager`, `staff` → `staff`. Role lama yang kosong/tidak dikenal memakai `default`, bukan menebak dari jabatan. Override `communication_profile` lama tidak digunakan bot. Nilai divisi/profile lama tetap disimpan untuk kompatibilitas, tetapi divisi tidak lagi dimasukkan ke prompt atau `/whoami`. Custom instruction membership hanya berlaku pada perusahaan tersebut.
 
 ## Company instruction dan knowledge
 
@@ -266,22 +266,22 @@ Company, user whitelist, membership, Company Instruction, Knowledge, Module, dan
 
 ### Import user dari Excel
 
-Di **Users & Access → Import user**, upload file `.xls` atau `.xlsx` dengan lima kolom berikut pada baris pertama. Urutan kolom boleh berbeda; nama kolom jangan diganti.
+Di **Users & Access → Import user**, upload file `.xls` atau `.xlsx` dengan empat kolom berikut pada baris pertama. Urutan kolom boleh berbeda; nama kolom jangan diganti.
 
-| Nama | Telegram ID | Perusahaan | Jabatan | Divisi |
-|---|---|---|---|---|
+| Nama | Telegram ID | Perusahaan | Jabatan |
+|---|---|---|---|
 
 - Gunakan tab `Data_User`; file dengan satu tab boleh memakai nama tab lain. Tab contoh/petunjuk tidak dibaca jika `Data_User` tersedia.
 - Maksimal 5 MB dan 500 baris data (baris 2–501). Isi nilai biasa, bukan formula atau error Excel. `.xlsx` dengan formula ditolak; `.xls` hanya dibaca nilainya yang tersimpan, tidak menjalankan formula/macro.
 - Telegram ID adalah ID numerik Telegram, bukan nomor telepon atau `@username`. Gunakan format teks terutama untuk ID lebih dari 15 digit agar Excel tidak membulatkan digitnya.
 - Isi nama perusahaan yang sudah aktif di Companies, dengan ejaan sama; huruf besar/kecil dan spasi berlebih diabaikan. Company ID juga diterima. Nama ambigu atau perusahaan tidak ditemukan/nonaktif menghasilkan error, bukan membuat company otomatis.
-- Admin memilih Role level, Communication profile, dan aktivasi whitelist di halaman import untuk seluruh user baru dalam batch. Default `staff`/`staff` dan whitelist nonaktif. Pengaturan per user dapat disesuaikan melalui Kelola setelah import. Jabatan tidak otomatis menentukan role/profile.
+- Admin memilih Role level dan aktivasi whitelist di halaman import untuk seluruh user baru dalam batch. Profile otomatis mengikuti role. Default `staff` dan whitelist nonaktif. Pengaturan per user dapat disesuaikan melalui Kelola setelah import. Jabatan tidak otomatis menentukan role/profile.
 - Telegram ID yang sudah ada, termasuk user nonaktif, **dilewati seluruhnya**. Nama, status, membership, default company, custom instruction, session, history, dan akses module lama tidak berubah; perusahaan baru pada baris tersebut tidak ditambahkan.
 - Untuk ID baru di beberapa perusahaan, ulangi ID dan nama pada beberapa baris. Satu user dibuat dengan beberapa membership aktif; perusahaan pada baris pertama menjadi default. Duplikat identik dilewati; data yang bertentangan ditolak.
 - Klik **Import user baru** untuk menyimpan langsung. Jika ada data user baru tidak valid, seluruh batch dibatalkan tanpa simpan parsial. Hasil menampilkan jumlah user/membership baru dan nomor baris yang dilewati.
 - Akses module tidak diberikan otomatis. Upload tidak disimpan permanen dan isi file tidak dimasukkan audit; audit mencatat metadata/checksum dan jumlah hasil import.
 
-Rencana menghilangkan Divisi dan menyamakan Communication profile dengan Role level masih ditunda (ADR-057). Import saat ini tetap memakai template lima kolom.
+Penyederhanaan ADR-057 diterapkan pada form tambah user, tambah/edit membership, import, dan runtime bot. File lama dengan kolom kelima **Divisi** tetap diterima; nilainya boleh kosong dan disimpan sebagai data legacy, bukan konteks AI. User yang sudah ada tetap dilewati seluruhnya. Form edit tidak menghapus atau menimpa kolom divisi/profile lama meskipun Role level berubah; profile efektif dihitung saat runtime.
 
 ## Deploy ke Railway
 

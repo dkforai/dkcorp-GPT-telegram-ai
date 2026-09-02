@@ -270,6 +270,87 @@ def test_explicit_profile_overrides_role_alias():
     assert profile.profile_id == "manager"
 
 
+@pytest.mark.parametrize("role, expected", [("gm", "executive"), ("manager", "manager"), ("staff", "staff"), ("", "default"), ("unknown", "default")])
+def test_bot_profile_is_derived_only_from_membership_role(tmp_path, role, expected):
+    db = Database(tmp_path / "role.db")
+    db.initialize()
+    db.create_company("company-a", "Company A", "admin")
+    user = db.create_user_with_membership(42, "DK", "company-a", "Owner", "Legacy Division", "staff", "executive", "", "admin")
+    membership = replace(db.get_membership_admin(42, "company-a"), role_level=role)
+    settings = _test_settings(tmp_path, tmp_path / "users.json", tmp_path / "companies.json")
+    bot = InternalBot(settings, db, SimpleNamespace())
+    profile = bot._communication_profile(replace(user, communication_profile="executive"), membership)
+    assert profile.profile_id == expected
+    prompt = build_system_prompt(user, membership, db.get_company("company-a"), CompanyContent("", "", ""), profile)
+    assert "Legacy Division" not in prompt and "Division pada perusahaan aktif" not in prompt
+    assert profile.as_prompt() in prompt
+
+
+@pytest.mark.parametrize("role, expected", [("gm", "executive"), ("manager", "manager"), ("staff", "staff")])
+def test_simplified_user_and_membership_forms_preserve_legacy_data(tmp_path, role, expected):
+    db = Database(tmp_path / "simple-admin.db")
+    db.initialize()
+    db.create_company("company-a", "Company A", "admin")
+    db.create_company("company-b", "Company B", "admin")
+    settings = _test_settings(tmp_path, tmp_path / "users.json", tmp_path / "companies.json", database_path=db.path)
+    with TestClient(create_admin_app(settings, db)) as client:
+        client.post("/admin/login", data={"username": "admin", "password": "strong-password"})
+        page = client.get("/admin/users/new")
+        csrf = re.search(r'name="csrf_token" value="([a-f0-9]+)"', page.text).group(1)
+        assert 'name="division"' not in page.text and 'name="communication_profile"' not in page.text
+        response = client.post("/admin/users", data={"csrf_token": csrf, "telegram_id": "42", "name": "DK",
+            "active": "1", "company_id": "company-a", "job_title": "Owner", "role_level": role,
+            "division": "forged division", "communication_profile": "forged"}, follow_redirects=False)
+        assert response.status_code == 303
+        membership = db.get_membership_admin(42, "company-a")
+        assert membership.division == "" and membership.communication_profile == expected
+        page = client.get("/admin/users/42/memberships/new")
+        assert 'name="role_level"' in page.text
+        assert 'name="division"' not in page.text and 'name="communication_profile"' not in page.text
+        response = client.post("/admin/users/42/memberships", data={"csrf_token": csrf,
+            "company_id": "company-b", "job_title": "Owner", "role_level": role}, follow_redirects=False)
+        assert response.status_code == 303
+        other = db.get_membership_admin(42, "company-b")
+        assert other.division == "" and other.communication_profile == expected
+        # Simulate pre-simplification data, including an override conflicting with role.
+        with db._connect() as conn:
+            conn.execute("UPDATE user_company_memberships SET division = ?, communication_profile = ? WHERE telegram_id = 42 AND company_id = 'company-a'",
+                         ("  Legacy Division  ", "old-custom-profile"))
+        db.add_message(42, "user", "keep-history", "company-a")
+        before = db.get_membership_admin(42, "company-a")
+        db.initialize()
+        db.initialize()
+        assert db.get_membership_admin(42, "company-a") == before
+        path = "/admin/users/42/memberships/company-a"
+        for url in [path + "/edit", "/admin/users/42/memberships/new", "/admin/users/42/edit"]:
+            html = client.get(url).text
+            assert 'name="division"' not in html and 'name="communication_profile"' not in html
+            assert 'Legacy Division' not in html and 'old-custom-profile' not in html
+        next_role = "manager" if role != "manager" else "gm"
+        next_profile = "manager" if next_role == "manager" else "executive"
+        values = {"csrf_token": csrf, "job_title": "Owner", "role_level": next_role,
+                  "is_default": "1", "division": "replace legacy", "communication_profile": "staff"}
+        assert client.post(path, data={**values, "csrf_token": "bad"}).status_code == 403
+        assert client.post(path, data={**values, "role_level": "invalid"}).status_code == 400
+        assert db.get_membership_admin(42, "company-a") == before
+        assert client.post(path, data=values, follow_redirects=False).status_code == 303
+        after = db.get_membership_admin(42, "company-a")
+        assert after.division == before.division and after.communication_profile == before.communication_profile
+        assert after.role_level == next_role and after.is_default and after.active
+        assert db.get_membership_admin(42, "company-b") == other
+        assert db.get_history(42, 10, "company-a")[0]["content"] == "keep-history"
+        bot = InternalBot(settings, db, SimpleNamespace())
+        user = db.get_user(42)
+        assert bot._communication_profile(user, after).profile_id == next_profile
+        assert bot._communication_profile(user, other).profile_id == expected
+        replies = []
+        async def reply_text(text): replies.append(text)
+        update = SimpleNamespace(effective_user=SimpleNamespace(id=42), effective_message=SimpleNamespace(reply_text=reply_text))
+        asyncio.run(bot.whoami(update, SimpleNamespace()))
+        assert "Gaya jawaban (otomatis)" in replies[0] and "Division:" not in replies[0]
+        assert "old-custom-profile" not in replies[0]
+
+
 def test_existing_database_gets_communication_profile_migration(tmp_path):
     database_path = tmp_path / "legacy.db"
     with sqlite3.connect(database_path) as connection:

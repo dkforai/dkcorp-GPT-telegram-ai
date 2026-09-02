@@ -18,7 +18,7 @@ from app.prompts import build_system_prompt
 from app.providers import (
     AIProvider, ModuleGenerationError, ModuleProviderResolver, RuntimeCredentialError,
 )
-from app.role_profiles import load_role_profiles, resolve_communication_profile
+from app.role_profiles import load_role_profiles, resolve_communication_profile, profile_id_for_role
 from app.telegram_renderer import markdown_to_telegram_html
 
 logger = logging.getLogger(__name__)
@@ -76,8 +76,8 @@ class InternalBot:
     def _communication_profile(self, user: User, membership: Membership):
         profiles = load_role_profiles(self.settings.role_profiles_file)
         return resolve_communication_profile(
-            membership.communication_profile or user.communication_profile,
-            membership.job_title or membership.role_level or user.role,
+            profile_id_for_role(membership.role_level),
+            "",
             profiles,
         )
 
@@ -174,9 +174,8 @@ class InternalBot:
                 f"Perusahaan aktif: {membership.company_name}\n"
                 f"Company ID: {membership.company_id}\n"
                 f"Jabatan: {membership.job_title or '-'}\n"
-                f"Division: {membership.division or '-'}\n"
                 f"Role level: {membership.role_level or '-'}\n"
-                f"Communication profile: {profile.label}\n"
+                f"Gaya jawaban (otomatis): {profile.label}\n"
                 f"Module aktif: {module_text}"
             )
 

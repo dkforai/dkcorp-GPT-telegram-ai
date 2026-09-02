@@ -13,6 +13,7 @@ from pathlib import Path
 
 from app.credentials import PROVIDERS, encrypt_api_key, validate_encrypted_endpoint
 from app.model_catalog import CatalogResult, CATALOG_MESSAGES
+from app.role_profiles import profile_id_for_role
 
 from app.user_import import (
     MAX_USER_IMPORT_ROWS, UserImportReport, UserImportRow, UserImportValidationError,
@@ -750,6 +751,7 @@ class Database:
             raise ValueError("Import membutuhkan 1–500 baris data.")
         if role_level not in ROLE_LEVELS or communication_profile not in COMMUNICATION_PROFILES:
             raise ValueError("Role level atau communication profile tidak valid.")
+        communication_profile = profile_id_for_role(role_level)
         if not isinstance(active, bool):
             raise ValueError("Status whitelist tidak valid.")
         skipped: list[int] = []
@@ -2949,6 +2951,8 @@ class Database:
         custom_instruction: object,
         is_default: bool,
         actor: str,
+        *,
+        preserve_legacy_context: bool = False,
     ) -> Membership:
         normalized_user = _validate_telegram_id(telegram_id)
         values = _validate_membership_fields(
@@ -2961,6 +2965,7 @@ class Database:
         )
         now = _now()
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             current = connection.execute(
                 """
                 SELECT * FROM user_company_memberships
@@ -2970,6 +2975,11 @@ class Database:
             ).fetchone()
             if current is None:
                 raise ValueError("Membership tidak ditemukan")
+            if preserve_legacy_context:
+                # Keep legacy values exactly, within the same write transaction.
+                # Runtime derives its effective profile from role_level instead.
+                values["division"] = current["division"]
+                values["communication_profile"] = current["communication_profile"]
             if bool(current["active"]):
                 _require_active_company(connection, values["company_id"])
             if bool(current["is_default"]) and not is_default:
@@ -3629,8 +3639,8 @@ def _validate_membership_fields(
     normalized_division = " ".join(str(division or "").split())
     if not 2 <= len(normalized_job) <= 100:
         raise ValueError("Jabatan harus terdiri dari 2-100 karakter")
-    if not 2 <= len(normalized_division) <= 100:
-        raise ValueError("Divisi harus terdiri dari 2-100 karakter")
+    if normalized_division and not 2 <= len(normalized_division) <= 100:
+        raise ValueError("Divisi lama harus kosong atau terdiri dari 2-100 karakter")
     instruction = str(custom_instruction or "").strip()
     if len(instruction) > 5_000:
         raise ValueError("Custom instruction maksimal 5000 karakter")
