@@ -5,7 +5,7 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 1.13 |
+| Versi | 1.13.1 |
 | Terakhir diperbarui | 2 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
@@ -109,7 +109,7 @@ Jawaban ke user
 | Document Ingestion | Sebagian | Upload PDF, DOCX, TXT, dan Markdown menjadi draft teks; OCR dan `.doc` belum |
 | Chat History | Sudah | SQLite dipisahkan per user, perusahaan, dan module; General memakai scope kosong tersendiri |
 | Provider Abstraction | Implementasi v1.13 | OpenAI/DeepSeek/Gemini compatible API; Claude native Messages; General tetap OpenAI/DeepSeek |
-| Settings AI | Rilis v1.13 | API key terenkripsi, empat provider, endpoint otomatis, tes koneksi manual; aktivasi penyimpanan key membutuhkan master key server |
+| Settings AI | Produksi v1.13.1 | API key terenkripsi, empat provider, endpoint otomatis, tes koneksi manual; master key server terpasang dan readiness admin produksi terverifikasi |
 | AI utama dan cadangan per Module | Sudah | Dua pilihan dari AI terdaftar; cadangan opsional, failover terbatas, tanpa fallback global; encrypted key atau legacy environment |
 | Telegram Response Renderer | Sudah | Safe HTML, split, link preview off, dan fallback plain text |
 | Conversation Delivery Policy | Belum | Akan mengatur panjang, ritme, dan progressive disclosure |
@@ -684,7 +684,9 @@ AI terdaftar menyimpan metadata dan API key terenkripsi di SQLite. Profile lama 
 - Status tes enum aman (`success`, `authentication`, `rate_limit`, `unavailable`, `configuration`, `request`, `response`) dan waktu UTC, bukan body error. Hasil hanya diterapkan jika `updated_at` sama dengan snapshot sebelum request. Key environment yang diganti di luar admin perlu dites ulang; hasil bukan jaminan saldo/uptime.
 - Form credential maksimal 16 KiB sebelum parsing, tanpa file/field ganda. Tes maksimal tiga/menit total dan per profile, dua bersamaan, satu per profile, in-memory satu-process. Batas reset saat restart, bukan distributed limiter. Client probe ditutup setelah selesai.
 - Failover mempertahankan ADR-060/061. Error koneksi/408/429/5xx Claude dinormalisasi setara provider compatible; auth/dekripsi/invalid request/empty/refusal tidak memicu backup. Cache key fingerprint berubah saat rotasi. API key tidak masuk prompt.
-- Implementasi diuji dengan SQLite sementara dan HTTP mock. Rilis v1.13 melalui GitHub → Railway tanpa reset data. Master produksi harus dipasang/diverifikasi lewat akses Railway terautentikasi; login dashboard aplikasi tidak memberikan akses Railway Variables. Koneksi berbayar empat akun provider belum diuji.
+- Implementasi diuji dengan SQLite sementara dan HTTP mock. Rilis v1.13 melalui GitHub → Railway tanpa reset data. Pada 2 September 2026, master produksi yang sebelumnya belum ada dipasang melalui Railway CLI terautentikasi dengan target project/service/environment eksplisit. Key dibuat dalam memori dan dikirim melalui stdin, bukan argumen perintah, output, file repository, atau database; variable existing dipertahankan.
+- Deployment aktivasi master `c61d258c-5bc3-48be-a58b-7234316f6277` berstatus `SUCCESS`. HTTP health, login admin, Settings AI dan form Tambah AI terverifikasi; warning master hilang dan empat provider tersedia. Ini memverifikasi readiness konfigurasi, bukan keberhasilan panggilan provider. 132 tes lokal lulus ulang dengan data sementara; tidak ada credential uji ditambahkan atau reset data produksi. Koneksi berbayar empat akun provider belum diuji.
+- Salinan backup master di secret manager terpisah belum dibuat oleh proses deployment ini. Operator tetap wajib menyimpan backup master terpisah dari SQLite dan tidak merotasinya tanpa migrasi ciphertext. Login dashboard aplikasi tidak memberikan akses Railway Variables.
 
 Referensi resmi: [OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create), [Claude Messages](https://platform.claude.com/docs/en/api/messages/create), [Gemini compatibility](https://ai.google.dev/gemini-api/docs/openai), [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/), [Fernet](https://cryptography.io/en/latest/fernet/).
 
@@ -916,6 +918,13 @@ Status catatan ini hanya persetujuan rencana. Tidak ada perubahan kode, database
 | ADR-064 | Tes manual, sintetis, terbatas, dan revision-aware | Mencegah pengiriman data bisnis, biaya retry diam-diam, error mentah, dan status tes usang |
 
 ## 16. Changelog dokumen
+
+### 2 September 2026 — v1.13.1
+
+- Aktivasi master enkripsi Settings AI di Railway production setelah otorisasi DK, tanpa menimpa key lama atau mengubah variable existing;
+- deployment aktivasi berhasil, HTTP health/admin serta hilangnya warning master terverifikasi; form menyediakan GPT, Claude, DeepSeek dan Gemini;
+- 132 tes otomatis lulus ulang; tidak ada reset data, credential uji produksi, atau panggilan API berbayar;
+- mencatat batas verifikasi dan kebutuhan backup master terpisah yang belum dilakukan.
 
 ### 2 September 2026 — v1.13
 
