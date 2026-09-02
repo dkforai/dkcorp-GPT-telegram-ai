@@ -1,9 +1,9 @@
 {% extends "admin/base.html" %}
-{% block title %}{% if mode == 'create' %}Tambah{% else %}Edit{% endif %} API Credential · DK Corp AI Admin{% endblock %}
-{% block page_title %}{% if mode == 'create' %}Tambah{% else %}Edit{% endif %} API Credential{% endblock %}
+{% block title %}{% if mode == 'create' %}Tambah{% else %}Edit{% endif %} AI · DK Corp AI Admin{% endblock %}
+{% block page_title %}{% if mode == 'create' %}Tambah{% else %}Edit{% endif %} AI{% endblock %}
 {% block content %}
   <div class="page-lead">
-    <div><h2>Credential profile</h2><p>Module merujuk profile ini. Nilai API key tidak pernah disimpan di database.</p></div>
+    <div><h2>AI terdaftar</h2><p>Daftarkan koneksi AI sekali, lalu pilih sebagai utama atau cadangan pada Module. Nilai API key tetap di environment.</p></div>
     <a class="secondary-link back-link" href="/admin/modules">Kembali</a>
   </div>
   <form class="panel form-panel" method="post" action="{% if mode == 'create' %}/admin/runtime-profiles{% else %}/admin/runtime-profiles/{{ profile.profile_id }}{% endif %}">
@@ -11,13 +11,13 @@
     {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
     {% if mode == 'edit' %}<div class="notice {% if configured %}success{% else %}error{% endif %}">Profile ID <code>{{ profile.profile_id }}</code> dikunci. Environment <code>{{ values.api_key_env }}</code> {% if configured %}sudah berisi key{% else %}belum berisi key{% endif %}.</div>{% endif %}
     <div class="form-grid">
-      <label>Nama profile<input name="label" type="text" value="{{ values.label }}" minlength="2" maxlength="100" required autofocus><small>Profile ID dibuat otomatis dan dikunci.</small></label>
+      <label>Nama AI<input name="label" type="text" value="{{ values.label }}" minlength="2" maxlength="100" required autofocus><small>Nama ini muncul pada pilihan AI di Module. ID dibuat otomatis dan dikunci.</small></label>
       <label>Provider<select name="provider" required><option value="openai" {% if values.provider == 'openai' %}selected{% endif %}>OpenAI</option><option value="deepseek" {% if values.provider == 'deepseek' %}selected{% endif %}>DeepSeek</option></select></label>
       <label>Nama environment variable<input name="api_key_env" type="text" value="{{ values.api_key_env }}" pattern="[A-Z_][A-Z0-9_]{0,127}" maxlength="128" placeholder="AI_KEY_MARKETING" required><small>Isi nilai key dengan nama ini di Railway Variables atau file .env.</small></label>
       <label>Model<input name="model" type="text" value="{{ values.model }}" maxlength="150" required><small>Contoh: gpt-5.4-mini atau deepseek-chat.</small></label>
     </div>
     <label class="full-field">Base URL <span class="optional">Opsional</span><input name="base_url" type="url" value="{{ values.base_url }}" maxlength="500" placeholder="https://api.deepseek.com"><small>Kosongkan untuk endpoint default provider.</small></label>
-    <label class="checkbox-row"><input name="active" type="checkbox" value="1" {% if values.active == '1' %}checked{% endif %}><span><strong>Aktifkan credential profile</strong><small>Profile aktif dapat dipilih oleh Module.</small></span></label>
-    <div class="form-actions"><a class="secondary-button" href="/admin/modules">Batal</a><button class="primary-button" type="submit">Simpan profile</button></div>
+    <label class="checkbox-row"><input name="active" type="checkbox" value="1" {% if values.active == '1' %}checked{% endif %}><span><strong>Aktifkan AI</strong><small>AI aktif dapat dipilih oleh Module. Perubahan AI ini berlaku untuk semua Module yang memakainya.</small></span></label>
+    <div class="form-actions"><a class="secondary-button" href="/admin/modules">Batal</a><button class="primary-button" type="submit">Simpan AI</button></div>
   </form>
 {% endblock %}

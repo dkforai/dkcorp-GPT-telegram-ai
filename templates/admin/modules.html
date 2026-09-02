@@ -4,7 +4,7 @@
 {% block content %}
   <div class="page-lead">
     <div><h2>Module catalog</h2><p>Pekerjaan AI dan playbook yang tersedia pada setiap company.</p></div>
-    <div class="row-actions"><a class="secondary-link" href="/admin/runtime-profiles/new">Tambah API credential</a><a class="primary-link" href="/admin/modules/new">Tambah module</a></div>
+    <div class="row-actions"><a class="secondary-link" href="/admin/runtime-profiles/new">Tambah AI</a><a class="primary-link" href="/admin/modules/new">Tambah module</a></div>
   </div>
 
   {% if notice %}<div class="notice success" role="status">{{ notice }}</div>{% endif %}
@@ -13,13 +13,14 @@
   <div class="panel table-panel">
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Module</th><th>Company</th><th>API credential</th><th>Playbook</th><th>Akses</th><th>Status</th><th>Action</th></tr></thead>
+        <thead><tr><th>Module</th><th>Company</th><th>AI utama</th><th>AI cadangan</th><th>Playbook</th><th>Akses</th><th>Status</th><th>Action</th></tr></thead>
         <tbody>
           {% for module in modules %}
             <tr>
               <td><strong>{{ module.name }}</strong><small class="block">{{ module.module_id }}</small>{% if module.description %}<small class="block">{{ module.description | truncate(80, true) }}</small>{% endif %}</td>
               <td><strong>{{ module.company_name }}</strong><small class="block">{{ module.company_id }}</small></td>
-              <td>{% if module.ai_runtime_profile_label %}<strong>{{ module.ai_runtime_profile_label }}</strong><small class="block">{{ module.ai_provider }} · {{ module.ai_model }}</small><small class="block"><code>{{ module.api_key_env }}</code></small>{% else %}<span class="status-badge danger">Belum dipilih</span>{% endif %}</td>
+              <td>{% if module.ai_runtime_profile_label %}<strong>{{ module.ai_runtime_profile_label }}</strong><small class="block">{{ module.ai_model }}{% if not module.ai_runtime_profile_active %} · Nonaktif{% endif %}</small>{% else %}<span class="status-badge danger">Belum dipilih</span>{% endif %}</td>
+              <td>{{ module.backup_ai_label or 'Belum dipilih' }}{% if module.backup_ai_runtime_profile_id and not module.backup_ai_active %}<small class="block">Nonaktif / belum tersedia</small>{% endif %}</td>
               <td>
                 {% if module.published_version_number %}<span class="status-badge active">v{{ module.published_version_number }} Live</span>{% else %}<span class="muted-text">Belum publish</span>{% endif %}
                 {% if module.has_unpublished_draft %}<small class="block">Ada perubahan draft</small>{% endif %}
@@ -35,15 +36,15 @@
                 </form>
               </div></td>
             </tr>
-          {% else %}<tr><td colspan="7" class="empty-state">Belum ada module. Tambahkan module untuk memulai.</td></tr>{% endfor %}
+          {% else %}<tr><td colspan="8" class="empty-state">Belum ada module. Tambahkan module untuk memulai.</td></tr>{% endfor %}
         </tbody>
       </table>
     </div>
   </div>
 
-  <div class="subsection-lead"><h2>API credential profiles</h2><p>Metadata tersimpan di database. Nilai API key tetap berada di environment.</p></div>
+  <div class="subsection-lead"><h2>AI terdaftar</h2><p>Daftarkan sekali, lalu pilih sebagai AI utama atau cadangan pada setiap Module. API key tetap disimpan di environment.</p></div>
   <div class="panel table-panel"><div class="table-wrap"><table>
-    <thead><tr><th>Profile</th><th>Provider</th><th>Model</th><th>Secret source</th><th>Status</th><th>Action</th></tr></thead>
+    <thead><tr><th>Nama AI</th><th>Provider</th><th>Model</th><th>Secret source</th><th>Status</th><th>Action</th></tr></thead>
     <tbody>{% for profile in runtime_profiles %}<tr>
       <td><strong>{{ profile.label }}</strong><small class="block">{{ profile.profile_id }}</small></td>
       <td>{{ profile.provider }}{% if profile.base_url %}<small class="block">{{ profile.base_url }}</small>{% endif %}</td>
@@ -51,6 +52,6 @@
       <td><code>{{ profile.api_key_env }}</code><small class="block">{% if profile.configured %}Key tersedia{% else %}Key belum diisi{% endif %}</small></td>
       <td>{% if profile.active %}<span class="status-badge active">Active</span>{% else %}<span class="status-badge">Inactive</span>{% endif %}</td>
       <td><div class="row-actions"><a class="secondary-link" href="/admin/runtime-profiles/{{ profile.profile_id }}/edit">Edit</a><form method="post" action="/admin/runtime-profiles/{{ profile.profile_id }}/status"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="active" value="{% if profile.active %}0{% else %}1{% endif %}"><button class="text-button {% if profile.active %}danger{% endif %}" type="submit">{% if profile.active %}Nonaktifkan{% else %}Aktifkan{% endif %}</button></form></div></td>
-    </tr>{% else %}<tr><td colspan="6" class="empty-state">Belum ada credential profile.</td></tr>{% endfor %}</tbody>
+    </tr>{% else %}<tr><td colspan="6" class="empty-state">Belum ada AI terdaftar.</td></tr>{% endfor %}</tbody>
   </table></div></div>
 {% endblock %}

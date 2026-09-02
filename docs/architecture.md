@@ -5,7 +5,7 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 1.11 |
+| Versi | 1.12 |
 | Terakhir diperbarui | 2 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
@@ -37,7 +37,7 @@ Tujuan utama:
 9. Draft knowledge tidak boleh memengaruhi bot. Runtime membaca versi published dari dokumen aktif; file transisi hanya dipakai sampai publish knowledge pertama pada company tersebut.
 10. Akses module bersifat default-deny per membership. Runtime hanya menerima module aktif yang statusnya aktif, playbook-nya sudah dipublikasikan, dan aksesnya diberikan admin.
 11. Draft module playbook tidak boleh memengaruhi bot. History General dan setiap module dipisahkan agar perpindahan pekerjaan tidak mencampur konteks.
-12. API key Module tidak boleh disimpan di SQLite. Module hanya menyimpan referensi credential profile dan secret tetap berada di environment.
+12. API key Module tidak boleh disimpan di SQLite. Module memilih AI utama dan AI cadangan dari AI terdaftar (credential profile); secret tetap berada di environment. Cadangan hanya dipakai untuk kegagalan operasional yang diizinkan, tidak untuk melewati penolakan akses atau salah konfigurasi.
 
 ## 3. Arsitektur logis
 
@@ -81,7 +81,8 @@ Chat History SQLite
     ↓
 AI Provider Abstraction
     ├── General → global environment credential
-    └── Module → named credential profile → named environment secret
+    └── Module → AI utama → named environment secret
+                  └── kegagalan operasional tertentu → AI cadangan yang dipilih
     ↓
 Conversation Delivery Policy
 pendek, bertahap, dan satu tujuan (belum diimplementasikan penuh)
@@ -108,7 +109,7 @@ Jawaban ke user
 | Document Ingestion | Sebagian | Upload PDF, DOCX, TXT, dan Markdown menjadi draft teks; OCR dan `.doc` belum |
 | Chat History | Sudah | SQLite dipisahkan per user, perusahaan, dan module; General memakai scope kosong tersendiri |
 | Provider Abstraction | Sudah | OpenAI dan DeepSeek compatible API |
-| API Credential per Module | Sudah | Module memilih credential profile; secret dibaca dari named environment variable tanpa fallback global |
+| AI utama dan cadangan per Module | Sudah | Dua pilihan dari AI terdaftar; cadangan opsional, failover terbatas, tanpa fallback global; secret di named environment variable |
 | Telegram Response Renderer | Sudah | Safe HTML, split, link preview off, dan fallback plain text |
 | Conversation Delivery Policy | Belum | Akan mengatur panjang, ritme, dan progressive disclosure |
 | Multi-company membership | Sudah | Tabel membership SQLite; JSON hanya bootstrap awal |
@@ -297,8 +298,8 @@ Folder adalah bentuk transisi yang mudah diaudit. Target produksi skala lanjut m
 | `users` | Identitas Telegram global |
 | `companies` | Master perusahaan |
 | `user_company_memberships` | Jabatan, divisi, level, dan profile per perusahaan |
-| `modules` | Modul milik atau aktif pada perusahaan |
-| `ai_runtime_profiles` | Metadata provider, model, base URL, dan nama environment variable tanpa nilai API key |
+| `modules` | Modul milik perusahaan; `ai_runtime_profile_id` untuk AI utama dan nullable `backup_ai_runtime_profile_id` untuk AI cadangan |
+| `ai_runtime_profiles` | AI terdaftar: metadata provider, model, base URL, dan nama environment variable tanpa nilai API key |
 | `module_access` | Hak membership terhadap modul |
 | `company_instruction_state` | Draft aktif dan pointer versi live per perusahaan |
 | `company_instruction_versions` | Versi publish immutable per perusahaan |
@@ -337,6 +338,7 @@ Versi admin saat ini menyediakan:
 - form Knowledge menerima teks langsung atau upload PDF, DOCX, TXT, dan Markdown maksimal 10 MB;
 - restore versi lama ke draft agar selalu melewati preview sebelum dipublikasikan kembali;
 - halaman Modules untuk membuat registry per company, mengubah identitas, status, draft, preview, publish, dan riwayat versi playbook;
+- form buat/edit Module menyediakan pilihan **AI utama** dan **AI cadangan** dari daftar AI aktif; halaman **Tambah AI** mendaftarkan koneksi sekali untuk dipakai ulang;
 - akses module default-deny dikelola pada form edit membership;
 - halaman Activity read-only untuk 100 audit event terbaru dengan filter kategori termasuk Modules;
 - security headers dan health endpoint.
@@ -665,7 +667,21 @@ SQLite menjadi source of truth runtime dan menyimpan:
 
 Railway Volume dipasang pada `/app/data` agar database bertahan saat redeploy.
 
-Credential profile Module menyimpan metadata operasional di SQLite. Nilai API key berada di Railway Variables atau `.env` lokal dengan nama yang dicatat pada `api_key_env`, misalnya `AI_KEY_MARKETING`. Mode General memakai konfigurasi global `AI_*`. Runtime Module melakukan fail-closed ketika profile nonaktif atau named secret kosong dan tidak fallback ke credential General.
+AI terdaftar (credential profile) menyimpan metadata operasional di SQLite. Nilai API key berada di Railway Variables atau `.env` lokal dengan nama yang dicatat pada `api_key_env`, misalnya `AI_KEY_MARKETING`. Mode General memakai konfigurasi global `AI_*`. Request Module tidak pernah mencoba credential General ketika panggilan AI-nya gagal.
+
+### 10.1. AI utama dan AI cadangan Module
+
+- AI utama wajib dipilih. AI cadangan opsional, harus berbeda ID, dan keduanya harus merujuk profile aktif saat disimpan. Admin memilih nama AI dan model tanpa mengisi key di form Module.
+- Kolom lama `modules.ai_runtime_profile_id` tetap menjadi AI utama. Migrasi idempotent menambah `backup_ai_runtime_profile_id TEXT REFERENCES ai_runtime_profiles(profile_id)` dengan nilai awal `NULL`, tanpa menghapus atau mengganti Module, versi, akses, maupun riwayat yang sudah ada.
+- Update dari form/client lama yang tidak mengirim field cadangan mempertahankan pilihan cadangan existing. Menghapus cadangan memerlukan nilai kosong eksplisit; validasi dan update pasangan AI berada dalam write transaction.
+- AI terdaftar dapat dipakai bersama oleh beberapa Module. Perubahan metadata AI berlaku pada semua referensi; perubahan pilihan utama/cadangan pada Module berlaku pada pesan berikutnya tanpa publish ulang playbook.
+- Setiap pesan selalu mencoba AI utama terlebih dahulu. Cadangan yang dipilih hanya dicoba sekali setelah `APIConnectionError` (termasuk timeout SDK), timeout aplikasi, HTTP 408, HTTP 429, atau HTTP 5xx. Kedua AI tidak dipanggil paralel dan tidak ada loop retry/cadangan ketiga.
+- HTTP 400/401/403/404/409/422, error tak dikenal, jawaban kosong/refusal, profile primary nonaktif, atau key primary kosong tidak memicu cadangan. Jawaban/refusal dari provider tidak dianggap alasan untuk mencoba provider lain. Klasifikasi error mengacu pada [OpenAI Docs](https://developers.openai.com/api/docs/guides/error-codes); pemilihan subset untuk failover adalah kebijakan aplikasi.
+- Setiap percobaan Module dibatasi total 30 detik dengan `asyncio.timeout`; client Module memakai timeout 30 detik dan `max_retries=0`. Total panggilan AI paling banyak sekitar 60 detik jika cadangan dipakai. Pengaturan timeout/retry General tidak berubah. Pembatalan task tidak memicu failover.
+- Profile/key cadangan baru di-resolve setelah utama gagal. Cadangan nonaktif, hilang, atau tanpa key menghentikan request. Menonaktifkan AI yang hanya dipakai sebagai cadangan tidak mematikan AI utama. Menonaktifkan profile utama tetap mengikuti perilaku lama: Module tidak ditawarkan dan session Module terkait dibersihkan ke General; ini bukan retry request yang gagal memakai key General.
+- Failover memakai system prompt, knowledge, instruction, published playbook, company, user, module, dan history yang sama. Hanya jawaban final sukses yang ditulis bersama pesan user satu kali; jika kedua panggilan gagal, tidak ada penambahan history.
+- Memilih cadangan merupakan izin admin agar konteks yang sama dapat dikirim ke provider cadangan. Hal ini dijelaskan di form. Timeout tidak menjamin provider utama belum memproses request, sehingga biaya dapat timbul pada kedua provider. Dua profil dengan provider/account yang sama belum tentu melindungi dari gangguan atau limit bersama.
+- Perubahan pasangan AI masuk audit konfigurasi. Runtime failover dicatat di log dengan ID profile, tipe error, dan status HTTP saja, tanpa key, prompt, URL atau body error provider. Pemakaian cadangan belum memiliki dashboard usage/billing tersendiri.
 
 ## 11. Deployment
 
@@ -696,7 +712,7 @@ Sudah diterapkan:
 - secret disimpan di environment variables;
 - database Module hanya menyimpan nama environment variable, provider, model, dan base URL; nilai API key tidak disimpan atau dirender admin;
 - resolver Module membaca named secret saat runtime dan cache hanya memakai fingerprint SHA-256, bukan key mentah sebagai identifier;
-- Module dengan credential profile nonaktif tidak dapat dipilih, dan key yang hilang menghentikan request tanpa fallback lintas Module atau ke General;
+- Module dengan AI utama nonaktif tidak dapat dipilih. Key utama yang hilang menghentikan request; hanya AI cadangan yang dipilih admin yang boleh menerima retry operasional, bukan AI Module lain atau General;
 - `.env` dan database runtime tidak masuk Git;
 - HTTP client log tidak menampilkan URL Telegram pada level normal;
 - output model di-escape dan dirender melalui safe Telegram HTML;
@@ -748,7 +764,7 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 ## 13. Batas MVP
 
 - text-only;
-- satu credential global untuk General dan credential profile terpisah yang dapat dipakai ulang oleh Module;
+- satu credential global untuk General dan AI terdaftar yang dapat dipakai ulang sebagai utama/cadangan pada Module;
 - satu instance Railway;
 - seluruh knowledge company aktif dimuat sampai `KNOWLEDGE_MAX_CHARS`;
 - upload knowledge mendukung PDF text layer, DOCX, TXT, dan Markdown; OCR serta `.doc` lama belum;
@@ -789,7 +805,7 @@ Status catatan ini hanya persetujuan rencana. Tidak ada perubahan kode, database
 - company instruction terpisah dan versioned; selesai, migrasi isi legacy per company dilakukan melalui editor admin;
 - company knowledge terpisah dan versioned; selesai untuk company scope, dengan fallback file selama transisi;
 - active module router, default-deny access, dan versioned module playbook; selesai melalui `/module` dan admin;
-- credential profile per Module dengan named environment secret dan fail-closed runtime; selesai;
+- AI utama/cadangan per Module dengan named environment secret, failover operasional terbatas, dan fail-closed untuk salah konfigurasi; selesai pada v1.12;
 - import user baru dari Excel dengan skip ID lama dan transaksi atomik; selesai untuk template lima kolom;
 - knowledge metadata per division;
 - authorization policy dan clearance;
@@ -870,12 +886,24 @@ Status catatan ini hanya persetujuan rencana. Tidak ada perubahan kode, database
 | ADR-053 | Module menyimpan referensi credential profile, bukan API key | Metadata routing dapat dikelola admin tanpa menaruh secret di SQLite, audit, atau HTML |
 | ADR-054 | Nilai API key Module berada pada named environment variable | Secret lifecycle tetap dikelola Railway atau `.env`, terpisah dari data aplikasi |
 | ADR-055 | Mode General tetap memakai credential global | Perilaku dasar tetap kompatibel dan custom Module dapat memakai billing/provider berbeda |
-| ADR-056 | Kegagalan credential Module bersifat fail-closed tanpa fallback | Salah konfigurasi tidak boleh mengalihkan traffic, biaya, atau data ke credential lain secara diam-diam |
+| ADR-056 | Kegagalan konfigurasi credential Module tetap fail-closed; pengecualian operasional dibatasi ADR-060 | Key salah/kosong dan pencabutan akses tidak boleh memicu fallback. Cadangan harus dipilih eksplisit oleh admin |
 | ADR-057 | Disetujui, ditunda: hilangkan input Divisi dan Communication profile; profile otomatis dari Role level, data lama dipertahankan | Menyederhanakan administrasi MVP tanpa penghapusan data. Dikerjakan serentak pada form, backend, runtime, dan import saat penyempurnaan sistem; perilaku saat ini termasuk ADR-005 belum diubah |
 | ADR-058 | Import Excel insert-only, ID lama dilewati seluruhnya di dalam write transaction | Memenuhi larangan menimpa data existing, termasuk user nonaktif/membership lama, dan mencegah race antara pengecekan ID dan penyimpanan |
 | ADR-059 | Batch import atomik dengan pengaturan akses eksplisit di form admin | Kesalahan baris tidak menghasilkan simpan parsial; jabatan dari spreadsheet tidak boleh otomatis menaikkan akses. Whitelist awal nonaktif dan akses module tetap default-deny |
+| ADR-060 | Module memilih AI utama dan cadangan opsional dari AI terdaftar | Menyederhanakan form menjadi dua pilihan nama, mempertahankan Module lama, dan hanya mengalihkan kegagalan koneksi/timeout/408/429/5xx ke cadangan yang dipilih admin |
+| ADR-061 | Satu percobaan maksimal 30 detik per AI dan satu penulisan history setelah sukses | Menghindari retry bertumpuk, duplikasi history, perpindahan konteks, dan bocornya body error/secret dalam log. General tidak dijadikan cadangan |
 
 ## 16. Changelog dokumen
+
+### 1.12 — 2 September 2026
+
+- mengganti istilah UI credential profile menjadi AI terdaftar/Tambah AI;
+- menambah pilihan AI utama dan cadangan opsional pada form buat/edit dan daftar Module;
+- menambah migrasi nullable backup profile; seluruh pilihan utama, playbook, akses, dan history lama dipertahankan;
+- menerapkan failover operasional satu kali, timeout per percobaan 30 detik, tanpa retry tersembunyi dari SDK Module atau fallback global;
+- menambah audit pasangan AI serta log kegagalan/failover tanpa body error atau secret;
+- menguji migrasi berulang, validasi/CSRF form, kegagalan provider, konfigurasi kosong/nonaktif, pembatalan, isolasi konteks, dan history;
+- rilis v1.12 melalui alur GitHub → Railway yang sudah ada; 97 pengujian otomatis lulus dengan provider/HTTP simulasi, tanpa panggilan API berbayar. Deployment memakai migrasi additive, tanpa reset data produksi. Status deployment diverifikasi terpisah melalui commit status Railway dan health endpoint.
 
 ### 1.11 — 2 September 2026
 

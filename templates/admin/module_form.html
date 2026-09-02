@@ -12,13 +12,15 @@
     {% if not companies %}
       <div class="notice error">Belum ada company aktif. Aktifkan company terlebih dahulu.</div>
     {% elif not runtime_profiles %}
-      <div class="notice error">Belum ada credential profile aktif. <a href="/admin/runtime-profiles/new">Buat credential profile</a> terlebih dahulu.</div>
+      <div class="notice error">Belum ada AI aktif. <a href="/admin/runtime-profiles/new">Daftarkan AI</a> terlebih dahulu.</div>
     {% else %}
       <div class="form-grid">
         <label>Company<select name="company_id" required>{% for company in companies %}<option value="{{ company.company_id }}" {% if values.company_id == company.company_id %}selected{% endif %}>{{ company.name }}</option>{% endfor %}</select><small>Module hanya tersedia di company ini.</small></label>
         <label>Nama module<input name="name" type="text" value="{{ values.name }}" minlength="2" maxlength="100" required autofocus><small>Module ID dibuat otomatis dan dikunci.</small></label>
-        <label>API credential<select name="ai_runtime_profile_id" required><option value="" disabled {% if not values.ai_runtime_profile_id %}selected{% endif %}>Pilih credential profile</option>{% for profile in runtime_profiles %}<option value="{{ profile.profile_id }}" {% if values.ai_runtime_profile_id == profile.profile_id %}selected{% endif %}>{{ profile.label }} · {{ profile.provider }} · {{ profile.model }}{% if not profile.configured %} · key belum diisi{% endif %}</option>{% endfor %}</select><small>Module memakai profile ini. API key tetap disimpan di environment.</small></label>
+        <label>AI utama<select name="ai_runtime_profile_id" required><option value="" disabled {% if not values.ai_runtime_profile_id %}selected{% endif %}>Pilih AI utama</option>{% for profile in runtime_profiles %}<option value="{{ profile.profile_id }}" {% if values.ai_runtime_profile_id == profile.profile_id %}selected{% endif %}>{{ profile.label }} · {{ profile.model }}{% if not profile.configured %} · key belum diisi{% endif %}</option>{% endfor %}</select><small>AI yang digunakan terlebih dahulu untuk setiap pesan.</small></label>
+        <label>AI cadangan <span class="optional">Opsional</span><select name="backup_ai_runtime_profile_id"><option value="" {% if not values.backup_ai_runtime_profile_id %}selected{% endif %}>Tanpa AI cadangan</option>{% for profile in runtime_profiles %}<option value="{{ profile.profile_id }}" {% if values.backup_ai_runtime_profile_id == profile.profile_id %}selected{% endif %}>{{ profile.label }} · {{ profile.model }}{% if not profile.configured %} · key belum diisi{% endif %}</option>{% endfor %}</select><small>Harus berbeda dari AI utama. Dicoba sekali jika koneksi, timeout, limit, atau server AI utama bermasalah.</small></label>
       </div>
+      <p class="muted-text">Dengan memilih cadangan, Anda mengizinkan konteks percakapan yang sama dikirim ke AI tersebut saat diperlukan. Key salah, konfigurasi kosong, dan AI nonaktif tidak memicu perpindahan.</p>
       <label class="full-field">Deskripsi <span class="optional">Opsional</span><textarea name="description" maxlength="500" rows="4">{{ values.description }}</textarea><small>Jelaskan kapan module dipakai dan hasil yang diharapkan.</small></label>
       <label class="checkbox-row"><input name="active" type="checkbox" value="1" {% if values.active == '1' %}checked{% endif %}><span><strong>Aktifkan module</strong><small>User tetap memerlukan akses membership dan playbook published.</small></span></label>
     {% endif %}

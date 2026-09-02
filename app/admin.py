@@ -1415,6 +1415,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 values["description"],
                 actor=settings.admin_username,
                 ai_runtime_profile_id=values["ai_runtime_profile_id"],
+                backup_ai_runtime_profile_id=values["backup_ai_runtime_profile_id"],
                 active=values["active"] == "1",
             )
         except ValueError as exc:
@@ -1478,6 +1479,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 form.get("description", ""),
                 actor=settings.admin_username,
                 ai_runtime_profile_id=form.get("ai_runtime_profile_id", ""),
+                backup_ai_runtime_profile_id=form.get("backup_ai_runtime_profile_id"),
             )
         except ValueError as exc:
             return _module_redirect(company_id, module_id, error=str(exc))
@@ -1958,6 +1960,9 @@ def _module_form_values(form) -> dict[str, str]:
         "ai_runtime_profile_id": str(
             form.get("ai_runtime_profile_id", "")
         ).strip(),
+        "backup_ai_runtime_profile_id": str(
+            form.get("backup_ai_runtime_profile_id", "")
+        ).strip(),
         "active": "1" if form.get("active") == "1" else "0",
     }
 
@@ -1976,6 +1981,7 @@ def _module_form_context(
         "name": "",
         "description": "",
         "ai_runtime_profile_id": "",
+        "backup_ai_runtime_profile_id": "",
         "active": "1",
     }
     defaults.update({key: value for key, value in (values or {}).items() if value})
@@ -2176,9 +2182,12 @@ _ACTIVITY_DETAIL_LABELS = {
     "version_number": "Versi",
     "module_count": "Jumlah module",
     "module_ids": "Module",
-    "ai_runtime_profile_id": "API credential",
-    "ai_runtime_profile_before": "API credential sebelumnya",
-    "ai_runtime_profile_after": "API credential baru",
+    "ai_runtime_profile_id": "AI utama",
+    "ai_runtime_profile_before": "AI utama sebelumnya",
+    "ai_runtime_profile_after": "AI utama baru",
+    "backup_ai_runtime_profile_id": "AI cadangan",
+    "backup_ai_runtime_profile_before": "AI cadangan sebelumnya",
+    "backup_ai_runtime_profile_after": "AI cadangan baru",
     "api_key_env": "Environment key",
     "api_key_env_before": "Environment key sebelumnya",
     "api_key_env_after": "Environment key baru",

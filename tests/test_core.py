@@ -2,9 +2,14 @@ import asyncio
 import json
 import re
 import sqlite3
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
+
+import httpx
+import pytest
+from openai import APIConnectionError, APIStatusError
 
 from docx import Document
 from fastapi.testclient import TestClient
@@ -19,7 +24,9 @@ from app.database import AIRuntimeProfile, AIModule, Company, Database, Membersh
 from app.document_ingestion import extract_uploaded_document
 from app.knowledge import load_knowledge
 from app.prompts import build_system_prompt
-from app.providers import ModuleProviderResolver, RuntimeCredentialError
+from app.providers import (
+    ModuleGenerationError, ModuleProviderResolver, RuntimeCredentialError,
+)
 from app.role_profiles import load_role_profiles, resolve_communication_profile
 from app.telegram_renderer import markdown_to_telegram_html
 
@@ -385,6 +392,7 @@ def test_existing_modules_get_runtime_profile_migration(tmp_path):
             "AND name='ai_runtime_profiles'"
         ).fetchone()
     assert "ai_runtime_profile_id" in module_columns
+    assert "backup_ai_runtime_profile_id" in module_columns
     assert profile_table is not None
 
 
@@ -602,7 +610,7 @@ def test_bot_routes_module_chat_to_module_provider_and_general_to_global(tmp_pat
     module_provider = FakeProvider("module-answer")
     resolver_profiles: list[str] = []
 
-    class FakeResolver:
+    class FakeResolver(ModuleProviderResolver):
         def resolve(self, selected_profile):
             resolver_profiles.append(selected_profile.profile_id)
             return module_provider
@@ -1813,3 +1821,369 @@ def test_telegram_renderer_escapes_model_html_and_code():
     assert "&lt;b&gt;raw&lt;/b&gt; &amp; aman" in rendered
     assert "<pre>if a &lt; b:\n    print('&amp;')</pre>" in rendered
     assert rendered.count("<b>") == 0
+
+
+def _ai_pair():
+    primary = AIRuntimeProfile("primary", "AI Primary", "openai", "TEST_AI_PRIMARY", "test-primary", "", True)
+    backup = AIRuntimeProfile("backup", "AI Backup", "deepseek", "TEST_AI_BACKUP", "test-backup", "", True)
+    return primary, backup
+
+
+def _api_failure(status):
+    return APIStatusError(
+        "private-provider-body", response=httpx.Response(
+            status, request=httpx.Request("POST", "https://example.invalid/secret-url")
+        ), body={"secret": "do-not-log"},
+    )
+
+
+@pytest.mark.parametrize("failure", ["connection", "timeout", 408, 429, 500, 502, 503, 504])
+def test_module_failover_sends_same_context_once_and_redacts_errors(monkeypatch, caplog, failure):
+    primary, backup = _ai_pair()
+    monkeypatch.setenv(primary.api_key_env, "private-primary-key")
+    monkeypatch.setenv(backup.api_key_env, "private-backup-key")
+    calls = []
+    backup_loads = []
+
+    class Provider:
+        def __init__(self, model):
+            self.model = model
+
+        async def generate(self, prompt, history, user_text):
+            calls.append((self.model, prompt, list(history), user_text))
+            if self.model == primary.model:
+                if failure == "connection":
+                    raise APIConnectionError(request=httpx.Request("POST", "https://example.invalid"))
+                if failure == "timeout":
+                    raise TimeoutError("private-provider-body")
+                raise _api_failure(failure)
+            return "Jawaban cadangan"
+
+    resolver = ModuleProviderResolver(lambda _p, _k, model, _u: Provider(model))
+    history = [{"role": "user", "content": "history-company-a"}]
+
+    def load_backup():
+        backup_loads.append(True)
+        return backup
+
+    answer = asyncio.run(resolver.generate(primary, load_backup, "private-prompt-a", history, "private-question"))
+    assert answer == "Jawaban cadangan"
+    assert len(calls) == 2
+    assert calls[0][1:] == calls[1][1:] == ("private-prompt-a", history, "private-question")
+    assert [call[0] for call in calls] == [primary.model, backup.model]
+    assert backup_loads == [True]
+    assert "module_ai_failover" in caplog.text
+    for value in ("private-provider-body", "do-not-log", "private-primary-key", "private-backup-key", "private-prompt-a", "private-question", "secret-url"):
+        assert value not in caplog.text
+
+
+@pytest.mark.parametrize("failure", [400, 401, 403, 404, 409, 422, "unexpected"])
+def test_module_does_not_failover_on_permanent_errors(monkeypatch, failure):
+    primary, _ = _ai_pair()
+    monkeypatch.setenv(primary.api_key_env, "private-key")
+
+    async def generate(*_args):
+        if failure == "unexpected":
+            raise RuntimeError("private-error")
+        raise _api_failure(failure)
+
+    resolver = ModuleProviderResolver(lambda *_args: SimpleNamespace(generate=generate))
+    with pytest.raises(ModuleGenerationError) as raised:
+        asyncio.run(resolver.generate(primary, lambda: pytest.fail("Backup must not be loaded"), "", [], ""))
+    assert "private" not in str(raised.value)
+
+
+def test_module_success_never_resolves_backup_and_next_request_tries_primary(monkeypatch):
+    primary, backup = _ai_pair()
+    monkeypatch.setenv(primary.api_key_env, "primary-key")
+    monkeypatch.setenv(backup.api_key_env, "backup-key")
+    calls = []
+
+    def factory(_provider, _key, model, _url):
+        async def generate(*_args):
+            calls.append(model)
+            if len(calls) == 1:
+                raise _api_failure(503)
+            return model
+        return SimpleNamespace(generate=generate)
+
+    resolver = ModuleProviderResolver(factory)
+    assert asyncio.run(resolver.generate(primary, lambda: backup, "", [], "")) == backup.model
+    assert asyncio.run(resolver.generate(primary, lambda: pytest.fail("No fallback on success"), "", [], "")) == primary.model
+    assert calls == [primary.model, backup.model, primary.model]
+
+
+@pytest.mark.parametrize("invalid_primary", ["missing-key", "inactive", "missing-profile"])
+def test_module_bad_primary_configuration_does_not_use_backup(monkeypatch, invalid_primary):
+    primary, backup = _ai_pair()
+    monkeypatch.setenv(backup.api_key_env, "backup-key")
+    monkeypatch.delenv(primary.api_key_env, raising=False)
+    if invalid_primary == "inactive":
+        primary = replace(primary, active=False)
+    elif invalid_primary == "missing-profile":
+        primary = None
+    resolver = ModuleProviderResolver(lambda *_args: pytest.fail("Must not call any provider"))
+    with pytest.raises(RuntimeCredentialError):
+        asyncio.run(resolver.generate(primary, lambda: pytest.fail("Must not load backup"), "", [], ""))
+
+
+@pytest.mark.parametrize("backup_state", ["none", "inactive", "missing-key", "same", "fails"])
+def test_module_backup_failure_stops_after_at_most_two_attempts(monkeypatch, backup_state):
+    primary, backup = _ai_pair()
+    monkeypatch.setenv(primary.api_key_env, "primary-key")
+    monkeypatch.setenv(backup.api_key_env, "backup-key")
+    calls = []
+
+    async def generate(*_args):
+        calls.append(True)
+        raise _api_failure(503)
+
+    if backup_state == "none":
+        backup = None
+    elif backup_state == "inactive":
+        backup = replace(backup, active=False)
+    elif backup_state == "missing-key":
+        monkeypatch.delenv(backup.api_key_env)
+    elif backup_state == "same":
+        backup = primary
+    resolver = ModuleProviderResolver(lambda *_args: SimpleNamespace(generate=generate))
+    with pytest.raises((RuntimeCredentialError, ModuleGenerationError)):
+        asyncio.run(resolver.generate(primary, lambda: backup, "", [], ""))
+    assert len(calls) == (2 if backup_state == "fails" else 1)
+
+
+def test_module_timeout_and_cancellation_are_bounded(monkeypatch):
+    primary, backup = _ai_pair()
+    monkeypatch.setenv(primary.api_key_env, "primary-key")
+    monkeypatch.setenv(backup.api_key_env, "backup-key")
+    monkeypatch.setattr("app.providers.MODULE_AI_TIMEOUT_SECONDS", 0.01)
+    calls = []
+
+    def factory(_provider, _key, model, _url):
+        async def generate(*_args):
+            calls.append(model)
+            if model == primary.model:
+                await asyncio.Event().wait()
+            return "backup-answer"
+        return SimpleNamespace(generate=generate)
+
+    resolver = ModuleProviderResolver(factory)
+    assert asyncio.run(resolver.generate(primary, lambda: backup, "", [], "")) == "backup-answer"
+    assert calls == [primary.model, backup.model]
+
+    async def cancelled(*_args):
+        raise asyncio.CancelledError()
+
+    resolver = ModuleProviderResolver(lambda *_args: SimpleNamespace(generate=cancelled))
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(resolver.generate(primary, lambda: pytest.fail("Cancellation is not fallback"), "", [], ""))
+
+
+def _database_with_ai_pair(tmp_path):
+    database = Database(tmp_path / "ai-pair.db")
+    database.initialize()
+    database.create_company("company-a", "Company A", "admin")
+    primary, backup = _ai_pair()
+    for profile in (primary, backup):
+        database.create_ai_runtime_profile(
+            profile.profile_id, profile.label, profile.provider,
+            profile.api_key_env, profile.model, profile.base_url, "admin",
+        )
+    return database, primary, backup
+
+
+def test_module_ai_pair_persistence_validation_and_legacy_migration(tmp_path):
+    database, primary, backup = _database_with_ai_pair(tmp_path)
+    old_module = database.create_module("company-a", "legacy", "Legacy", "", "admin", primary.profile_id)
+    assert old_module.backup_ai_runtime_profile_id == ""
+    # Simulate the last deployed schema, without the new nullable column.
+    with database._connect() as connection:
+        connection.execute("ALTER TABLE modules DROP COLUMN backup_ai_runtime_profile_id")
+    database.initialize()
+    database.initialize()
+    assert database.get_module_admin("company-a", "legacy") == old_module
+    database.update_module("company-a", "legacy", "Legacy", "", "admin", primary.profile_id, backup.profile_id)
+    saved = database.get_module_admin("company-a", "legacy")
+    assert saved.backup_ai_runtime_profile_id == backup.profile_id
+    database.update_module("company-a", "legacy", "Legacy", "", "admin", primary.profile_id)
+    assert database.get_module_admin("company-a", "legacy") == saved
+    assert database.list_modules_admin()[0]["backup_ai_label"] == backup.label
+    assert database.get_module_playbook_admin("company-a", "legacy")["backup_ai_label"] == backup.label
+    for invalid in (primary.profile_id, "does-not-exist", "../invalid"):
+        with pytest.raises(ValueError):
+            database.update_module("company-a", "legacy", "Changed", "", "admin", primary.profile_id, invalid)
+        assert database.get_module_admin("company-a", "legacy") == saved
+        with pytest.raises(ValueError):
+            database.create_module("company-a", "new", "New", "", "admin", primary.profile_id, backup_ai_runtime_profile_id=invalid)
+        assert database.get_module_admin("company-a", "new") is None
+    database.set_ai_runtime_profile_active(backup.profile_id, False, "admin")
+    with pytest.raises(ValueError):
+        database.update_module("company-a", "legacy", "Changed", "", "admin", primary.profile_id, backup.profile_id)
+    # A disabled backup does not disable the primary; it can be explicitly removed.
+    database.update_module("company-a", "legacy", "Legacy", "", "admin", primary.profile_id, "")
+    assert database.get_module_admin("company-a", "legacy").backup_ai_runtime_profile_id == ""
+
+
+def test_admin_module_ai_pair_create_update_and_csrf(tmp_path):
+    database, primary, backup = _database_with_ai_pair(tmp_path)
+    settings = _test_settings(tmp_path, tmp_path / "users.json", tmp_path / "companies.json", database_path=database.path)
+    with TestClient(create_admin_app(settings, database)) as client:
+        assert client.post("/admin/modules", data={}, follow_redirects=False).status_code == 303
+        client.post("/admin/login", data={"username": "admin", "password": "strong-password"})
+        page = client.get("/admin/modules/new")
+        assert "AI utama" in page.text and "AI cadangan" in page.text
+        csrf = re.search(r'name="csrf_token" value="([a-f0-9]+)"', page.text).group(1)
+        data = {"csrf_token": csrf, "company_id": "company-a", "name": "Marketing", "active": "1", "ai_runtime_profile_id": primary.profile_id, "backup_ai_runtime_profile_id": backup.profile_id}
+        assert client.post("/admin/modules", data={**data, "csrf_token": "bad"}).status_code == 403
+        assert client.post("/admin/modules", data={**data, "backup_ai_runtime_profile_id": primary.profile_id}).status_code == 400
+        assert client.post("/admin/modules", data=data, follow_redirects=False).status_code == 303
+        saved = database.get_module_admin("company-a", "marketing")
+        assert saved.backup_ai_runtime_profile_id == backup.profile_id
+        path = "/admin/modules/company-a/marketing"
+        editor = client.get(path)
+        assert f'value="{backup.profile_id}" selected' in editor.text
+        assert "AI terdaftar" in client.get("/admin/modules").text
+        assert client.post(path, data={**data, "csrf_token": "bad"}).status_code == 403
+        client.post(path, data={**data, "ai_runtime_profile_id": backup.profile_id, "backup_ai_runtime_profile_id": primary.profile_id})
+        changed = database.get_module_admin("company-a", "marketing")
+        assert changed.ai_runtime_profile_id == backup.profile_id
+        assert changed.backup_ai_runtime_profile_id == primary.profile_id
+        client.post(path, data={**data, "backup_ai_runtime_profile_id": "missing"})
+        assert database.get_module_admin("company-a", "marketing") == changed
+        database.set_ai_runtime_profile_active(primary.profile_id, False, "admin")
+        assert f'value="{primary.profile_id}" selected disabled' in client.get(path).text
+        client.post(path, data={**data, "ai_runtime_profile_id": backup.profile_id, "backup_ai_runtime_profile_id": ""})
+        assert database.get_module_admin("company-a", "marketing").backup_ai_runtime_profile_id == ""
+
+
+def test_module_sdk_has_single_attempt_without_changing_general(monkeypatch):
+    from app.providers import create_provider
+    primary, _ = _ai_pair()
+    monkeypatch.setenv(primary.api_key_env, "fake-key")
+    module_provider = ModuleProviderResolver().resolve(primary)
+    global_provider = create_provider("openai", "fake-key", "test", None)
+    assert module_provider.client.max_retries == 0
+    assert module_provider.client.timeout == 30.0
+    assert global_provider.client.max_retries == 2
+
+    async def close():
+        await module_provider.client.close()
+        await global_provider.client.close()
+    asyncio.run(close())
+
+
+@pytest.mark.parametrize("mode", ["primary", "backup", "both-fail", "no-access"])
+def test_bot_failover_keeps_tenant_history_and_authorization(tmp_path, monkeypatch, mode):
+    database, primary, backup = _database_with_ai_pair(tmp_path)
+    monkeypatch.setenv(primary.api_key_env, "private-primary")
+    monkeypatch.setenv(backup.api_key_env, "private-backup")
+    database.create_company("company-b", "Company B", "admin")
+    database.create_user_with_membership(42, "DK", "company-a", "Owner", "Management", "gm", "executive", "", "admin")
+    database.create_module("company-a", "marketing", "Marketing", "", "admin", primary.profile_id, backup_ai_runtime_profile_id=backup.profile_id)
+    database.save_module_playbook_draft("company-a", "marketing", "playbook-company-a", "admin")
+    database.publish_module_playbook("company-a", "marketing", "admin")
+    database.set_membership_module_access(42, "company-a", ["marketing"], "admin")
+    database.set_active_module(42, "marketing")
+    database.create_knowledge_document("company-a", "facts", "Facts A", "knowledge-company-a", "admin")
+    database.publish_knowledge_document("company-a", "facts", "admin")
+    database.create_knowledge_document("company-b", "facts", "Facts B", "private-knowledge-company-b", "admin")
+    database.publish_knowledge_document("company-b", "facts", "admin")
+    database.add_message(42, "user", "general-only", "company-a", "")
+    database.add_message(42, "user", "private-history-company-b", "company-b", "marketing")
+    database.add_message(42, "user", "module-history", "company-a", "marketing")
+    before = database.get_history(42, 20, "company-a", "marketing")
+    calls = []
+    replies = []
+    global_calls = []
+
+    def factory(_provider, _key, model, _url):
+        async def generate(prompt, history, user_text):
+            calls.append((model, prompt, list(history), user_text))
+            if mode == "both-fail" or (mode == "backup" and model == primary.model):
+                raise _api_failure(503)
+            return "module-answer"
+        return SimpleNamespace(generate=generate)
+
+    async def global_generate(*_args):
+        global_calls.append(True)
+        return "general-answer"
+
+    async def reply_text(text, **_kwargs):
+        replies.append(text)
+
+    async def send_chat_action(*_args, **_kwargs):
+        pass
+
+    settings = _test_settings(tmp_path, tmp_path / "users.json", tmp_path / "companies.json", database_path=database.path, project_root=tmp_path)
+    bot = InternalBot(settings, database, SimpleNamespace(generate=global_generate), ModuleProviderResolver(factory))
+    update = SimpleNamespace(effective_user=SimpleNamespace(id=42), effective_chat=SimpleNamespace(id=42), effective_message=SimpleNamespace(text="new-question", reply_text=reply_text))
+    context = SimpleNamespace(bot=SimpleNamespace(send_chat_action=send_chat_action))
+    if mode == "no-access":
+        database.set_membership_module_access(42, "company-a", [], "admin")
+    asyncio.run(bot.chat(update, context))
+    after = database.get_history(42, 20, "company-a", "marketing")
+    if mode == "no-access":
+        assert calls == [] and global_calls == [True]
+        assert after == before
+        return
+    assert global_calls == []
+    assert len(calls) == (1 if mode == "primary" else 2)
+    for _model, prompt, history, text in calls:
+        assert "playbook-company-a" in prompt and "knowledge-company-a" in prompt
+        assert "private-knowledge-company-b" not in prompt
+        assert history == before
+        assert text == "new-question"
+    if mode == "both-fail":
+        assert after == before
+        assert "tidak tersedia" in replies[-1]
+    else:
+        assert after == before + [{"role": "user", "content": "new-question"}, {"role": "assistant", "content": "module-answer"}]
+        assert replies == ["module-answer"]
+
+
+@pytest.mark.parametrize("response_kind", ["retryable", "empty", "refusal"])
+def test_module_failover_through_real_sdk_with_mock_http(monkeypatch, response_kind):
+    from openai import AsyncOpenAI
+
+    primary, backup = _ai_pair()
+    monkeypatch.setenv(primary.api_key_env, "fake-primary-key")
+    monkeypatch.setenv(backup.api_key_env, "fake-backup-key")
+    requests = []
+    clients = []
+
+    def handle(request):
+        payload = json.loads(request.content)
+        requests.append(payload)
+        if payload["model"] == primary.model and response_kind == "retryable":
+            return httpx.Response(503, json={"error": {"message": "unavailable"}})
+        message = {"role": "assistant", "content": "Mock HTTP answer"}
+        if response_kind == "empty":
+            message["content"] = "  "
+        elif response_kind == "refusal":
+            message.update(content=None, refusal="Cannot fulfill this request")
+        return httpx.Response(200, json={"choices": [{"index": 0, "message": message, "finish_reason": "stop"}]})
+
+    def client_factory(**kwargs):
+        client = AsyncOpenAI(**kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)))
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr("app.providers.AsyncOpenAI", client_factory)
+
+    async def scenario():
+        resolver = ModuleProviderResolver()
+        try:
+            if response_kind == "retryable":
+                assert await resolver.generate(primary, lambda: backup, "system", [], "question") == "Mock HTTP answer"
+            else:
+                with pytest.raises(ModuleGenerationError):
+                    await resolver.generate(primary, lambda: pytest.fail("Empty/refusal must not trigger backup"), "system", [], "question")
+        finally:
+            for client in clients:
+                await client.close()
+
+    asyncio.run(scenario())
+    assert len(requests) == (2 if response_kind == "retryable" else 1)
+    if response_kind == "retryable":
+        assert [request["model"] for request in requests] == [primary.model, backup.model]
+        assert requests[0]["messages"] == requests[1]["messages"]

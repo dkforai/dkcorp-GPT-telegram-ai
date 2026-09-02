@@ -82,6 +82,7 @@ class AIModule:
     description: str
     ai_runtime_profile_id: str
     active: bool
+    backup_ai_runtime_profile_id: str = ""
 
 
 class Database:
@@ -186,6 +187,7 @@ class Database:
                     name TEXT NOT NULL,
                     description TEXT NOT NULL DEFAULT '',
                     ai_runtime_profile_id TEXT,
+                    backup_ai_runtime_profile_id TEXT REFERENCES ai_runtime_profiles(profile_id),
                     active INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -341,6 +343,11 @@ class Database:
             if "ai_runtime_profile_id" not in module_columns:
                 connection.execute(
                     "ALTER TABLE modules ADD COLUMN ai_runtime_profile_id TEXT"
+                )
+            if "backup_ai_runtime_profile_id" not in module_columns:
+                connection.execute(
+                    "ALTER TABLE modules ADD COLUMN backup_ai_runtime_profile_id "
+                    "TEXT REFERENCES ai_runtime_profiles(profile_id)"
                 )
 
             knowledge_columns = {
@@ -1234,6 +1241,9 @@ class Database:
                     m.name,
                     m.description,
                     m.ai_runtime_profile_id,
+                    m.backup_ai_runtime_profile_id,
+                    backup.label AS backup_ai_label,
+                    backup.active AS backup_ai_active,
                     p.label AS ai_runtime_profile_label,
                     p.provider AS ai_provider,
                     p.api_key_env,
@@ -1254,6 +1264,8 @@ class Database:
                 JOIN companies c ON c.company_id = m.company_id
                 LEFT JOIN ai_runtime_profiles p
                     ON p.profile_id = m.ai_runtime_profile_id
+                LEFT JOIN ai_runtime_profiles backup
+                    ON backup.profile_id = m.backup_ai_runtime_profile_id
                 LEFT JOIN module_access a
                     ON a.company_id = m.company_id
                    AND a.module_id = m.module_id
@@ -1275,7 +1287,8 @@ class Database:
             row = connection.execute(
                 """
                 SELECT m.company_id, c.name AS company_name, m.module_id,
-                       m.name, m.description, m.ai_runtime_profile_id, m.active
+                       m.name, m.description, m.ai_runtime_profile_id, m.active,
+                       m.backup_ai_runtime_profile_id
                 FROM modules m
                 JOIN companies c ON c.company_id = m.company_id
                 WHERE m.company_id = ? AND m.module_id = ?
@@ -1293,11 +1306,15 @@ class Database:
         actor: str,
         ai_runtime_profile_id: object = "",
         active: bool = True,
+        backup_ai_runtime_profile_id: object = "",
     ) -> AIModule:
         normalized_company = _validate_company_id(company_id)
         normalized_name = _validate_module_name(name)
         normalized_description = _validate_module_description(description)
         normalized_profile = _validate_runtime_profile_id(ai_runtime_profile_id)
+        normalized_backup = _validate_backup_profile_id(
+            backup_ai_runtime_profile_id, normalized_profile
+        )
         requested_id = str(module_id or "").strip()
         normalized_module = (
             _validate_module_id(requested_id) if requested_id else ""
@@ -1307,6 +1324,8 @@ class Database:
             with self._connect() as connection:
                 _require_active_company(connection, normalized_company)
                 _require_active_runtime_profile(connection, normalized_profile)
+                if normalized_backup:
+                    _require_active_runtime_profile(connection, normalized_backup)
                 if not normalized_module:
                     normalized_module = _next_unique_identifier(
                         connection,
@@ -1320,9 +1339,9 @@ class Database:
                     """
                     INSERT INTO modules (
                         company_id, module_id, name, description,
-                        ai_runtime_profile_id, active,
+                        ai_runtime_profile_id, backup_ai_runtime_profile_id, active,
                         created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         normalized_company,
@@ -1330,6 +1349,7 @@ class Database:
                         normalized_name,
                         normalized_description,
                         normalized_profile,
+                        normalized_backup or None,
                         int(active),
                         now,
                         now,
@@ -1345,6 +1365,7 @@ class Database:
                         "company_id": normalized_company,
                         "name": normalized_name,
                         "ai_runtime_profile_id": normalized_profile,
+                        "backup_ai_runtime_profile_id": normalized_backup,
                         "active": active,
                     },
                 )
@@ -1363,6 +1384,7 @@ class Database:
         description: object,
         actor: str,
         ai_runtime_profile_id: object,
+        backup_ai_runtime_profile_id: object = None,
     ) -> AIModule:
         normalized_company = _validate_company_id(company_id)
         normalized_module = _validate_module_id(module_id)
@@ -1370,27 +1392,38 @@ class Database:
         normalized_description = _validate_module_description(description)
         normalized_profile = _validate_runtime_profile_id(ai_runtime_profile_id)
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             _require_active_runtime_profile(connection, normalized_profile)
             current = connection.execute(
                 """
-                SELECT name, description, ai_runtime_profile_id FROM modules
+                SELECT name, description, ai_runtime_profile_id,
+                       backup_ai_runtime_profile_id FROM modules
                 WHERE company_id = ? AND module_id = ?
                 """,
                 (normalized_company, normalized_module),
             ).fetchone()
             if current is None:
                 raise ValueError("Module tidak ditemukan")
+            normalized_backup = _validate_backup_profile_id(
+                current["backup_ai_runtime_profile_id"]
+                if backup_ai_runtime_profile_id is None
+                else backup_ai_runtime_profile_id,
+                normalized_profile,
+            )
+            if normalized_backup:
+                _require_active_runtime_profile(connection, normalized_backup)
             connection.execute(
                 """
                 UPDATE modules
                 SET name = ?, description = ?, ai_runtime_profile_id = ?,
-                    updated_at = ?
+                    backup_ai_runtime_profile_id = ?, updated_at = ?
                 WHERE company_id = ? AND module_id = ?
                 """,
                 (
                     normalized_name,
                     normalized_description,
                     normalized_profile,
+                    normalized_backup or None,
                     _now(),
                     normalized_company,
                     normalized_module,
@@ -1407,6 +1440,8 @@ class Database:
                     "name_after": normalized_name,
                     "ai_runtime_profile_before": current["ai_runtime_profile_id"],
                     "ai_runtime_profile_after": normalized_profile,
+                    "backup_ai_runtime_profile_before": current["backup_ai_runtime_profile_id"],
+                    "backup_ai_runtime_profile_after": normalized_backup,
                 },
             )
         module = self.get_module_admin(normalized_company, normalized_module)
@@ -1486,6 +1521,9 @@ class Database:
                     m.name,
                     m.description,
                     m.ai_runtime_profile_id,
+                    m.backup_ai_runtime_profile_id,
+                    backup.label AS backup_ai_label,
+                    backup.active AS backup_ai_active,
                     p.label AS ai_runtime_profile_label,
                     p.provider AS ai_provider,
                     p.api_key_env,
@@ -1506,6 +1544,8 @@ class Database:
                 JOIN companies c ON c.company_id = m.company_id
                 LEFT JOIN ai_runtime_profiles p
                     ON p.profile_id = m.ai_runtime_profile_id
+                LEFT JOIN ai_runtime_profiles backup
+                    ON backup.profile_id = m.backup_ai_runtime_profile_id
                 LEFT JOIN module_playbook_state s ON s.module_pk = m.id
                 LEFT JOIN module_playbook_versions v
                     ON v.id = s.published_version_id
@@ -1826,7 +1866,8 @@ class Database:
             rows = connection.execute(
                 """
                 SELECT m.company_id, c.name AS company_name, m.module_id,
-                       m.name, m.description, m.ai_runtime_profile_id, m.active
+                       m.name, m.description, m.ai_runtime_profile_id, m.active,
+                       m.backup_ai_runtime_profile_id
                 FROM module_access a
                 JOIN modules m
                     ON m.company_id = a.company_id
@@ -3130,6 +3171,7 @@ def _module_from_row(row: sqlite3.Row) -> AIModule:
         name=row["name"],
         description=row["description"],
         ai_runtime_profile_id=str(row["ai_runtime_profile_id"] or ""),
+        backup_ai_runtime_profile_id=str(row["backup_ai_runtime_profile_id"] or ""),
         active=bool(row["active"]),
     )
 
@@ -3243,6 +3285,15 @@ def _validate_runtime_profile_id(value: object) -> str:
             "Credential profile wajib dipilih dan harus memakai ID yang valid"
         )
     return profile_id
+
+
+def _validate_backup_profile_id(value: object, primary_profile_id: str) -> str:
+    if not str(value or "").strip():
+        return ""
+    backup = _validate_runtime_profile_id(value)
+    if backup == primary_profile_id:
+        raise ValueError("AI utama dan AI cadangan harus berbeda")
+    return backup
 
 
 def _validate_runtime_profile_label(value: object) -> str:

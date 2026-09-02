@@ -15,8 +15,17 @@
       <div class="form-section-title"><h3>Identitas module</h3><p>Module ID dikunci setelah dibuat.</p></div>
       <label>Nama module<input name="name" type="text" value="{{ state.name }}" minlength="2" maxlength="100" required></label>
       <label class="full-field">Deskripsi <span class="optional">Opsional</span><textarea name="description" maxlength="500" rows="4">{{ state.description }}</textarea></label>
-      <label>API credential<select name="ai_runtime_profile_id" required>{% for profile in runtime_profiles %}<option value="{{ profile.profile_id }}" {% if state.ai_runtime_profile_id == profile.profile_id %}selected{% endif %}>{{ profile.label }} · {{ profile.provider }} · {{ profile.model }}{% if not profile.configured %} · key belum diisi{% endif %}</option>{% endfor %}</select><small>Nilai API key berada di environment variable, bukan database.</small></label>
-      <div class="form-actions"><button class="primary-button" type="submit">Simpan identitas</button></div>
+      <label>AI utama<select name="ai_runtime_profile_id" required>
+        {% if not state.ai_runtime_profile_active %}<option value="" selected disabled>{{ state.ai_runtime_profile_label or 'Belum dipilih' }} · pilih AI aktif</option>{% endif %}
+        {% for profile in runtime_profiles %}<option value="{{ profile.profile_id }}" {% if state.ai_runtime_profile_id == profile.profile_id %}selected{% endif %}>{{ profile.label }} · {{ profile.model }}{% if not profile.configured %} · key belum diisi{% endif %}</option>{% endfor %}
+      </select><small>AI yang digunakan terlebih dahulu untuk setiap pesan.</small></label>
+      <label class="full-field">AI cadangan <span class="optional">Opsional</span><select name="backup_ai_runtime_profile_id">
+        <option value="" {% if not state.backup_ai_runtime_profile_id %}selected{% endif %}>Tanpa AI cadangan</option>
+        {% if state.backup_ai_runtime_profile_id and not state.backup_ai_active %}<option value="{{ state.backup_ai_runtime_profile_id }}" selected disabled>{{ state.backup_ai_label or 'AI tidak tersedia' }} · nonaktif</option>{% endif %}
+        {% for profile in runtime_profiles %}<option value="{{ profile.profile_id }}" {% if state.backup_ai_runtime_profile_id == profile.profile_id %}selected{% endif %}>{{ profile.label }} · {{ profile.model }}{% if not profile.configured %} · key belum diisi{% endif %}</option>{% endfor %}
+      </select><small>Harus berbeda dari AI utama. Dicoba sekali jika koneksi, timeout, limit, atau server AI utama bermasalah.</small></label>
+      <p class="muted-text">Cadangan menerima konteks percakapan yang sama jika diperlukan. Key salah, konfigurasi kosong, dan AI nonaktif tidak memicu perpindahan. Perubahan pilihan AI berlaku pada pesan berikutnya, tanpa publish ulang playbook.</p>
+      <div class="form-actions"><button class="primary-button" type="submit">Simpan pengaturan</button></div>
     </form>
 
     <aside class="panel instruction-guide">
@@ -24,8 +33,8 @@
       <ul>
         <li>Status module: {% if state.active %}Active{% else %}Inactive{% endif %}.</li>
         <li>Playbook live: {% if state.published_version_number %}v{{ state.published_version_number }}{% else %}belum ada{% endif %}.</li>
-        <li>API credential: {% if state.ai_runtime_profile_label %}{{ state.ai_runtime_profile_label }} · {{ state.ai_provider }} · {{ state.ai_model }}{% else %}belum dipilih{% endif %}.</li>
-        <li>Secret source: {% if state.api_key_env %}<code>{{ state.api_key_env }}</code>{% else %}belum tersedia{% endif %}.</li>
+        <li>AI utama: {{ state.ai_runtime_profile_label or 'belum dipilih' }}{% if not state.ai_runtime_profile_active %} (nonaktif / belum tersedia){% endif %}.</li>
+        <li>AI cadangan: {{ state.backup_ai_label or 'belum dipilih' }}{% if state.backup_ai_runtime_profile_id and not state.backup_ai_active %} (nonaktif / belum tersedia){% endif %}.</li>
         <li>Akses diberikan melalui edit membership user.</li>
         <li>Draft tidak digunakan bot sampai publish.</li>
       </ul>

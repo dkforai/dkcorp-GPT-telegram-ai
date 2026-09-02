@@ -42,7 +42,7 @@ Pemrosesan update memakai controlled concurrency. User berbeda dapat diproses pa
 - Knowledge Management per company dengan draft, preview, publish, status, dan riwayat versi
 - Upload PDF, DOCX, TXT, atau Markdown menjadi draft Knowledge yang dapat diperiksa sebelum publish
 - Module Management per company dengan draft, preview, publish, status, dan riwayat versi playbook
-- API credential profile per Module dengan key tetap tersimpan di environment
+- Pilihan AI utama dan AI cadangan per Module, dengan key tetap tersimpan di environment
 - Akses module bersifat default-deny dan diberikan per membership
 - Module aktif dapat dilihat atau diganti melalui `/module`; mode General tetap tersedia
 - History chat dipisahkan per user, perusahaan, dan module aktif
@@ -182,7 +182,11 @@ Profile masih berbasis file dan dibaca ulang pada setiap pertanyaan. Hanya conte
 
 Module dikelola melalui admin dengan alur **Draft → Preview → Publish** untuk playbook. Module baru tidak dapat dipilih bot sebelum playbook dipublikasikan dan aksesnya dicentang pada membership. Memilih `/company` mereset module ke `General`; mengganti module tidak menghapus history lama, tetapi memakai ruang history yang terpisah. Knowledge khusus module belum tersedia, sehingga module aktif masih memakai Knowledge company yang sama ditambah playbook module.
 
-Setiap Module wajib memilih satu API credential profile. Profile menyimpan provider, model, optional base URL, serta **nama** environment variable untuk API key. Nilai key tidak disimpan di SQLite. Mode `/module general` tetap memakai `AI_PROVIDER`, `AI_API_KEY`, `AI_MODEL`, dan `AI_BASE_URL` global. Runtime Module tidak pernah fallback ke key global; jika profile nonaktif atau environment variable belum diisi, bot menghentikan request Module dengan pesan konfigurasi yang aman.
+Setiap Module memilih **AI utama** dan **AI cadangan** dari **AI terdaftar**. AI utama wajib, cadangan opsional dan harus berbeda. Daftarkan AI satu kali dengan provider, model, optional base URL, serta **nama** environment variable untuk API key. Nilai key tidak disimpan di SQLite. Pilihan AI langsung berlaku pada pesan berikutnya tanpa publish ulang playbook. Module lama mempertahankan AI utama yang sama dan belum mempunyai cadangan sampai admin memilihnya.
+
+AI utama dicoba terlebih dahulu. Cadangan dicoba sekali saat terjadi masalah koneksi, timeout, HTTP 408/429 atau 5xx, menggunakan konteks dan history yang sama. Tiap percobaan maksimal 30 detik, tanpa retry SDK berulang. Key salah/kosong, AI nonaktif, error request/izin akses, atau refusal tidak memicu cadangan. History ditulis sekali setelah jawaban sukses. Mode `/module general` tetap memakai `AI_PROVIDER`, `AI_API_KEY`, `AI_MODEL`, dan `AI_BASE_URL` global; tidak digunakan sebagai cadangan kegagalan request Module.
+
+Memilih cadangan mengizinkan konteks dikirim ke provider tersebut. Kedua provider dapat mengenakan biaya jika utama timeout setelah request diproses. Perpindahan tercatat di log server tanpa key atau isi percakapan. Dua profile berbeda dengan account/provider sama bisa tetap terkena limit atau gangguan yang sama.
 
 Contoh setup satu credential Module:
 
@@ -190,7 +194,7 @@ Contoh setup satu credential Module:
 AI_KEY_MARKETING=sk-...
 ```
 
-Di Admin → Modules → Tambah API credential, isi nama environment variable `AI_KEY_MARKETING`, lalu pilih profile tersebut pada Module. Nama profile dan profile ID bukan secret; nilai `AI_KEY_MARKETING` tetap hanya berada di `.env` lokal atau Railway Variables.
+Di Admin → Modules → Tambah AI, isi nama AI yang mudah dikenali dan nama environment variable `AI_KEY_MARKETING`. Daftarkan AI kedua jika ingin cadangan, lalu pilih keduanya pada Module. Nama AI dan profile ID bukan secret; nilai `AI_KEY_MARKETING` tetap hanya berada di `.env` lokal atau Railway Variables.
 
 Pada ketiga editor tersebut, admin dapat memilih **Simpan draft** untuk pekerjaan yang belum selesai atau **Review untuk publish**. Tombol Review menyimpan isi terbaru lalu langsung membuka Preview, sehingga konten yang siap cukup melewati dua tindakan: Review lalu Publish. Publish tetap menjadi tindakan terpisah agar perubahan tidak langsung masuk ke bot secara tidak sengaja.
 

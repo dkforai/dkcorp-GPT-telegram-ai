@@ -15,7 +15,9 @@ from app.company_context import load_company_content
 from app.config import Settings
 from app.database import AIModule, Database, Membership, User
 from app.prompts import build_system_prompt
-from app.providers import AIProvider, ModuleProviderResolver, RuntimeCredentialError
+from app.providers import (
+    AIProvider, ModuleGenerationError, ModuleProviderResolver, RuntimeCredentialError,
+)
 from app.role_profiles import load_role_profiles, resolve_communication_profile
 from app.telegram_renderer import markdown_to_telegram_html
 
@@ -326,17 +328,23 @@ class InternalBot:
         )
 
         try:
-            selected_provider = self.provider
             if active_module:
                 runtime_profile = self.database.get_ai_runtime_profile(
                     active_module.ai_runtime_profile_id
                 )
-                selected_provider = self.module_provider_resolver.resolve(
-                    runtime_profile
+                answer = await self.module_provider_resolver.generate(
+                    runtime_profile,
+                    lambda: (
+                        self.database.get_ai_runtime_profile(
+                            active_module.backup_ai_runtime_profile_id
+                        ) if active_module.backup_ai_runtime_profile_id else None
+                    ),
+                    system_prompt, history, user_text,
                 )
-            answer = await selected_provider.generate(
-                system_prompt, history, user_text
-            )
+            else:
+                answer = await self.provider.generate(
+                    system_prompt, history, user_text
+                )
             answer = answer[: self.settings.max_response_chars]
             self.database.add_message(
                 user.telegram_id,
@@ -381,6 +389,14 @@ class InternalBot:
             )
             await message.reply_text(
                 "Konfigurasi API untuk module ini belum siap. Hubungi admin."
+            )
+        except ModuleGenerationError:
+            logger.warning(
+                "Module AI tidak tersedia untuk company=%s module=%s",
+                membership.company_id, module_id,
+            )
+            await message.reply_text(
+                "Maaf, AI module sedang tidak tersedia. Coba lagi atau hubungi admin."
             )
         except Exception:
             logger.exception("Gagal memproses chat untuk Telegram ID %s", user.telegram_id)
