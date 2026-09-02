@@ -20,8 +20,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.config import Settings, load_settings
-from app.database import Database, Membership, User
+from app.database import AIRuntimeProfile, Database, Membership, User
 from app.document_ingestion import MAX_UPLOAD_BYTES, extract_uploaded_document
+from app.providers import runtime_profile_is_configured
 from app.role_profiles import load_role_profiles
 
 
@@ -1173,10 +1174,147 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 "active_page": "modules",
                 "admin_username": settings.admin_username,
                 "modules": database.list_modules_admin(),
+                "runtime_profiles": _runtime_profile_views(database),
                 "csrf_token": _csrf_token(request, settings),
                 "notice": request.query_params.get("notice", ""),
                 "error": request.query_params.get("error", ""),
             },
+        )
+
+    @app.get("/admin/runtime-profiles/new", response_class=HTMLResponse)
+    async def new_runtime_profile(request: Request):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/runtime_profile_form.html",
+            context=_runtime_profile_form_context(request, settings, mode="create"),
+        )
+
+    @app.post("/admin/runtime-profiles", response_class=HTMLResponse)
+    async def create_runtime_profile(request: Request):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        values = _runtime_profile_form_values(form)
+        try:
+            profile = database.create_ai_runtime_profile(
+                "",
+                values["label"],
+                values["provider"],
+                values["api_key_env"],
+                values["model"],
+                values["base_url"],
+                actor=settings.admin_username,
+                active=values["active"] == "1",
+            )
+        except ValueError as exc:
+            return templates.TemplateResponse(
+                request=request,
+                name="admin/runtime_profile_form.html",
+                context=_runtime_profile_form_context(
+                    request,
+                    settings,
+                    mode="create",
+                    values=values,
+                    error=str(exc),
+                ),
+                status_code=400,
+            )
+        return _modules_redirect(
+            notice=(
+                f"Credential profile {profile.label} berhasil dibuat. "
+                f"Isi {profile.api_key_env} di environment sebelum digunakan."
+            )
+        )
+
+    @app.get(
+        "/admin/runtime-profiles/{profile_id}/edit",
+        response_class=HTMLResponse,
+    )
+    async def edit_runtime_profile(request: Request, profile_id: str):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        try:
+            profile = database.get_ai_runtime_profile(profile_id)
+        except ValueError:
+            profile = None
+        if profile is None:
+            return HTMLResponse("Credential profile tidak ditemukan.", status_code=404)
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/runtime_profile_form.html",
+            context=_runtime_profile_form_context(
+                request,
+                settings,
+                mode="edit",
+                profile=profile,
+            ),
+        )
+
+    @app.post(
+        "/admin/runtime-profiles/{profile_id}", response_class=HTMLResponse
+    )
+    async def update_runtime_profile(request: Request, profile_id: str):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        values = _runtime_profile_form_values(form)
+        try:
+            database.update_ai_runtime_profile(
+                profile_id,
+                values["label"],
+                values["provider"],
+                values["api_key_env"],
+                values["model"],
+                values["base_url"],
+                actor=settings.admin_username,
+            )
+        except ValueError as exc:
+            profile = database.get_ai_runtime_profile(profile_id)
+            return templates.TemplateResponse(
+                request=request,
+                name="admin/runtime_profile_form.html",
+                context=_runtime_profile_form_context(
+                    request,
+                    settings,
+                    mode="edit",
+                    profile=profile,
+                    values=values,
+                    error=str(exc),
+                ),
+                status_code=400,
+            )
+        return _modules_redirect(notice="Credential profile berhasil diperbarui")
+
+    @app.post("/admin/runtime-profiles/{profile_id}/status")
+    async def update_runtime_profile_status(request: Request, profile_id: str):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        target = str(form.get("active", ""))
+        if target not in {"0", "1"}:
+            return _modules_redirect(error="Status credential profile tidak valid")
+        try:
+            profile = database.set_ai_runtime_profile_active(
+                profile_id, target == "1", actor=settings.admin_username
+            )
+        except ValueError as exc:
+            return _modules_redirect(error=str(exc))
+        status = "diaktifkan" if profile.active else "dinonaktifkan"
+        return _modules_redirect(
+            notice=f"Credential profile {profile.label} berhasil {status}"
         )
 
     @app.get("/admin/modules/new", response_class=HTMLResponse)
@@ -1193,6 +1331,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 request,
                 settings,
                 companies,
+                database,
                 values={"company_id": selected_company},
             ),
         )
@@ -1213,6 +1352,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 values["name"],
                 values["description"],
                 actor=settings.admin_username,
+                ai_runtime_profile_id=values["ai_runtime_profile_id"],
                 active=values["active"] == "1",
             )
         except ValueError as exc:
@@ -1223,6 +1363,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                     request,
                     settings,
                     _active_company_options(database),
+                    database,
                     values=values,
                     error=str(exc),
                 ),
@@ -1274,6 +1415,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 form.get("name", ""),
                 form.get("description", ""),
                 actor=settings.admin_username,
+                ai_runtime_profile_id=form.get("ai_runtime_profile_id", ""),
             )
         except ValueError as exc:
             return _module_redirect(company_id, module_id, error=str(exc))
@@ -1428,6 +1570,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             "instruction": "Instruction",
             "knowledge": "Knowledge",
             "module": "Modules",
+            "credential": "API Credentials",
         }
         if category not in categories:
             category = "all"
@@ -1750,6 +1893,9 @@ def _module_form_values(form) -> dict[str, str]:
         "company_id": str(form.get("company_id", "")).strip(),
         "name": str(form.get("name", "")).strip(),
         "description": str(form.get("description", "")).strip(),
+        "ai_runtime_profile_id": str(
+            form.get("ai_runtime_profile_id", "")
+        ).strip(),
         "active": "1" if form.get("active") == "1" else "0",
     }
 
@@ -1758,6 +1904,7 @@ def _module_form_context(
     request: Request,
     settings: Settings,
     companies: list[dict[str, object]],
+    database: Database,
     *,
     values: dict[str, str] | None = None,
     error: str = "",
@@ -1766,6 +1913,7 @@ def _module_form_context(
         "company_id": str(companies[0]["company_id"]) if companies else "",
         "name": "",
         "description": "",
+        "ai_runtime_profile_id": "",
         "active": "1",
     }
     defaults.update({key: value for key, value in (values or {}).items() if value})
@@ -1774,6 +1922,7 @@ def _module_form_context(
         "admin_username": settings.admin_username,
         "csrf_token": _csrf_token(request, settings),
         "companies": companies,
+        "runtime_profiles": _runtime_profile_views(database, active_only=True),
         "values": defaults,
         "error": error,
     }
@@ -1795,6 +1944,7 @@ def _module_editor_context(
         "admin_username": settings.admin_username,
         "csrf_token": _csrf_token(request, settings),
         "state": state,
+        "runtime_profiles": _runtime_profile_views(database, active_only=True),
         "draft_content": draft_content,
         "versions": database.list_module_playbook_versions(
             str(state["company_id"]), str(state["module_id"])
@@ -1804,6 +1954,68 @@ def _module_editor_context(
             or draft_content != published_content
         ),
         "notice": notice,
+        "error": error,
+    }
+
+
+def _runtime_profile_views(
+    database: Database, *, active_only: bool = False
+) -> list[dict[str, object]]:
+    profiles = database.list_ai_runtime_profiles()
+    if active_only:
+        profiles = [profile for profile in profiles if profile.active]
+    return [
+        {
+            "profile_id": profile.profile_id,
+            "label": profile.label,
+            "provider": profile.provider,
+            "api_key_env": profile.api_key_env,
+            "model": profile.model,
+            "base_url": profile.base_url,
+            "active": profile.active,
+            "configured": runtime_profile_is_configured(profile),
+        }
+        for profile in profiles
+    ]
+
+
+def _runtime_profile_form_values(form) -> dict[str, str]:
+    return {
+        "label": str(form.get("label", "")).strip(),
+        "provider": str(form.get("provider", "openai")).strip().casefold(),
+        "api_key_env": str(form.get("api_key_env", "")).strip().upper(),
+        "model": str(form.get("model", "")).strip(),
+        "base_url": str(form.get("base_url", "")).strip(),
+        "active": "1" if form.get("active") == "1" else "0",
+    }
+
+
+def _runtime_profile_form_context(
+    request: Request,
+    settings: Settings,
+    *,
+    mode: str,
+    profile: AIRuntimeProfile | None = None,
+    values: dict[str, str] | None = None,
+    error: str = "",
+) -> dict[str, object]:
+    defaults = {
+        "label": profile.label if profile else "",
+        "provider": profile.provider if profile else "openai",
+        "api_key_env": profile.api_key_env if profile else "",
+        "model": profile.model if profile else "gpt-5.4-mini",
+        "base_url": profile.base_url if profile else "",
+        "active": "1" if profile is None or profile.active else "0",
+    }
+    defaults.update(values or {})
+    return {
+        "active_page": "modules",
+        "admin_username": settings.admin_username,
+        "csrf_token": _csrf_token(request, settings),
+        "mode": mode,
+        "profile": profile,
+        "values": defaults,
+        "configured": runtime_profile_is_configured(profile) if profile else False,
         "error": error,
     }
 
@@ -1868,6 +2080,10 @@ _ACTIVITY_ACTION_LABELS = {
     "module_playbook.published": "Playbook dipublikasikan",
     "module_playbook.version_restored_to_draft": "Versi playbook dipulihkan",
     "module_access.updated": "Akses module diperbarui",
+    "ai_runtime_profile.created": "API credential dibuat",
+    "ai_runtime_profile.updated": "API credential diperbarui",
+    "ai_runtime_profile.activated": "API credential diaktifkan",
+    "ai_runtime_profile.deactivated": "API credential dinonaktifkan",
 }
 
 _ACTIVITY_DETAIL_LABELS = {
@@ -1893,6 +2109,18 @@ _ACTIVITY_DETAIL_LABELS = {
     "version_number": "Versi",
     "module_count": "Jumlah module",
     "module_ids": "Module",
+    "ai_runtime_profile_id": "API credential",
+    "ai_runtime_profile_before": "API credential sebelumnya",
+    "ai_runtime_profile_after": "API credential baru",
+    "api_key_env": "Environment key",
+    "api_key_env_before": "Environment key sebelumnya",
+    "api_key_env_after": "Environment key baru",
+    "provider": "Provider",
+    "provider_before": "Provider sebelumnya",
+    "provider_after": "Provider baru",
+    "model": "Model",
+    "model_before": "Model sebelumnya",
+    "model_after": "Model baru",
 }
 
 
@@ -1908,6 +2136,7 @@ def _activity_event_view(row: dict[str, object]) -> dict[str, object]:
         "module": "module",
         "module_playbook": "module",
         "module_access": "module",
+        "ai_runtime_profile": "credential",
     }.get(entity_type, "all")
     try:
         raw_details = json.loads(str(row.get("details_json", "{}")))

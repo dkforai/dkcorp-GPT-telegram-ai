@@ -11,14 +11,17 @@
     {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
     {% if not companies %}
       <div class="notice error">Belum ada company aktif. Aktifkan company terlebih dahulu.</div>
+    {% elif not runtime_profiles %}
+      <div class="notice error">Belum ada credential profile aktif. <a href="/admin/runtime-profiles/new">Buat credential profile</a> terlebih dahulu.</div>
     {% else %}
       <div class="form-grid">
         <label>Company<select name="company_id" required>{% for company in companies %}<option value="{{ company.company_id }}" {% if values.company_id == company.company_id %}selected{% endif %}>{{ company.name }}</option>{% endfor %}</select><small>Module hanya tersedia di company ini.</small></label>
         <label>Nama module<input name="name" type="text" value="{{ values.name }}" minlength="2" maxlength="100" required autofocus><small>Module ID dibuat otomatis dan dikunci.</small></label>
+        <label>API credential<select name="ai_runtime_profile_id" required><option value="" disabled {% if not values.ai_runtime_profile_id %}selected{% endif %}>Pilih credential profile</option>{% for profile in runtime_profiles %}<option value="{{ profile.profile_id }}" {% if values.ai_runtime_profile_id == profile.profile_id %}selected{% endif %}>{{ profile.label }} · {{ profile.provider }} · {{ profile.model }}{% if not profile.configured %} · key belum diisi{% endif %}</option>{% endfor %}</select><small>Module memakai profile ini. API key tetap disimpan di environment.</small></label>
       </div>
       <label class="full-field">Deskripsi <span class="optional">Opsional</span><textarea name="description" maxlength="500" rows="4">{{ values.description }}</textarea><small>Jelaskan kapan module dipakai dan hasil yang diharapkan.</small></label>
       <label class="checkbox-row"><input name="active" type="checkbox" value="1" {% if values.active == '1' %}checked{% endif %}><span><strong>Aktifkan module</strong><small>User tetap memerlukan akses membership dan playbook published.</small></span></label>
     {% endif %}
-    <div class="form-actions"><a class="secondary-button" href="/admin/modules">Batal</a><button class="primary-button" type="submit" {% if not companies %}disabled{% endif %}>Simpan module</button></div>
+    <div class="form-actions"><a class="secondary-button" href="/admin/modules">Batal</a><button class="primary-button" type="submit" {% if not companies or not runtime_profiles %}disabled{% endif %}>Simpan module</button></div>
   </form>
 {% endblock %}

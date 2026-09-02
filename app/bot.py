@@ -15,7 +15,7 @@ from app.company_context import load_company_content
 from app.config import Settings
 from app.database import AIModule, Database, Membership, User
 from app.prompts import build_system_prompt
-from app.providers import AIProvider
+from app.providers import AIProvider, ModuleProviderResolver, RuntimeCredentialError
 from app.role_profiles import load_role_profiles, resolve_communication_profile
 from app.telegram_renderer import markdown_to_telegram_html
 
@@ -23,10 +23,19 @@ logger = logging.getLogger(__name__)
 
 
 class InternalBot:
-    def __init__(self, settings: Settings, database: Database, provider: AIProvider):
+    def __init__(
+        self,
+        settings: Settings,
+        database: Database,
+        provider: AIProvider,
+        module_provider_resolver: ModuleProviderResolver | None = None,
+    ):
         self.settings = settings
         self.database = database
         self.provider = provider
+        self.module_provider_resolver = (
+            module_provider_resolver or ModuleProviderResolver()
+        )
         self._user_locks: dict[int, asyncio.Lock] = {}
 
     def build_application(self) -> Application:
@@ -317,7 +326,17 @@ class InternalBot:
         )
 
         try:
-            answer = await self.provider.generate(system_prompt, history, user_text)
+            selected_provider = self.provider
+            if active_module:
+                runtime_profile = self.database.get_ai_runtime_profile(
+                    active_module.ai_runtime_profile_id
+                )
+                selected_provider = self.module_provider_resolver.resolve(
+                    runtime_profile
+                )
+            answer = await selected_provider.generate(
+                system_prompt, history, user_text
+            )
             answer = answer[: self.settings.max_response_chars]
             self.database.add_message(
                 user.telegram_id,
@@ -353,6 +372,16 @@ class InternalBot:
                         chunk,
                         disable_web_page_preview=True,
                     )
+        except RuntimeCredentialError as exc:
+            logger.error(
+                "Credential runtime tidak siap untuk company=%s module=%s: %s",
+                membership.company_id,
+                module_id,
+                exc,
+            )
+            await message.reply_text(
+                "Konfigurasi API untuk module ini belum siap. Hubungi admin."
+            )
         except Exception:
             logger.exception("Gagal memproses chat untuk Telegram ID %s", user.telegram_id)
             await message.reply_text(

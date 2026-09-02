@@ -41,6 +41,7 @@ Pemrosesan update memakai controlled concurrency. User berbeda dapat diproses pa
 - Knowledge Management per company dengan draft, preview, publish, status, dan riwayat versi
 - Upload PDF, DOCX, TXT, atau Markdown menjadi draft Knowledge yang dapat diperiksa sebelum publish
 - Module Management per company dengan draft, preview, publish, status, dan riwayat versi playbook
+- API credential profile per Module dengan key tetap tersimpan di environment
 - Akses module bersifat default-deny dan diberikan per membership
 - Module aktif dapat dilihat atau diganti melalui `/module`; mode General tetap tersedia
 - History chat dipisahkan per user, perusahaan, dan module aktif
@@ -180,6 +181,16 @@ Profile masih berbasis file dan dibaca ulang pada setiap pertanyaan. Hanya conte
 
 Module dikelola melalui admin dengan alur **Draft → Preview → Publish** untuk playbook. Module baru tidak dapat dipilih bot sebelum playbook dipublikasikan dan aksesnya dicentang pada membership. Memilih `/company` mereset module ke `General`; mengganti module tidak menghapus history lama, tetapi memakai ruang history yang terpisah. Knowledge khusus module belum tersedia, sehingga module aktif masih memakai Knowledge company yang sama ditambah playbook module.
 
+Setiap Module wajib memilih satu API credential profile. Profile menyimpan provider, model, optional base URL, serta **nama** environment variable untuk API key. Nilai key tidak disimpan di SQLite. Mode `/module general` tetap memakai `AI_PROVIDER`, `AI_API_KEY`, `AI_MODEL`, dan `AI_BASE_URL` global. Runtime Module tidak pernah fallback ke key global; jika profile nonaktif atau environment variable belum diisi, bot menghentikan request Module dengan pesan konfigurasi yang aman.
+
+Contoh setup satu credential Module:
+
+```env
+AI_KEY_MARKETING=sk-...
+```
+
+Di Admin → Modules → Tambah API credential, isi nama environment variable `AI_KEY_MARKETING`, lalu pilih profile tersebut pada Module. Nama profile dan profile ID bukan secret; nilai `AI_KEY_MARKETING` tetap hanya berada di `.env` lokal atau Railway Variables.
+
 Pada ketiga editor tersebut, admin dapat memilih **Simpan draft** untuk pekerjaan yang belum selesai atau **Review untuk publish**. Tombol Review menyimpan isi terbaru lalu langsung membuka Preview, sehingga konten yang siap cukup melewati dua tindakan: Review lalu Publish. Publish tetap menjadi tindakan terpisah agar perubahan tidak langsung masuk ke bot secara tidak sengaja.
 
 MVP ini sengaja belum memakai embeddings/vector database. Seluruh knowledge company aktif dimasukkan ke prompt sampai batas `KNOWLEDGE_MAX_CHARS`. Jika knowledge mulai besar, langkah berikutnya adalah retrieval dengan filter wajib `company_id`, lalu `module_id` bila relevan.
@@ -218,6 +229,7 @@ Halaman yang tersedia:
 - `/admin/knowledge` untuk status knowledge semua company;
 - `/admin/knowledge/<company-id>` untuk dokumen, draft, publish, status, dan riwayat versi;
 - `/admin/modules` untuk registry module semua company;
+- `/admin/runtime-profiles/new` untuk membuat metadata API credential tanpa menyimpan key;
 - `/admin/modules/new` untuk membuat module dengan Module ID otomatis;
 - `/admin/modules/<company-id>/<module-id>` untuk identitas, playbook, preview, publish, status, dan riwayat versi;
 - `/admin/activity` untuk audit administratif read-only termasuk perubahan module dan akses;
@@ -251,6 +263,7 @@ Company, user, membership, Company Instruction, Knowledge, Module, serta aksesny
 | `AI_API_KEY` | API key provider aktif | wajib |
 | `AI_MODEL` | Nama model provider | sesuai provider |
 | `AI_BASE_URL` | Override endpoint provider | sesuai provider |
+| `AI_KEY_<NAMA>` | API key bernama yang dirujuk credential profile Module | sesuai profile |
 | `DATABASE_PATH` | Lokasi SQLite | `data/bot.db` |
 | `USERS_FILE` | JSON bootstrap whitelist untuk database kosong | `config/users.json` |
 | `COMPANIES_FILE` | JSON bootstrap company untuk database kosong | `config/companies.json` |

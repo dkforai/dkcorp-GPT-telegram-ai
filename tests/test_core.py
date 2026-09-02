@@ -15,10 +15,11 @@ from app.admin import create_admin_app
 from app.bot import InternalBot, _split_message
 from app.company_context import CompanyContent, load_company_content
 from app.config import Settings
-from app.database import AIModule, Company, Database, Membership, User
+from app.database import AIRuntimeProfile, AIModule, Company, Database, Membership, User
 from app.document_ingestion import extract_uploaded_document
 from app.knowledge import load_knowledge
 from app.prompts import build_system_prompt
+from app.providers import ModuleProviderResolver, RuntimeCredentialError
 from app.role_profiles import load_role_profiles, resolve_communication_profile
 from app.telegram_renderer import markdown_to_telegram_html
 
@@ -240,6 +241,7 @@ def test_knowledge_limit_and_prompt(tmp_path):
         module_id="marketing",
         name="Marketing",
         description="Perencanaan kampanye",
+        ai_runtime_profile_id="marketing-openai",
         active=True,
     )
     module_prompt = build_system_prompt(
@@ -340,6 +342,52 @@ def test_existing_messages_get_company_scope_migration(tmp_path):
     assert "active_module_id" in session_columns
 
 
+def test_existing_modules_get_runtime_profile_migration(tmp_path):
+    database_path = tmp_path / "legacy-modules.db"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE companies (
+                company_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                profile_file TEXT NOT NULL DEFAULT '',
+                instruction_file TEXT NOT NULL DEFAULT '',
+                knowledge_dir TEXT NOT NULL DEFAULT '',
+                active INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE modules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id TEXT NOT NULL,
+                module_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(company_id, module_id)
+            )
+            """
+        )
+    database = Database(database_path)
+    database.initialize()
+    with sqlite3.connect(database_path) as connection:
+        module_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(modules)").fetchall()
+        }
+        profile_table = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name='ai_runtime_profiles'"
+        ).fetchone()
+    assert "ai_runtime_profile_id" in module_columns
+    assert profile_table is not None
+
+
 def test_module_access_publish_and_history_are_scoped(tmp_path):
     database = Database(tmp_path / "modules.db")
     database.initialize()
@@ -355,11 +403,30 @@ def test_module_access_publish_and_history_are_scoped(tmp_path):
         "",
         actor="admin",
     )
+    profile = database.create_ai_runtime_profile(
+        "",
+        "Marketing OpenAI",
+        "openai",
+        "AI_KEY_MARKETING",
+        "gpt-5.4-mini",
+        "",
+        actor="admin",
+    )
     first = database.create_module(
-        "company-a", "", "Marketing", "Kelola campaign", actor="admin"
+        "company-a",
+        "",
+        "Marketing",
+        "Kelola campaign",
+        actor="admin",
+        ai_runtime_profile_id=profile.profile_id,
     )
     second = database.create_module(
-        "company-a", "", "Marketing", "Module kedua", actor="admin"
+        "company-a",
+        "",
+        "Marketing",
+        "Module kedua",
+        actor="admin",
+        ai_runtime_profile_id=profile.profile_id,
     )
     assert first.module_id == "marketing"
     assert second.module_id == "marketing-2"
@@ -442,6 +509,141 @@ def test_module_access_publish_and_history_are_scoped(tmp_path):
     database.set_membership_module_access(42, "company-a", [], actor="admin")
     assert database.get_active_module(42, "company-a") is None
     assert database.set_active_module(42, "marketing") is None
+
+
+def test_module_provider_resolver_uses_named_environment_without_fallback(
+    monkeypatch,
+):
+    calls: list[tuple[str, str, str, str | None]] = []
+    sentinel = SimpleNamespace(name="module-provider")
+
+    def factory(provider: str, api_key: str, model: str, base_url: str | None):
+        calls.append((provider, api_key, model, base_url))
+        return sentinel
+
+    profile = AIRuntimeProfile(
+        profile_id="marketing-openai",
+        label="Marketing OpenAI",
+        provider="openai",
+        api_key_env="AI_KEY_MARKETING",
+        model="gpt-5.4-mini",
+        base_url="",
+        active=True,
+    )
+    resolver = ModuleProviderResolver(factory)
+
+    monkeypatch.delenv("AI_KEY_MARKETING", raising=False)
+    try:
+        resolver.resolve(profile)
+        assert False, "Resolver tidak boleh memakai credential global sebagai fallback"
+    except RuntimeCredentialError as exc:
+        assert "AI_KEY_MARKETING" in str(exc)
+    assert calls == []
+
+    monkeypatch.setenv("AI_KEY_MARKETING", "module-secret")
+    assert resolver.resolve(profile) is sentinel
+    assert resolver.resolve(profile) is sentinel
+    assert calls == [("openai", "module-secret", "gpt-5.4-mini", None)]
+
+
+def test_bot_routes_module_chat_to_module_provider_and_general_to_global(tmp_path):
+    database = Database(tmp_path / "routing.db")
+    database.initialize()
+    database.create_company("company-a", "Company A", actor="admin")
+    database.create_user_with_membership(
+        42,
+        "DK",
+        "company-a",
+        "Owner",
+        "Management",
+        "gm",
+        "executive",
+        "",
+        actor="admin",
+    )
+    profile = database.create_ai_runtime_profile(
+        "",
+        "Marketing OpenAI",
+        "openai",
+        "AI_KEY_MARKETING",
+        "gpt-5.4-mini",
+        "",
+        actor="admin",
+    )
+    module = database.create_module(
+        "company-a",
+        "",
+        "Marketing",
+        "Campaign",
+        actor="admin",
+        ai_runtime_profile_id=profile.profile_id,
+    )
+    database.save_module_playbook_draft(
+        "company-a", module.module_id, "Playbook marketing", actor="admin"
+    )
+    database.publish_module_playbook(
+        "company-a", module.module_id, actor="admin"
+    )
+    database.set_membership_module_access(
+        42, "company-a", [module.module_id], actor="admin"
+    )
+    database.set_active_module(42, module.module_id)
+
+    class FakeProvider:
+        def __init__(self, answer: str):
+            self.answer = answer
+            self.calls = 0
+
+        async def generate(self, _system_prompt, _history, _user_text):
+            self.calls += 1
+            return self.answer
+
+    global_provider = FakeProvider("global-answer")
+    module_provider = FakeProvider("module-answer")
+    resolver_profiles: list[str] = []
+
+    class FakeResolver:
+        def resolve(self, selected_profile):
+            resolver_profiles.append(selected_profile.profile_id)
+            return module_provider
+
+    settings = _test_settings(
+        tmp_path,
+        tmp_path / "users.json",
+        tmp_path / "companies.json",
+        database_path=tmp_path / "routing.db",
+        project_root=tmp_path,
+    )
+    bot = InternalBot(settings, database, global_provider, FakeResolver())
+    replies: list[str] = []
+
+    async def reply_text(value: str, **_kwargs) -> None:
+        replies.append(value)
+
+    async def send_chat_action(*_args, **_kwargs) -> None:
+        return None
+
+    message = SimpleNamespace(text="Buat campaign", reply_text=reply_text)
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=42),
+        effective_message=message,
+        effective_chat=SimpleNamespace(id=99),
+    )
+    context = SimpleNamespace(
+        bot=SimpleNamespace(send_chat_action=send_chat_action)
+    )
+    asyncio.run(bot.chat(update, context))
+    assert module_provider.calls == 1
+    assert global_provider.calls == 0
+    assert resolver_profiles == ["marketing-openai"]
+    assert "module-answer" in replies[-1]
+
+    database.clear_active_module(42)
+    message.text = "Pertanyaan general"
+    asyncio.run(bot.chat(update, context))
+    assert module_provider.calls == 1
+    assert global_provider.calls == 1
+    assert "global-answer" in replies[-1]
 
 
 def test_company_content_is_scoped_to_configured_paths(tmp_path):
@@ -1054,6 +1256,31 @@ def test_admin_module_playbook_and_membership_access_workflow(tmp_path):
             data={"username": "admin", "password": "strong-password"},
             follow_redirects=False,
         ).status_code == 303
+        credential_page = client.get("/admin/runtime-profiles/new")
+        assert credential_page.status_code == 200
+        credential_csrf = re.search(
+            r'name="csrf_token" value="([a-f0-9]+)"', credential_page.text
+        )
+        assert credential_csrf is not None
+        csrf_token = credential_csrf.group(1)
+        credential_response = client.post(
+            "/admin/runtime-profiles",
+            data={
+                "csrf_token": csrf_token,
+                "label": "Marketing OpenAI",
+                "provider": "openai",
+                "api_key_env": "AI_KEY_MARKETING",
+                "model": "gpt-5.4-mini",
+                "base_url": "",
+                "active": "1",
+            },
+            follow_redirects=False,
+        )
+        assert credential_response.status_code == 303
+        profile = database.get_ai_runtime_profile("marketing-openai")
+        assert profile is not None
+        assert profile.api_key_env == "AI_KEY_MARKETING"
+
         form_page = client.get("/admin/modules/new")
         assert form_page.status_code == 200
         assert 'name="module_id"' not in form_page.text
@@ -1079,6 +1306,7 @@ def test_admin_module_playbook_and_membership_access_workflow(tmp_path):
                 "module_id": "forged-id",
                 "name": "Marketing",
                 "description": "Campaign planning",
+                "ai_runtime_profile_id": "marketing-openai",
                 "active": "1",
             },
             follow_redirects=False,
@@ -1088,6 +1316,9 @@ def test_admin_module_playbook_and_membership_access_workflow(tmp_path):
             "/admin/modules/company-a/marketing"
         )
         assert database.get_module_admin("company-a", "forged-id") is None
+        saved_module = database.get_module_admin("company-a", "marketing")
+        assert saved_module is not None
+        assert saved_module.ai_runtime_profile_id == "marketing-openai"
 
         response = client.post(
             "/admin/modules/company-a/marketing/draft",

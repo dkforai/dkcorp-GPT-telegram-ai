@@ -5,7 +5,7 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 1.8 |
+| Versi | 1.9 |
 | Terakhir diperbarui | 2 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
@@ -37,6 +37,7 @@ Tujuan utama:
 9. Draft knowledge tidak boleh memengaruhi bot. Runtime membaca versi published dari dokumen aktif; file transisi hanya dipakai sampai publish knowledge pertama pada company tersebut.
 10. Akses module bersifat default-deny per membership. Runtime hanya menerima module aktif yang statusnya aktif, playbook-nya sudah dipublikasikan, dan aksesnya diberikan admin.
 11. Draft module playbook tidak boleh memengaruhi bot. History General dan setiap module dipisahkan agar perpindahan pekerjaan tidak mencampur konteks.
+12. API key Module tidak boleh disimpan di SQLite. Module hanya menyimpan referensi credential profile dan secret tetap berada di environment.
 
 ## 3. Arsitektur logis
 
@@ -79,8 +80,8 @@ global policy + user context + company instruction
 Chat History SQLite
     ↓
 AI Provider Abstraction
-    ├── OpenAI
-    └── DeepSeek
+    ├── General → global environment credential
+    └── Module → named credential profile → named environment secret
     ↓
 Conversation Delivery Policy
 pendek, bertahap, dan satu tujuan (belum diimplementasikan penuh)
@@ -105,6 +106,7 @@ Jawaban ke user
 | Document Ingestion | Sebagian | Upload PDF, DOCX, TXT, dan Markdown menjadi draft teks; OCR dan `.doc` belum |
 | Chat History | Sudah | SQLite dipisahkan per user, perusahaan, dan module; General memakai scope kosong tersendiri |
 | Provider Abstraction | Sudah | OpenAI dan DeepSeek compatible API |
+| API Credential per Module | Sudah | Module memilih credential profile; secret dibaca dari named environment variable tanpa fallback global |
 | Telegram Response Renderer | Sudah | Safe HTML, split, link preview off, dan fallback plain text |
 | Conversation Delivery Policy | Belum | Akan mengatur panjang, ritme, dan progressive disclosure |
 | Multi-company membership | Sudah | Tabel membership SQLite; JSON hanya bootstrap awal |
@@ -294,6 +296,7 @@ Folder adalah bentuk transisi yang mudah diaudit. Target produksi skala lanjut m
 | `companies` | Master perusahaan |
 | `user_company_memberships` | Jabatan, divisi, level, dan profile per perusahaan |
 | `modules` | Modul milik atau aktif pada perusahaan |
+| `ai_runtime_profiles` | Metadata provider, model, base URL, dan nama environment variable tanpa nilai API key |
 | `module_access` | Hak membership terhadap modul |
 | `company_instruction_state` | Draft aktif dan pointer versi live per perusahaan |
 | `company_instruction_versions` | Versi publish immutable per perusahaan |
@@ -638,8 +641,11 @@ SQLite menjadi source of truth runtime dan menyimpan:
 - metadata, status, draft, dan pointer versi live Knowledge Document per company;
 - versi Knowledge Document immutable beserta SHA-256 content.
 - metadata source upload Knowledge tanpa menyimpan file mentah.
+- credential profile Module dengan ID immutable, status aktif, provider, model, base URL, dan named secret source.
 
 Railway Volume dipasang pada `/app/data` agar database bertahan saat redeploy.
+
+Credential profile Module menyimpan metadata operasional di SQLite. Nilai API key berada di Railway Variables atau `.env` lokal dengan nama yang dicatat pada `api_key_env`, misalnya `AI_KEY_MARKETING`. Mode General memakai konfigurasi global `AI_*`. Runtime Module melakukan fail-closed ketika profile nonaktif atau named secret kosong dan tidak fallback ke credential General.
 
 ## 11. Deployment
 
@@ -668,6 +674,9 @@ Sudah diterapkan:
 
 - whitelist Telegram ID;
 - secret disimpan di environment variables;
+- database Module hanya menyimpan nama environment variable, provider, model, dan base URL; nilai API key tidak disimpan atau dirender admin;
+- resolver Module membaca named secret saat runtime dan cache hanya memakai fingerprint SHA-256, bukan key mentah sebagai identifier;
+- Module dengan credential profile nonaktif tidak dapat dipilih, dan key yang hilang menghentikan request tanpa fallback lintas Module atau ke General;
 - `.env` dan database runtime tidak masuk Git;
 - HTTP client log tidak menampilkan URL Telegram pada level normal;
 - output model di-escape dan dirender melalui safe Telegram HTML;
@@ -719,7 +728,7 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 ## 13. Batas MVP
 
 - text-only;
-- satu provider aktif untuk seluruh bot;
+- satu credential global untuk General dan credential profile terpisah yang dapat dipakai ulang oleh Module;
 - satu instance Railway;
 - seluruh knowledge company aktif dimuat sampai `KNOWLEDGE_MAX_CHARS`;
 - upload knowledge mendukung PDF text layer, DOCX, TXT, dan Markdown; OCR serta `.doc` lama belum;
@@ -747,6 +756,7 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 - company instruction terpisah dan versioned; selesai, migrasi isi legacy per company dilakukan melalui editor admin;
 - company knowledge terpisah dan versioned; selesai untuk company scope, dengan fallback file selama transisi;
 - active module router, default-deny access, dan versioned module playbook; selesai melalui `/module` dan admin;
+- credential profile per Module dengan named environment secret dan fail-closed runtime; selesai;
 - knowledge metadata per division;
 - authorization policy dan clearance;
 - admin command atau admin panel;
@@ -819,12 +829,26 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 | ADR-046 | Module merupakan entitas company-scoped dengan ID immutable | Nama dapat berubah tanpa memutus access, version history, session, atau history percakapan |
 | ADR-047 | Module access memakai explicit default-deny per membership | Membership company tidak otomatis membuka seluruh workflow dan playbook internal company tersebut |
 | ADR-048 | Module Playbook memakai draft dan immutable published version | Perubahan admin tidak boleh langsung mengubah perilaku bot dan versi lama tetap dapat diaudit |
-| ADR-049 | Module runtime membutuhkan status aktif, akses aktif, dan playbook published | Draft atau module tanpa otorisasi tidak boleh muncul pada daftar Telegram maupun masuk ke prompt |
+| ADR-049 | Module runtime membutuhkan status aktif, akses aktif, playbook published, dan credential profile aktif | Draft, module tanpa otorisasi, atau Module tanpa konfigurasi AI yang valid tidak boleh muncul pada daftar Telegram maupun masuk ke prompt |
 | ADR-050 | History memakai scope user, company, dan module | Perpindahan antara General dan workflow module tidak boleh mencampur konteks percakapan |
 | ADR-051 | Perubahan company atau hilangnya module access mereset active module | Session tidak boleh mempertahankan pointer menuju konteks yang tidak lagi valid atau diizinkan |
 | ADR-052 | Review untuk publish menyimpan draft lalu membuka Preview | Mengurangi alur konten siap dari tiga tindakan menjadi dua tanpa menghilangkan pemeriksaan terakhir atau membuat publish tidak sengaja |
+| ADR-053 | Module menyimpan referensi credential profile, bukan API key | Metadata routing dapat dikelola admin tanpa menaruh secret di SQLite, audit, atau HTML |
+| ADR-054 | Nilai API key Module berada pada named environment variable | Secret lifecycle tetap dikelola Railway atau `.env`, terpisah dari data aplikasi |
+| ADR-055 | Mode General tetap memakai credential global | Perilaku dasar tetap kompatibel dan custom Module dapat memakai billing/provider berbeda |
+| ADR-056 | Kegagalan credential Module bersifat fail-closed tanpa fallback | Salah konfigurasi tidak boleh mengalihkan traffic, biaya, atau data ke credential lain secara diam-diam |
 
 ## 16. Changelog dokumen
+
+### 1.9 — 2 September 2026
+
+- menambahkan credential profile non-secret dengan provider, model, base URL, named environment variable, status, dan audit event;
+- mewajibkan setiap Module memilih credential profile aktif sebelum dibuat, diaktifkan, atau dipublikasikan;
+- mempertahankan mode General pada credential global dan merutekan chat Module melalui profile pilihannya;
+- menerapkan fail-closed ketika profile nonaktif atau named secret belum tersedia, tanpa fallback ke key global;
+- menambahkan pengelolaan credential profile pada Admin Modules tanpa menampilkan atau menyimpan nilai API key;
+- menambahkan migrasi SQLite, pengujian resolver, alur admin, dan dokumentasi Railway Variables;
+- memperbarui status implementasi, data model, deployment, security boundary, batas MVP, roadmap, dan keputusan arsitektur.
 
 ### 1.8 — 2 September 2026
 

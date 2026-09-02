@@ -11,6 +11,8 @@ from pathlib import Path
 
 
 COMPANY_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+ENVIRONMENT_NAME_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
+SUPPORTED_AI_PROVIDERS = {"openai", "deepseek"}
 ROLE_LEVELS = {"gm", "manager", "staff"}
 COMMUNICATION_PROFILES = {"executive", "manager", "staff", "default"}
 MAX_TELEGRAM_ID = 9_007_199_254_740_991
@@ -55,12 +57,24 @@ class Membership:
 
 
 @dataclass(frozen=True)
+class AIRuntimeProfile:
+    profile_id: str
+    label: str
+    provider: str
+    api_key_env: str
+    model: str
+    base_url: str
+    active: bool
+
+
+@dataclass(frozen=True)
 class AIModule:
     company_id: str
     company_name: str
     module_id: str
     name: str
     description: str
+    ai_runtime_profile_id: str
     active: bool
 
 
@@ -147,17 +161,32 @@ class Database:
                     created_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS ai_runtime_profiles (
+                    profile_id TEXT PRIMARY KEY,
+                    label TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    api_key_env TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    base_url TEXT NOT NULL DEFAULT '',
+                    active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS modules (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     company_id TEXT NOT NULL,
                     module_id TEXT NOT NULL,
                     name TEXT NOT NULL,
                     description TEXT NOT NULL DEFAULT '',
+                    ai_runtime_profile_id TEXT,
                     active INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     UNIQUE(company_id, module_id),
-                    FOREIGN KEY (company_id) REFERENCES companies(company_id)
+                    FOREIGN KEY (company_id) REFERENCES companies(company_id),
+                    FOREIGN KEY (ai_runtime_profile_id)
+                        REFERENCES ai_runtime_profiles(profile_id)
                 );
 
                 CREATE TABLE IF NOT EXISTS module_playbook_versions (
@@ -299,6 +328,15 @@ class Database:
                     """
                 )
 
+            module_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(modules)").fetchall()
+            }
+            if "ai_runtime_profile_id" not in module_columns:
+                connection.execute(
+                    "ALTER TABLE modules ADD COLUMN ai_runtime_profile_id TEXT"
+                )
+
             knowledge_columns = {
                 row["name"]
                 for row in connection.execute(
@@ -342,6 +380,9 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_modules_company
                 ON modules(company_id, active, module_id);
+
+                CREATE INDEX IF NOT EXISTS idx_modules_runtime_profile
+                ON modules(ai_runtime_profile_id, active, company_id, module_id);
 
                 CREATE INDEX IF NOT EXISTS idx_module_access_membership
                 ON module_access(telegram_id, company_id, active, module_id);
@@ -856,6 +897,213 @@ class Database:
             raise RuntimeError("Company gagal diperbarui")
         return company
 
+    def list_ai_runtime_profiles(self) -> list[AIRuntimeProfile]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT profile_id, label, provider, api_key_env, model,
+                       base_url, active
+                FROM ai_runtime_profiles
+                ORDER BY label COLLATE NOCASE
+                """
+            ).fetchall()
+        return [_ai_runtime_profile_from_row(row) for row in rows]
+
+    def get_ai_runtime_profile(
+        self, profile_id: object
+    ) -> AIRuntimeProfile | None:
+        normalized_profile = _validate_runtime_profile_id(profile_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT profile_id, label, provider, api_key_env, model,
+                       base_url, active
+                FROM ai_runtime_profiles WHERE profile_id = ?
+                """,
+                (normalized_profile,),
+            ).fetchone()
+        return _ai_runtime_profile_from_row(row) if row else None
+
+    def create_ai_runtime_profile(
+        self,
+        profile_id: object,
+        label: object,
+        provider: object,
+        api_key_env: object,
+        model: object,
+        base_url: object,
+        actor: str,
+        *,
+        active: bool = True,
+    ) -> AIRuntimeProfile:
+        normalized_label = _validate_runtime_profile_label(label)
+        requested_id = str(profile_id or "").strip()
+        normalized_profile = (
+            _validate_runtime_profile_id(requested_id) if requested_id else ""
+        )
+        runtime = _validate_runtime_profile_fields(
+            provider, api_key_env, model, base_url
+        )
+        now = _now()
+        try:
+            with self._connect() as connection:
+                if not normalized_profile:
+                    normalized_profile = _next_unique_identifier(
+                        connection,
+                        "ai_runtime_profiles",
+                        "profile_id",
+                        _identifier_from_label(normalized_label, "credential"),
+                    )
+                connection.execute(
+                    """
+                    INSERT INTO ai_runtime_profiles (
+                        profile_id, label, provider, api_key_env, model,
+                        base_url, active, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        normalized_profile,
+                        normalized_label,
+                        runtime["provider"],
+                        runtime["api_key_env"],
+                        runtime["model"],
+                        runtime["base_url"],
+                        int(active),
+                        now,
+                        now,
+                    ),
+                )
+                _write_audit(
+                    connection,
+                    actor,
+                    "ai_runtime_profile.created",
+                    "ai_runtime_profile",
+                    normalized_profile,
+                    {
+                        "label": normalized_label,
+                        "provider": runtime["provider"],
+                        "api_key_env": runtime["api_key_env"],
+                        "model": runtime["model"],
+                        "active": active,
+                    },
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("Credential profile dengan ID tersebut sudah ada") from exc
+        profile = self.get_ai_runtime_profile(normalized_profile)
+        if profile is None:
+            raise RuntimeError("Credential profile gagal disimpan")
+        return profile
+
+    def update_ai_runtime_profile(
+        self,
+        profile_id: object,
+        label: object,
+        provider: object,
+        api_key_env: object,
+        model: object,
+        base_url: object,
+        actor: str,
+    ) -> AIRuntimeProfile:
+        normalized_profile = _validate_runtime_profile_id(profile_id)
+        normalized_label = _validate_runtime_profile_label(label)
+        runtime = _validate_runtime_profile_fields(
+            provider, api_key_env, model, base_url
+        )
+        with self._connect() as connection:
+            current = connection.execute(
+                """
+                SELECT label, provider, api_key_env, model, base_url
+                FROM ai_runtime_profiles WHERE profile_id = ?
+                """,
+                (normalized_profile,),
+            ).fetchone()
+            if current is None:
+                raise ValueError("Credential profile tidak ditemukan")
+            connection.execute(
+                """
+                UPDATE ai_runtime_profiles
+                SET label = ?, provider = ?, api_key_env = ?, model = ?,
+                    base_url = ?, updated_at = ?
+                WHERE profile_id = ?
+                """,
+                (
+                    normalized_label,
+                    runtime["provider"],
+                    runtime["api_key_env"],
+                    runtime["model"],
+                    runtime["base_url"],
+                    _now(),
+                    normalized_profile,
+                ),
+            )
+            _write_audit(
+                connection,
+                actor,
+                "ai_runtime_profile.updated",
+                "ai_runtime_profile",
+                normalized_profile,
+                {
+                    "label_before": current["label"],
+                    "label_after": normalized_label,
+                    "provider_before": current["provider"],
+                    "provider_after": runtime["provider"],
+                    "api_key_env_before": current["api_key_env"],
+                    "api_key_env_after": runtime["api_key_env"],
+                    "model_before": current["model"],
+                    "model_after": runtime["model"],
+                },
+            )
+        profile = self.get_ai_runtime_profile(normalized_profile)
+        if profile is None:
+            raise RuntimeError("Credential profile gagal diperbarui")
+        return profile
+
+    def set_ai_runtime_profile_active(
+        self, profile_id: object, active: bool, actor: str
+    ) -> AIRuntimeProfile:
+        normalized_profile = _validate_runtime_profile_id(profile_id)
+        with self._connect() as connection:
+            current = connection.execute(
+                "SELECT active FROM ai_runtime_profiles WHERE profile_id = ?",
+                (normalized_profile,),
+            ).fetchone()
+            if current is None:
+                raise ValueError("Credential profile tidak ditemukan")
+            if bool(current["active"]) != active:
+                connection.execute(
+                    """
+                    UPDATE ai_runtime_profiles SET active = ?, updated_at = ?
+                    WHERE profile_id = ?
+                    """,
+                    (int(active), _now(), normalized_profile),
+                )
+                if not active:
+                    connection.execute(
+                        """
+                        UPDATE user_sessions SET active_module_id = '', updated_at = ?
+                        WHERE active_module_id IN (
+                            SELECT module_id FROM modules
+                            WHERE ai_runtime_profile_id = ?
+                              AND company_id = user_sessions.active_company_id
+                        )
+                        """,
+                        (_now(), normalized_profile),
+                    )
+                _write_audit(
+                    connection,
+                    actor,
+                    "ai_runtime_profile.activated"
+                    if active
+                    else "ai_runtime_profile.deactivated",
+                    "ai_runtime_profile",
+                    normalized_profile,
+                    {"active": active},
+                )
+        profile = self.get_ai_runtime_profile(normalized_profile)
+        if profile is None:
+            raise RuntimeError("Credential profile gagal diperbarui")
+        return profile
+
     def list_modules_admin(self) -> list[dict[str, object]]:
         with self._connect() as connection:
             rows = connection.execute(
@@ -866,6 +1114,12 @@ class Database:
                     m.module_id,
                     m.name,
                     m.description,
+                    m.ai_runtime_profile_id,
+                    p.label AS ai_runtime_profile_label,
+                    p.provider AS ai_provider,
+                    p.api_key_env,
+                    p.model AS ai_model,
+                    p.active AS ai_runtime_profile_active,
                     m.active,
                     COUNT(DISTINCT CASE WHEN a.active = 1 THEN a.telegram_id END)
                         AS access_count,
@@ -879,6 +1133,8 @@ class Database:
                     END AS has_unpublished_draft
                 FROM modules m
                 JOIN companies c ON c.company_id = m.company_id
+                LEFT JOIN ai_runtime_profiles p
+                    ON p.profile_id = m.ai_runtime_profile_id
                 LEFT JOIN module_access a
                     ON a.company_id = m.company_id
                    AND a.module_id = m.module_id
@@ -900,7 +1156,7 @@ class Database:
             row = connection.execute(
                 """
                 SELECT m.company_id, c.name AS company_name, m.module_id,
-                       m.name, m.description, m.active
+                       m.name, m.description, m.ai_runtime_profile_id, m.active
                 FROM modules m
                 JOIN companies c ON c.company_id = m.company_id
                 WHERE m.company_id = ? AND m.module_id = ?
@@ -916,11 +1172,13 @@ class Database:
         name: object,
         description: object,
         actor: str,
+        ai_runtime_profile_id: object = "",
         active: bool = True,
     ) -> AIModule:
         normalized_company = _validate_company_id(company_id)
         normalized_name = _validate_module_name(name)
         normalized_description = _validate_module_description(description)
+        normalized_profile = _validate_runtime_profile_id(ai_runtime_profile_id)
         requested_id = str(module_id or "").strip()
         normalized_module = (
             _validate_module_id(requested_id) if requested_id else ""
@@ -929,6 +1187,7 @@ class Database:
         try:
             with self._connect() as connection:
                 _require_active_company(connection, normalized_company)
+                _require_active_runtime_profile(connection, normalized_profile)
                 if not normalized_module:
                     normalized_module = _next_unique_identifier(
                         connection,
@@ -941,15 +1200,17 @@ class Database:
                 connection.execute(
                     """
                     INSERT INTO modules (
-                        company_id, module_id, name, description, active,
+                        company_id, module_id, name, description,
+                        ai_runtime_profile_id, active,
                         created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         normalized_company,
                         normalized_module,
                         normalized_name,
                         normalized_description,
+                        normalized_profile,
                         int(active),
                         now,
                         now,
@@ -964,6 +1225,7 @@ class Database:
                     {
                         "company_id": normalized_company,
                         "name": normalized_name,
+                        "ai_runtime_profile_id": normalized_profile,
                         "active": active,
                     },
                 )
@@ -981,15 +1243,18 @@ class Database:
         name: object,
         description: object,
         actor: str,
+        ai_runtime_profile_id: object,
     ) -> AIModule:
         normalized_company = _validate_company_id(company_id)
         normalized_module = _validate_module_id(module_id)
         normalized_name = _validate_module_name(name)
         normalized_description = _validate_module_description(description)
+        normalized_profile = _validate_runtime_profile_id(ai_runtime_profile_id)
         with self._connect() as connection:
+            _require_active_runtime_profile(connection, normalized_profile)
             current = connection.execute(
                 """
-                SELECT name, description FROM modules
+                SELECT name, description, ai_runtime_profile_id FROM modules
                 WHERE company_id = ? AND module_id = ?
                 """,
                 (normalized_company, normalized_module),
@@ -998,12 +1263,15 @@ class Database:
                 raise ValueError("Module tidak ditemukan")
             connection.execute(
                 """
-                UPDATE modules SET name = ?, description = ?, updated_at = ?
+                UPDATE modules
+                SET name = ?, description = ?, ai_runtime_profile_id = ?,
+                    updated_at = ?
                 WHERE company_id = ? AND module_id = ?
                 """,
                 (
                     normalized_name,
                     normalized_description,
+                    normalized_profile,
                     _now(),
                     normalized_company,
                     normalized_module,
@@ -1015,7 +1283,12 @@ class Database:
                 "module.updated",
                 "module",
                 f"{normalized_company}:{normalized_module}",
-                {"name_before": current["name"], "name_after": normalized_name},
+                {
+                    "name_before": current["name"],
+                    "name_after": normalized_name,
+                    "ai_runtime_profile_before": current["ai_runtime_profile_id"],
+                    "ai_runtime_profile_after": normalized_profile,
+                },
             )
         module = self.get_module_admin(normalized_company, normalized_module)
         if module is None:
@@ -1040,6 +1313,16 @@ class Database:
             if bool(current["active"]) != active:
                 if active:
                     _require_active_company(connection, normalized_company)
+                    runtime_row = connection.execute(
+                        """
+                        SELECT ai_runtime_profile_id FROM modules
+                        WHERE company_id = ? AND module_id = ?
+                        """,
+                        (normalized_company, normalized_module),
+                    ).fetchone()
+                    _require_active_runtime_profile(
+                        connection, runtime_row["ai_runtime_profile_id"]
+                    )
                 connection.execute(
                     """
                     UPDATE modules SET active = ?, updated_at = ?
@@ -1083,6 +1366,13 @@ class Database:
                     m.module_id,
                     m.name,
                     m.description,
+                    m.ai_runtime_profile_id,
+                    p.label AS ai_runtime_profile_label,
+                    p.provider AS ai_provider,
+                    p.api_key_env,
+                    p.model AS ai_model,
+                    p.base_url AS ai_base_url,
+                    p.active AS ai_runtime_profile_active,
                     m.active,
                     s.draft_content,
                     s.draft_updated_by,
@@ -1095,6 +1385,8 @@ class Database:
                     v.published_at
                 FROM modules m
                 JOIN companies c ON c.company_id = m.company_id
+                LEFT JOIN ai_runtime_profiles p
+                    ON p.profile_id = m.ai_runtime_profile_id
                 LEFT JOIN module_playbook_state s ON s.module_pk = m.id
                 LEFT JOIN module_playbook_versions v
                     ON v.id = s.published_version_id
@@ -1149,6 +1441,18 @@ class Database:
         now = _now()
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            module_runtime = connection.execute(
+                """
+                SELECT ai_runtime_profile_id FROM modules
+                WHERE company_id = ? AND module_id = ?
+                """,
+                (normalized_company, normalized_module),
+            ).fetchone()
+            if module_runtime is None:
+                raise ValueError("Module tidak ditemukan")
+            _require_active_runtime_profile(
+                connection, module_runtime["ai_runtime_profile_id"]
+            )
             state = connection.execute(
                 """
                 SELECT m.id AS module_pk, s.draft_content
@@ -1403,12 +1707,15 @@ class Database:
             rows = connection.execute(
                 """
                 SELECT m.company_id, c.name AS company_name, m.module_id,
-                       m.name, m.description, m.active
+                       m.name, m.description, m.ai_runtime_profile_id, m.active
                 FROM module_access a
                 JOIN modules m
                     ON m.company_id = a.company_id
                    AND m.module_id = a.module_id
                 JOIN companies c ON c.company_id = m.company_id
+                JOIN ai_runtime_profiles profile
+                    ON profile.profile_id = m.ai_runtime_profile_id
+                   AND profile.active = 1
                 JOIN module_playbook_state state
                     ON state.module_pk = m.id
                    AND state.published_version_id IS NOT NULL
@@ -2703,6 +3010,19 @@ def _module_from_row(row: sqlite3.Row) -> AIModule:
         module_id=row["module_id"],
         name=row["name"],
         description=row["description"],
+        ai_runtime_profile_id=str(row["ai_runtime_profile_id"] or ""),
+        active=bool(row["active"]),
+    )
+
+
+def _ai_runtime_profile_from_row(row: sqlite3.Row) -> AIRuntimeProfile:
+    return AIRuntimeProfile(
+        profile_id=row["profile_id"],
+        label=row["label"],
+        provider=row["provider"],
+        api_key_env=row["api_key_env"],
+        model=row["model"],
+        base_url=row["base_url"],
         active=bool(row["active"]),
     )
 
@@ -2795,6 +3115,52 @@ def _validate_module_id(value: object) -> str:
             "angka, atau tanda minus"
         )
     return module_id
+
+
+def _validate_runtime_profile_id(value: object) -> str:
+    profile_id = str(value or "").strip().casefold()
+    if not COMPANY_ID_PATTERN.fullmatch(profile_id):
+        raise ValueError(
+            "Credential profile wajib dipilih dan harus memakai ID yang valid"
+        )
+    return profile_id
+
+
+def _validate_runtime_profile_label(value: object) -> str:
+    label = " ".join(str(value or "").split())
+    if not 2 <= len(label) <= 100:
+        raise ValueError("Nama credential profile harus terdiri dari 2-100 karakter")
+    return label
+
+
+def _validate_runtime_profile_fields(
+    provider: object, api_key_env: object, model: object, base_url: object
+) -> dict[str, str]:
+    normalized_provider = str(provider or "").strip().casefold()
+    if normalized_provider not in SUPPORTED_AI_PROVIDERS:
+        raise ValueError("AI provider harus openai atau deepseek")
+    normalized_environment = str(api_key_env or "").strip().upper()
+    if not ENVIRONMENT_NAME_PATTERN.fullmatch(normalized_environment):
+        raise ValueError(
+            "Nama environment variable API key hanya boleh memakai A-Z, 0-9, "
+            "dan underscore"
+        )
+    normalized_model = str(model or "").strip()
+    if not 1 <= len(normalized_model) <= 150:
+        raise ValueError("Nama model harus terdiri dari 1-150 karakter")
+    normalized_base_url = str(base_url or "").strip()
+    if len(normalized_base_url) > 500:
+        raise ValueError("AI base URL maksimal 500 karakter")
+    if normalized_base_url and not re.fullmatch(
+        r"https?://[^\s]+", normalized_base_url
+    ):
+        raise ValueError("AI base URL harus berupa URL HTTP atau HTTPS yang valid")
+    return {
+        "provider": normalized_provider,
+        "api_key_env": normalized_environment,
+        "model": normalized_model,
+        "base_url": normalized_base_url,
+    }
 
 
 def _validate_module_name(value: object) -> str:
@@ -2950,6 +3316,24 @@ def _require_active_company(
         raise ValueError("Company tidak ditemukan")
     if not bool(row["active"]):
         raise ValueError("Company sedang nonaktif")
+
+
+def _require_active_runtime_profile(
+    connection: sqlite3.Connection, profile_id: object
+) -> sqlite3.Row:
+    normalized_profile = _validate_runtime_profile_id(profile_id)
+    row = connection.execute(
+        """
+        SELECT profile_id, active FROM ai_runtime_profiles
+        WHERE profile_id = ?
+        """,
+        (normalized_profile,),
+    ).fetchone()
+    if row is None:
+        raise ValueError("Credential profile Module tidak ditemukan")
+    if not bool(row["active"]):
+        raise ValueError("Credential profile Module sedang nonaktif")
+    return row
 
 
 def _membership_audit_details(
