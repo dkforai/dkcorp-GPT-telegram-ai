@@ -2164,10 +2164,11 @@ def test_module_failover_through_real_sdk_with_mock_http(monkeypatch, response_k
         return httpx.Response(200, json={"choices": [{"index": 0, "message": message, "finish_reason": "stop"}]})
 
     def client_factory(**kwargs):
-        client = AsyncOpenAI(**kwargs, http_client=httpx.AsyncClient(transport=httpx.MockTransport(handle)))
+        client = AsyncOpenAI(**kwargs)
         clients.append(client)
         return client
 
+    monkeypatch.setattr("app.providers.AsyncClient", lambda **kwargs: httpx.AsyncClient(**kwargs, transport=httpx.MockTransport(handle)))
     monkeypatch.setattr("app.providers.AsyncOpenAI", client_factory)
 
     async def scenario():

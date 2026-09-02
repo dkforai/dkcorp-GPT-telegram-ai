@@ -20,6 +20,7 @@ def main() -> None:
     # logs above INFO so credentials are never printed during normal operation.
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("openai").setLevel(logging.WARNING)
 
     database = Database(settings.database_path)
     database.initialize()

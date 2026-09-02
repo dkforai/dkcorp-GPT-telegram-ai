@@ -7,9 +7,11 @@ import re
 import sqlite3
 import unicodedata
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+
+from app.credentials import PROVIDERS, encrypt_api_key, validate_encrypted_endpoint
 
 from app.user_import import (
     MAX_USER_IMPORT_ROWS, UserImportReport, UserImportRow, UserImportValidationError,
@@ -18,7 +20,7 @@ from app.user_import import (
 
 COMPANY_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 ENVIRONMENT_NAME_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
-SUPPORTED_AI_PROVIDERS = {"openai", "deepseek"}
+SUPPORTED_AI_PROVIDERS = set(PROVIDERS)
 ROLE_LEVELS = {"gm", "manager", "staff"}
 COMMUNICATION_PROFILES = {"executive", "manager", "staff", "default"}
 MAX_TELEGRAM_ID = 9_007_199_254_740_991
@@ -71,6 +73,10 @@ class AIRuntimeProfile:
     model: str
     base_url: str
     active: bool
+    api_key_ciphertext: str = field(default="", repr=False)
+    updated_at: str = ""
+    last_test_status: str = ""
+    last_test_at: str = ""
 
 
 @dataclass(frozen=True)
@@ -291,6 +297,14 @@ class Database:
                 );
                 """
             )
+            credential_columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(ai_runtime_profiles)")
+            }
+            for column in ("api_key_ciphertext", "last_test_status", "last_test_at"):
+                if column not in credential_columns:
+                    connection.execute(
+                        f"ALTER TABLE ai_runtime_profiles ADD COLUMN {column} TEXT NOT NULL DEFAULT ''"
+                    )
             user_columns = {
                 row["name"]
                 for row in connection.execute("PRAGMA table_info(users)").fetchall()
@@ -1028,7 +1042,7 @@ class Database:
             rows = connection.execute(
                 """
                 SELECT profile_id, label, provider, api_key_env, model,
-                       base_url, active
+                       base_url, active, api_key_ciphertext, updated_at, last_test_status, last_test_at
                 FROM ai_runtime_profiles
                 ORDER BY label COLLATE NOCASE
                 """
@@ -1043,7 +1057,7 @@ class Database:
             row = connection.execute(
                 """
                 SELECT profile_id, label, provider, api_key_env, model,
-                       base_url, active
+                       base_url, active, api_key_ciphertext, updated_at, last_test_status, last_test_at
                 FROM ai_runtime_profiles WHERE profile_id = ?
                 """,
                 (normalized_profile,),
@@ -1061,6 +1075,7 @@ class Database:
         actor: str,
         *,
         active: bool = True,
+        api_key: str | None = None,
     ) -> AIRuntimeProfile:
         normalized_label = _validate_runtime_profile_label(label)
         requested_id = str(profile_id or "").strip()
@@ -1068,11 +1083,12 @@ class Database:
             _validate_runtime_profile_id(requested_id) if requested_id else ""
         )
         runtime = _validate_runtime_profile_fields(
-            provider, api_key_env, model, base_url
+            provider, api_key_env, model, base_url, encrypted=api_key is not None
         )
         now = _now()
         try:
             with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
                 if not normalized_profile:
                     normalized_profile = _next_unique_identifier(
                         connection,
@@ -1080,12 +1096,16 @@ class Database:
                         "profile_id",
                         _identifier_from_label(normalized_label, "credential"),
                     )
+                ciphertext = (
+                    encrypt_api_key(normalized_profile, runtime["provider"], api_key)
+                    if api_key is not None else ""
+                )
                 connection.execute(
                     """
                     INSERT INTO ai_runtime_profiles (
                         profile_id, label, provider, api_key_env, model,
-                        base_url, active, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        base_url, active, created_at, updated_at, api_key_ciphertext
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         normalized_profile,
@@ -1097,6 +1117,7 @@ class Database:
                         int(active),
                         now,
                         now,
+                        ciphertext,
                     ),
                 )
                 _write_audit(
@@ -1111,6 +1132,7 @@ class Database:
                         "api_key_env": runtime["api_key_env"],
                         "model": runtime["model"],
                         "active": active,
+                        "secret_source": "encrypted" if ciphertext else "environment",
                     },
                 )
         except sqlite3.IntegrityError as exc:
@@ -1129,27 +1151,38 @@ class Database:
         model: object,
         base_url: object,
         actor: str,
+        *,
+        api_key: str | None = None,
     ) -> AIRuntimeProfile:
         normalized_profile = _validate_runtime_profile_id(profile_id)
         normalized_label = _validate_runtime_profile_label(label)
-        runtime = _validate_runtime_profile_fields(
-            provider, api_key_env, model, base_url
-        )
         with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             current = connection.execute(
                 """
-                SELECT label, provider, api_key_env, model, base_url
+                SELECT label, provider, api_key_env, model, base_url, api_key_ciphertext
                 FROM ai_runtime_profiles WHERE profile_id = ?
                 """,
                 (normalized_profile,),
             ).fetchone()
             if current is None:
                 raise ValueError("Credential profile tidak ditemukan")
+            replacing = bool(api_key and api_key.strip())
+            encrypted = bool(current["api_key_ciphertext"]) or replacing
+            runtime = _validate_runtime_profile_fields(
+                provider, api_key_env or current["api_key_env"], model, base_url, encrypted=encrypted
+            )
+            ciphertext = current["api_key_ciphertext"]
+            if encrypted and runtime["provider"] != current["provider"] and not replacing:
+                raise ValueError("Isi API key baru saat mengganti provider.")
+            if replacing:
+                ciphertext = encrypt_api_key(normalized_profile, runtime["provider"], api_key)
             connection.execute(
                 """
                 UPDATE ai_runtime_profiles
                 SET label = ?, provider = ?, api_key_env = ?, model = ?,
-                    base_url = ?, updated_at = ?
+                    base_url = ?, updated_at = ?, api_key_ciphertext = ?,
+                    last_test_status = '', last_test_at = ''
                 WHERE profile_id = ?
                 """,
                 (
@@ -1159,6 +1192,7 @@ class Database:
                     runtime["model"],
                     runtime["base_url"],
                     _now(),
+                    ciphertext,
                     normalized_profile,
                 ),
             )
@@ -1177,12 +1211,31 @@ class Database:
                     "api_key_env_after": runtime["api_key_env"],
                     "model_before": current["model"],
                     "model_after": runtime["model"],
+                    "key_replaced": replacing,
                 },
             )
         profile = self.get_ai_runtime_profile(normalized_profile)
         if profile is None:
             raise RuntimeError("Credential profile gagal diperbarui")
         return profile
+
+    def record_ai_connection_test(
+        self, profile: AIRuntimeProfile, status: str, actor: str
+    ) -> bool:
+        if status not in {"success", "authentication", "rate_limit", "unavailable", "configuration", "request", "response"}:
+            raise ValueError("Status tes tidak valid")
+        with self._connect() as connection:
+            result = connection.execute(
+                "UPDATE ai_runtime_profiles SET last_test_status = ?, last_test_at = ? "
+                "WHERE profile_id = ? AND updated_at = ?",
+                (status, _now(), profile.profile_id, profile.updated_at),
+            )
+            if result.rowcount:
+                _write_audit(
+                    connection, actor, "ai_runtime_profile.tested", "ai_runtime_profile",
+                    profile.profile_id, {"test_status": status},
+                )
+            return bool(result.rowcount)
 
     def set_ai_runtime_profile_active(
         self, profile_id: object, active: bool, actor: str
@@ -3185,6 +3238,10 @@ def _ai_runtime_profile_from_row(row: sqlite3.Row) -> AIRuntimeProfile:
         model=row["model"],
         base_url=row["base_url"],
         active=bool(row["active"]),
+        api_key_ciphertext=row["api_key_ciphertext"],
+        updated_at=row["updated_at"],
+        last_test_status=row["last_test_status"],
+        last_test_at=row["last_test_at"],
     )
 
 
@@ -3304,13 +3361,15 @@ def _validate_runtime_profile_label(value: object) -> str:
 
 
 def _validate_runtime_profile_fields(
-    provider: object, api_key_env: object, model: object, base_url: object
+    provider: object, api_key_env: object, model: object, base_url: object, *, encrypted: bool = False
 ) -> dict[str, str]:
     normalized_provider = str(provider or "").strip().casefold()
     if normalized_provider not in SUPPORTED_AI_PROVIDERS:
-        raise ValueError("AI provider harus openai atau deepseek")
+        raise ValueError("Pilih provider OpenAI, Anthropic, DeepSeek, atau Gemini")
     normalized_environment = str(api_key_env or "").strip().upper()
-    if not ENVIRONMENT_NAME_PATTERN.fullmatch(normalized_environment):
+    if encrypted:
+        normalized_environment = ""
+    elif not ENVIRONMENT_NAME_PATTERN.fullmatch(normalized_environment):
         raise ValueError(
             "Nama environment variable API key hanya boleh memakai A-Z, 0-9, "
             "dan underscore"
@@ -3325,6 +3384,8 @@ def _validate_runtime_profile_fields(
         r"https?://[^\s]+", normalized_base_url
     ):
         raise ValueError("AI base URL harus berupa URL HTTP atau HTTPS yang valid")
+    if encrypted:
+        validate_encrypted_endpoint(normalized_provider, normalized_base_url)
     return {
         "provider": normalized_provider,
         "api_key_env": normalized_environment,

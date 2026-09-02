@@ -3,12 +3,17 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-import os
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+import httpx
+from httpx import AsyncClient
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI
+
+from app.credentials import (
+    PROVIDERS, CredentialStorageError, resolve_api_key, validate_encrypted_endpoint,
+)
 
 if TYPE_CHECKING:
     from app.database import AIRuntimeProfile
@@ -36,8 +41,27 @@ class OpenAICompatibleProvider(AIProvider):
         if module_runtime:
             # One attempt per selected AI; the resolver owns the fallback policy.
             kwargs.update(timeout=MODULE_AI_TIMEOUT_SECONDS, max_retries=0)
+            kwargs["http_client"] = AsyncClient(
+                timeout=MODULE_AI_TIMEOUT_SECONDS, follow_redirects=False
+            )
         self.client = AsyncOpenAI(**kwargs)
         self.model = model
+
+    async def probe(self) -> None:
+        # No company context, history or user information is sent by a probe.
+        output_limit = (
+            {"max_completion_tokens": 64}
+            if self.client.base_url.host == "api.openai.com"
+            else {"max_tokens": 64}
+        )
+        response = await self.client.chat.completions.create(
+            model=self.model, messages=[{"role": "user", "content": "Reply OK."}], **output_limit
+        )
+        if not response.choices or response.choices[0].message is None:
+            raise ModuleGenerationError("Respons tes AI tidak valid")
+
+    async def close(self) -> None:
+        await self.client.close()
 
     async def generate(
         self, system_prompt: str, history: list[dict[str, str]], user_text: str
@@ -73,17 +97,80 @@ class ModuleGenerationError(RuntimeError):
     """Safe failure without the provider's response body, prompt, URL or key."""
 
 
+class ProviderRequestError(RuntimeError):
+    def __init__(self, status_code: int | None = None):
+        super().__init__("Provider request failed")
+        self.status_code = status_code
+
+
+class AnthropicProvider(AIProvider):
+    def __init__(self, api_key: str, model: str, base_url: str | None = None):
+        self.model = model
+        self.client = AsyncClient(
+            base_url=(base_url or PROVIDERS["anthropic"][1]).rstrip("/") + "/",
+            headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+            timeout=MODULE_AI_TIMEOUT_SECONDS, follow_redirects=False,
+        )
+
+    async def _request(
+        self, system: str, messages: list[dict[str, str]], limit: int
+    ) -> dict:
+        try:
+            response = await self.client.post("v1/messages", json={
+                "model": self.model, "max_tokens": limit, "system": system, "messages": messages,
+            })
+        except httpx.RequestError:
+            raise ProviderRequestError() from None
+        if response.status_code != 200:
+            raise ProviderRequestError(response.status_code)
+        try:
+            data = response.json()
+            if not isinstance(data, dict) or not isinstance(data.get("content"), list):
+                raise ValueError
+            return data
+        except ValueError:
+            raise ModuleGenerationError("Respons AI tidak valid") from None
+
+    async def generate(
+        self, system_prompt: str, history: list[dict[str, str]], user_text: str
+    ) -> str:
+        data = await self._request(
+            system_prompt, [*history, {"role": "user", "content": user_text}], 4096
+        )
+        content = "\n".join(
+            block["text"] for block in data["content"]
+            if isinstance(block, dict)
+            and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+        ).strip()
+        if not content:
+            raise ModuleGenerationError("AI provider mengembalikan jawaban kosong")
+        return content
+
+    async def probe(self) -> None:
+        await self._request("", [{"role": "user", "content": "Reply OK."}], 64)
+
+    async def close(self) -> None:
+        await self.client.aclose()
+
+
 def _create_module_provider(
     provider_name: str, api_key: str, model: str, base_url: str | None
 ) -> AIProvider:
-    if provider_name not in {"openai", "deepseek"}:
+    if provider_name not in PROVIDERS:
         raise RuntimeCredentialError("Provider Module tidak didukung")
-    return OpenAICompatibleProvider(
-        api_key, model, base_url, module_runtime=True
-    )
+    endpoint = base_url or PROVIDERS[provider_name][1]
+    if provider_name == "anthropic":
+        return AnthropicProvider(api_key, model, endpoint)
+    return OpenAICompatibleProvider(api_key, model, endpoint, module_runtime=True)
 
 
 def _can_use_backup(error: Exception) -> bool:
+    if isinstance(error, ProviderRequestError):
+        return (
+            error.status_code is None or error.status_code in {408, 429}
+            or 500 <= error.status_code < 600
+        )
     if isinstance(error, (APIConnectionError, TimeoutError)):
         return True
     return isinstance(error, APIStatusError) and (
@@ -103,14 +190,15 @@ class ModuleProviderResolver:
     def resolve(self, profile: AIRuntimeProfile | None) -> AIProvider:
         if profile is None or not profile.active:
             raise RuntimeCredentialError("Credential profile Module tidak aktif")
-        api_key = os.getenv(profile.api_key_env, "").strip()
-        if not api_key:
-            raise RuntimeCredentialError(
-                f"Environment variable {profile.api_key_env} belum dikonfigurasi"
-            )
-        base_url = profile.base_url or (
-            "https://api.deepseek.com" if profile.provider == "deepseek" else ""
-        )
+        try:
+            if profile.api_key_ciphertext:
+                validate_encrypted_endpoint(profile.provider, profile.base_url)
+            api_key = resolve_api_key(profile)
+        except CredentialStorageError as exc:
+            raise RuntimeCredentialError(str(exc)) from None
+        base_url = profile.base_url or PROVIDERS.get(profile.provider, ("", ""))[1]
+        if profile.provider == "openai" and not profile.base_url:
+            base_url = ""
         key_fingerprint = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
         cache_key = (
             profile.profile_id,
@@ -149,7 +237,7 @@ class ModuleProviderResolver:
             async with asyncio.timeout(MODULE_AI_TIMEOUT_SECONDS):
                 return await provider.generate(system_prompt, history, user_text)
         except Exception as exc:
-            status = exc.status_code if isinstance(exc, APIStatusError) else None
+            status = exc.status_code if isinstance(exc, (APIStatusError, ProviderRequestError)) else None
             logger.warning(
                 "module_ai_failed primary=%s error_type=%s status=%s",
                 primary.profile_id, type(exc).__name__, status,
@@ -172,7 +260,7 @@ class ModuleProviderResolver:
             async with asyncio.timeout(MODULE_AI_TIMEOUT_SECONDS):
                 return await backup_provider.generate(system_prompt, history, user_text)
         except Exception as exc:
-            status = exc.status_code if isinstance(exc, APIStatusError) else None
+            status = exc.status_code if isinstance(exc, (APIStatusError, ProviderRequestError)) else None
             logger.warning(
                 "module_ai_failed backup=%s error_type=%s status=%s",
                 backup.profile_id, type(exc).__name__, status,
@@ -181,4 +269,55 @@ class ModuleProviderResolver:
 
 
 def runtime_profile_is_configured(profile: AIRuntimeProfile) -> bool:
-    return bool(os.getenv(profile.api_key_env, "").strip())
+    try:
+        resolve_api_key(profile)
+        return True
+    except CredentialStorageError:
+        return False
+
+
+AI_TEST_MESSAGES = {
+    "success": "Koneksi dan model berhasil diuji. AI dapat dipilih pada Module jika aktif.",
+    "authentication": "API key ditolak atau tidak memiliki izin. Periksa key dan akses model.",
+    "rate_limit": "Provider membatasi permintaan atau kuota habis. Periksa akun provider.",
+    "unavailable": "Provider tidak dapat dihubungi atau sedang bermasalah. Coba lagi nanti.",
+    "configuration": "Credential belum siap. Periksa environment atau kunci enkripsi server.",
+    "request": "Provider menolak konfigurasi. Periksa ID model dan dukungan API model tersebut.",
+    "response": "Respons provider tidak dapat diproses. Periksa kompatibilitas model.",
+}
+
+
+async def test_ai_connection(profile: AIRuntimeProfile) -> str:
+    """Explicit admin probe, never fail over and never use business data."""
+    provider = None
+    try:
+        if profile.api_key_ciphertext:
+            validate_encrypted_endpoint(profile.provider, profile.base_url)
+        provider = _create_module_provider(
+            profile.provider, resolve_api_key(profile), profile.model, profile.base_url or None
+        )
+        async with asyncio.timeout(MODULE_AI_TIMEOUT_SECONDS):
+            await provider.probe()
+        return "success"
+    except (CredentialStorageError, RuntimeCredentialError):
+        return "configuration"
+    except (APIConnectionError, TimeoutError):
+        return "unavailable"
+    except (APIStatusError, ProviderRequestError) as exc:
+        status = exc.status_code
+        if status in {401, 403}:
+            return "authentication"
+        if status == 429:
+            return "rate_limit"
+        if status is None or status == 408 or status >= 500:
+            return "unavailable"
+        return "request"
+    except Exception:
+        # Never expose SDK exceptions, which can embed a key or request body.
+        return "response"
+    finally:
+        if provider is not None:
+            try:
+                await provider.close()
+            except Exception:
+                logger.warning("ai_probe_client_close_failed")

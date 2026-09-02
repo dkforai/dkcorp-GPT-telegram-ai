@@ -42,7 +42,7 @@ Pemrosesan update memakai controlled concurrency. User berbeda dapat diproses pa
 - Knowledge Management per company dengan draft, preview, publish, status, dan riwayat versi
 - Upload PDF, DOCX, TXT, atau Markdown menjadi draft Knowledge yang dapat diperiksa sebelum publish
 - Module Management per company dengan draft, preview, publish, status, dan riwayat versi playbook
-- Pilihan AI utama dan AI cadangan per Module, dengan key tetap tersimpan di environment
+- Settings AI dengan API key terenkripsi, empat provider, tes koneksi, serta pilihan AI utama/cadangan per Module; legacy environment tetap didukung
 - Akses module bersifat default-deny dan diberikan per membership
 - Module aktif dapat dilihat atau diganti melalui `/module`; mode General tetap tersedia
 - History chat dipisahkan per user, perusahaan, dan module aktif
@@ -182,19 +182,34 @@ Profile masih berbasis file dan dibaca ulang pada setiap pertanyaan. Hanya conte
 
 Module dikelola melalui admin dengan alur **Draft → Preview → Publish** untuk playbook. Module baru tidak dapat dipilih bot sebelum playbook dipublikasikan dan aksesnya dicentang pada membership. Memilih `/company` mereset module ke `General`; mengganti module tidak menghapus history lama, tetapi memakai ruang history yang terpisah. Knowledge khusus module belum tersedia, sehingga module aktif masih memakai Knowledge company yang sama ditambah playbook module.
 
-Setiap Module memilih **AI utama** dan **AI cadangan** dari **AI terdaftar**. AI utama wajib, cadangan opsional dan harus berbeda. Daftarkan AI satu kali dengan provider, model, optional base URL, serta **nama** environment variable untuk API key. Nilai key tidak disimpan di SQLite. Pilihan AI langsung berlaku pada pesan berikutnya tanpa publish ulang playbook. Module lama mempertahankan AI utama yang sama dan belum mempunyai cadangan sampai admin memilihnya.
+Setiap Module memilih **AI utama** dan **AI cadangan** dari **AI terdaftar**. AI utama wajib, cadangan opsional dan harus berbeda. Daftarkan AI melalui **Settings → AI → Tambah AI**, dengan nama, provider, ID model, dan API key. OpenAI/GPT, Anthropic/Claude, DeepSeek, dan Gemini didukung. Key baru disimpan terenkripsi di SQLite, bukan plaintext; credential environment lama tetap didukung. Pilihan AI langsung berlaku pada pesan berikutnya tanpa publish ulang playbook. Module lama mempertahankan pilihan AI-nya.
 
 AI utama dicoba terlebih dahulu. Cadangan dicoba sekali saat terjadi masalah koneksi, timeout, HTTP 408/429 atau 5xx, menggunakan konteks dan history yang sama. Tiap percobaan maksimal 30 detik, tanpa retry SDK berulang. Key salah/kosong, AI nonaktif, error request/izin akses, atau refusal tidak memicu cadangan. History ditulis sekali setelah jawaban sukses. Mode `/module general` tetap memakai `AI_PROVIDER`, `AI_API_KEY`, `AI_MODEL`, dan `AI_BASE_URL` global; tidak digunakan sebagai cadangan kegagalan request Module.
 
 Memilih cadangan mengizinkan konteks dikirim ke provider tersebut. Kedua provider dapat mengenakan biaya jika utama timeout setelah request diproses. Perpindahan tercatat di log server tanpa key atau isi percakapan. Dua profile berbeda dengan account/provider sama bisa tetap terkena limit atau gangguan yang sama.
 
-Contoh setup satu credential Module:
+### Settings AI dan kunci enkripsi
 
-```env
-AI_KEY_MARKETING=sk-...
+Administrator server membuat master key sekali setelah memasang dependencies:
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-Di Admin → Modules → Tambah AI, isi nama AI yang mudah dikenali dan nama environment variable `AI_KEY_MARKETING`. Daftarkan AI kedua jika ingin cadangan, lalu pilih keduanya pada Module. Nama AI dan profile ID bukan secret; nilai `AI_KEY_MARKETING` tetap hanya berada di `.env` lokal atau Railway Variables.
+Simpan hasilnya sebagai `AI_CREDENTIAL_ENCRYPTION_KEY` pada Railway Variables atau `.env` lokal, lalu restart service. Jangan kirim ke chat, commit ke Git, gunakan `ADMIN_SESSION_SECRET` sebagai pengganti, atau taruh di database yang sama. Backup kunci di secret manager terpisah dari backup SQLite. Kehilangan kunci membuat API key tersimpan tidak terbaca. Rotasi master key belum otomatis: jangan mengganti variable tanpa rencana migrasi ciphertext dan backup.
+
+1. Buka **Settings → AI → Tambah AI**.
+2. Isi nama, pilih provider, isi ID model dari akun provider dan API key. Gunakan model chat teks, bukan embeddings/image/audio-only. Endpoint resmi otomatis; ketersediaan model bergantung pada akun.
+3. Simpan, lalu klik **Tes koneksi**. Tes mengirim pesan sintetis singkat dengan output limit 64 token, timeout 30 detik, tanpa retry/failover. Tes dapat memakai sedikit kuota; tidak mengirim data perusahaan.
+4. Pada Module, pilih nama AI sebagai utama/cadangan. AI aktif langsung tersedia; tes sukses bukan syarat aktivasi dan bukan jaminan saldo/uptime berikutnya.
+
+Form Edit tidak menampilkan key. Key kosong mempertahankan key lama; key baru menggantinya. Pergantian provider terenkripsi memerlukan key baru. Endpoint custom hanya untuk kompatibilitas profile environment lama, bukan key tersimpan. Status aktif dikelola di Settings dan berlaku untuk seluruh Module yang memakai profile tersebut.
+
+Hasil tes berupa status aman dan waktu UTC, bukan error mentah. Edit konfigurasi menghapus status tes lama; hasil request yang selesai setelah konfigurasi berubah tidak diterapkan. Maksimal tiga tes per menit total dan dua bersamaan pada server satu-process. Key environment yang diganti di luar admin perlu dites ulang.
+
+OpenAI/DeepSeek/Gemini memakai Chat Completions-compatible API; Claude memakai native Messages API dengan system terpisah dan batas output chat 4096 token. Dukungan khusus chat teks, tidak menjamin fitur multimodal/tools/reasoning seluruh model. Provider baru memerlukan adapter/validasi tersendiri. General tetap menggunakan konfigurasi global OpenAI/DeepSeek.
+
+Master key tidak valid memblokir encrypted save/decrypt tanpa fallback diam-diam. Profile environment lama tetap berjalan. Data tidak direset. Pengujian otomatis memakai database sementara dan HTTP simulasi, bukan API berbayar.
 
 Pada ketiga editor tersebut, admin dapat memilih **Simpan draft** untuk pekerjaan yang belum selesai atau **Review untuk publish**. Tombol Review menyimpan isi terbaru lalu langsung membuka Preview, sehingga konten yang siap cukup melewati dua tindakan: Review lalu Publish. Publish tetap menjadi tindakan terpisah agar perubahan tidak langsung masuk ke bot secara tidak sengaja.
 
@@ -235,7 +250,8 @@ Halaman yang tersedia:
 - `/admin/knowledge` untuk status knowledge semua company;
 - `/admin/knowledge/<company-id>` untuk dokumen, draft, publish, status, dan riwayat versi;
 - `/admin/modules` untuk registry module semua company;
-- `/admin/runtime-profiles/new` untuk membuat metadata API credential tanpa menyimpan key;
+- `/admin/settings/ai` untuk registry AI, status, dan tes koneksi;
+- `/admin/runtime-profiles/new` untuk mendaftarkan AI dengan API key terenkripsi;
 - `/admin/modules/new` untuk membuat module dengan Module ID otomatis;
 - `/admin/modules/<company-id>/<module-id>` untuk identitas, playbook, preview, publish, status, dan riwayat versi;
 - `/admin/activity` untuk audit administratif read-only termasuk perubahan module dan akses;
@@ -289,6 +305,7 @@ Company, user, membership, Company Instruction, Knowledge, Module, serta aksesny
 | `AI_MODEL` | Nama model provider | sesuai provider |
 | `AI_BASE_URL` | Override endpoint provider | sesuai provider |
 | `AI_KEY_<NAMA>` | API key bernama yang dirujuk credential profile Module | sesuai profile |
+| `AI_CREDENTIAL_ENCRYPTION_KEY` | Master key Fernet Settings AI, simpan terpisah dari backup SQLite | wajib untuk key tersimpan; tidak diperlukan profile environment lama |
 | `DATABASE_PATH` | Lokasi SQLite | `data/bot.db` |
 | `USERS_FILE` | JSON bootstrap whitelist untuk database kosong | `config/users.json` |
 | `COMPANIES_FILE` | JSON bootstrap company untuk database kosong | `config/companies.json` |

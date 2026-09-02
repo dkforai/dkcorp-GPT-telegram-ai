@@ -5,7 +5,7 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 1.12 |
+| Versi | 1.13 |
 | Terakhir diperbarui | 2 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
@@ -37,7 +37,7 @@ Tujuan utama:
 9. Draft knowledge tidak boleh memengaruhi bot. Runtime membaca versi published dari dokumen aktif; file transisi hanya dipakai sampai publish knowledge pertama pada company tersebut.
 10. Akses module bersifat default-deny per membership. Runtime hanya menerima module aktif yang statusnya aktif, playbook-nya sudah dipublikasikan, dan aksesnya diberikan admin.
 11. Draft module playbook tidak boleh memengaruhi bot. History General dan setiap module dipisahkan agar perpindahan pekerjaan tidak mencampur konteks.
-12. API key Module tidak boleh disimpan di SQLite. Module memilih AI utama dan AI cadangan dari AI terdaftar (credential profile); secret tetap berada di environment. Cadangan hanya dipakai untuk kegagalan operasional yang diizinkan, tidak untuk melewati penolakan akses atau salah konfigurasi.
+12. API key Module tidak boleh disimpan sebagai plaintext di SQLite, audit, log, atau HTML respons. Key baru di Settings AI memakai authenticated encryption dengan master key terpisah di environment; named environment credential lama tetap didukung. Module memilih utama/cadangan dari registry. Cadangan hanya untuk kegagalan operasional yang diizinkan, bukan melewati akses atau salah konfigurasi.
 
 ## 3. Arsitektur logis
 
@@ -81,7 +81,7 @@ Chat History SQLite
     ↓
 AI Provider Abstraction
     ├── General → global environment credential
-    └── Module → AI utama → named environment secret
+    └── Module → AI utama → encrypted registry / legacy environment secret
                   └── kegagalan operasional tertentu → AI cadangan yang dipilih
     ↓
 Conversation Delivery Policy
@@ -108,8 +108,9 @@ Jawaban ke user
 | Knowledge Loader | Sudah | Published document aktif dari SQLite; folder Markdown menjadi fallback sampai publish pertama |
 | Document Ingestion | Sebagian | Upload PDF, DOCX, TXT, dan Markdown menjadi draft teks; OCR dan `.doc` belum |
 | Chat History | Sudah | SQLite dipisahkan per user, perusahaan, dan module; General memakai scope kosong tersendiri |
-| Provider Abstraction | Sudah | OpenAI dan DeepSeek compatible API |
-| AI utama dan cadangan per Module | Sudah | Dua pilihan dari AI terdaftar; cadangan opsional, failover terbatas, tanpa fallback global; secret di named environment variable |
+| Provider Abstraction | Implementasi v1.13 | OpenAI/DeepSeek/Gemini compatible API; Claude native Messages; General tetap OpenAI/DeepSeek |
+| Settings AI | Rilis v1.13 | API key terenkripsi, empat provider, endpoint otomatis, tes koneksi manual; aktivasi penyimpanan key membutuhkan master key server |
+| AI utama dan cadangan per Module | Sudah | Dua pilihan dari AI terdaftar; cadangan opsional, failover terbatas, tanpa fallback global; encrypted key atau legacy environment |
 | Telegram Response Renderer | Sudah | Safe HTML, split, link preview off, dan fallback plain text |
 | Conversation Delivery Policy | Belum | Akan mengatur panjang, ritme, dan progressive disclosure |
 | Multi-company membership | Sudah | Tabel membership SQLite; JSON hanya bootstrap awal |
@@ -299,7 +300,7 @@ Folder adalah bentuk transisi yang mudah diaudit. Target produksi skala lanjut m
 | `companies` | Master perusahaan |
 | `user_company_memberships` | Jabatan, divisi, level, dan profile per perusahaan |
 | `modules` | Modul milik perusahaan; `ai_runtime_profile_id` untuk AI utama dan nullable `backup_ai_runtime_profile_id` untuk AI cadangan |
-| `ai_runtime_profiles` | AI terdaftar: metadata provider, model, base URL, dan nama environment variable tanpa nilai API key |
+| `ai_runtime_profiles` | Metadata provider/model/endpoint, ciphertext API key atau referensi environment lama, status tes dan timestamp |
 | `module_access` | Hak membership terhadap modul |
 | `company_instruction_state` | Draft aktif dan pointer versi live per perusahaan |
 | `company_instruction_versions` | Versi publish immutable per perusahaan |
@@ -339,6 +340,7 @@ Versi admin saat ini menyediakan:
 - restore versi lama ke draft agar selalu melewati preview sebelum dipublikasikan kembali;
 - halaman Modules untuk membuat registry per company, mengubah identitas, status, draft, preview, publish, dan riwayat versi playbook;
 - form buat/edit Module menyediakan pilihan **AI utama** dan **AI cadangan** dari daftar AI aktif; halaman **Tambah AI** mendaftarkan koneksi sekali untuk dipakai ulang;
+- Settings AI mengelola API key terenkripsi, empat provider, status aktif dan tes koneksi manual; form Module tetap dua pilihan nama, bukan input secret;
 - akses module default-deny dikelola pada form edit membership;
 - halaman Activity read-only untuk 100 audit event terbaru dengan filter kategori termasuk Modules;
 - security headers dan health endpoint.
@@ -663,11 +665,28 @@ SQLite menjadi source of truth runtime dan menyimpan:
 - metadata, status, draft, dan pointer versi live Knowledge Document per company;
 - versi Knowledge Document immutable beserta SHA-256 content.
 - metadata source upload Knowledge tanpa menyimpan file mentah.
-- credential profile Module dengan ID immutable, status aktif, provider, model, base URL, dan named secret source.
+- credential profile Module dengan ID immutable, status aktif, provider, model, base URL, ciphertext atau named environment source, dan hasil tes koneksi.
 
 Railway Volume dipasang pada `/app/data` agar database bertahan saat redeploy.
 
-AI terdaftar (credential profile) menyimpan metadata operasional di SQLite. Nilai API key berada di Railway Variables atau `.env` lokal dengan nama yang dicatat pada `api_key_env`, misalnya `AI_KEY_MARKETING`. Mode General memakai konfigurasi global `AI_*`. Request Module tidak pernah mencoba credential General ketika panggilan AI-nya gagal.
+AI terdaftar menyimpan metadata dan API key terenkripsi di SQLite. Profile lama tetap membaca Railway Variables atau `.env` lewat `api_key_env`. Mode General memakai global `AI_*`; request Module tidak mencoba credential General ketika panggilan AI gagal.
+
+### Settings AI, encryption, dan adapter (v1.13)
+
+- `/admin/settings/ai` adalah registry bersama untuk admin. Tambah AI meminta label, provider, ID model manual dari akun provider, password field API key dan status aktif. Endpoint resmi otomatis; tidak ada auto-discovery model atau arbitrary provider/plugin.
+- Migrasi additive/idempotent menambah `api_key_ciphertext`, `last_test_status`, `last_test_at` (TEXT default kosong). `api_key_env` kosong untuk encrypted profile. Referensi Module, playbook, akses, session, history dan credential lama dipertahankan.
+- Fernet payload version 1 mengikat profile ID/provider. Ciphertext yang dipindahkan ke profile/provider lain ditolak. Master `AI_CREDENTIAL_ENCRYPTION_KEY` berada hanya di environment, terpisah dari SQLite dan admin session secret. Ciphertext tidak masuk HTML, audit atau repr profile.
+- Master tidak dibuat/diganti otomatis. Master tidak valid/hilang memblokir encrypted save/decrypt, tanpa fallback environment pada ciphertext rusak. Legacy tetap bekerja. Backup master terpisah wajib; rotasi master otomatis belum tersedia. Jangan mengganti variable tanpa migrasi ciphertext/backup.
+- Edit dengan key kosong mempertahankan key lama; key baru mengganti/converts legacy. Mengganti provider terenkripsi memerlukan key baru. Metadata+key disimpan dalam write transaction. Audit hanya sumber/penggantian key, bukan nilai. Edit menghapus status tes.
+- Encrypted key hanya menuju endpoint resmi. Custom endpoint tetap khusus legacy environment. HTTP redirect client Module/probe tidak diikuti. Startup bot/admin menonaktifkan HTTP/SDK DEBUG logging agar body/header sensitif tidak tercatat.
+- Registry `openai`, `anthropic`, `deepseek`, `gemini`. Gemini memakai `https://generativelanguage.googleapis.com/v1beta/openai/`. Claude memakai native `/v1/messages`, `x-api-key`, version header, system terpisah, hanya text block, maksimum output chat 4096 token. Tools/multimodal tidak ditambahkan; General global tetap OpenAI/DeepSeek.
+- POST Tes koneksi membutuhkan admin+CSRF dan profile tersimpan, termasuk nonaktif untuk tes sebelum aktivasi. Prompt sintetis `Reply OK.`, output limit 64, satu percobaan maksimal 30 detik tanpa fallback atau data perusahaan. Biaya kecil mungkin timbul. AI aktif muncul pada dropdown tanpa gating hasil tes.
+- Status tes enum aman (`success`, `authentication`, `rate_limit`, `unavailable`, `configuration`, `request`, `response`) dan waktu UTC, bukan body error. Hasil hanya diterapkan jika `updated_at` sama dengan snapshot sebelum request. Key environment yang diganti di luar admin perlu dites ulang; hasil bukan jaminan saldo/uptime.
+- Form credential maksimal 16 KiB sebelum parsing, tanpa file/field ganda. Tes maksimal tiga/menit total dan per profile, dua bersamaan, satu per profile, in-memory satu-process. Batas reset saat restart, bukan distributed limiter. Client probe ditutup setelah selesai.
+- Failover mempertahankan ADR-060/061. Error koneksi/408/429/5xx Claude dinormalisasi setara provider compatible; auth/dekripsi/invalid request/empty/refusal tidak memicu backup. Cache key fingerprint berubah saat rotasi. API key tidak masuk prompt.
+- Implementasi diuji dengan SQLite sementara dan HTTP mock. Rilis v1.13 melalui GitHub → Railway tanpa reset data. Master produksi harus dipasang/diverifikasi lewat akses Railway terautentikasi; login dashboard aplikasi tidak memberikan akses Railway Variables. Koneksi berbayar empat akun provider belum diuji.
+
+Referensi resmi: [OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create), [Claude Messages](https://platform.claude.com/docs/en/api/messages/create), [Gemini compatibility](https://ai.google.dev/gemini-api/docs/openai), [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/), [Fernet](https://cryptography.io/en/latest/fernet/).
 
 ### 10.1. AI utama dan AI cadangan Module
 
@@ -709,8 +728,8 @@ Telegram update memakai controlled concurrency dengan default empat update dan b
 Sudah diterapkan:
 
 - whitelist Telegram ID;
-- secret disimpan di environment variables;
-- database Module hanya menyimpan nama environment variable, provider, model, dan base URL; nilai API key tidak disimpan atau dirender admin;
+- master key, credential General, dan credential legacy disimpan di environment;
+- Settings menyimpan ciphertext, bukan plaintext API key. Module hanya referensi profile. Key tidak dirender kembali dan tidak masuk audit/log. Master dan backup SQLite harus disimpan terpisah;
 - resolver Module membaca named secret saat runtime dan cache hanya memakai fingerprint SHA-256, bukan key mentah sebagai identifier;
 - Module dengan AI utama nonaktif tidak dapat dipilih. Key utama yang hilang menghentikan request; hanya AI cadangan yang dipilih admin yang boleh menerima retry operasional, bukan AI Module lain atau General;
 - `.env` dan database runtime tidak masuk Git;
@@ -883,8 +902,8 @@ Status catatan ini hanya persetujuan rencana. Tidak ada perubahan kode, database
 | ADR-050 | History memakai scope user, company, dan module | Perpindahan antara General dan workflow module tidak boleh mencampur konteks percakapan |
 | ADR-051 | Perubahan company atau hilangnya module access mereset active module | Session tidak boleh mempertahankan pointer menuju konteks yang tidak lagi valid atau diizinkan |
 | ADR-052 | Review untuk publish menyimpan draft lalu membuka Preview | Mengurangi alur konten siap dari tiga tindakan menjadi dua tanpa menghilangkan pemeriksaan terakhir atau membuat publish tidak sengaja |
-| ADR-053 | Module menyimpan referensi credential profile, bukan API key | Metadata routing dapat dikelola admin tanpa menaruh secret di SQLite, audit, atau HTML |
-| ADR-054 | Nilai API key Module berada pada named environment variable | Secret lifecycle tetap dikelola Railway atau `.env`, terpisah dari data aplikasi |
+| ADR-053 | Module menyimpan referensi credential profile, bukan API key | Routing terpisah dari secret; sejak v1.13 ciphertext registry sesuai ADR-062, bukan plaintext/audit/HTML |
+| ADR-054 | Named environment untuk legacy credential | Tetap didukung; pendaftaran baru memakai encrypted registry ADR-062 |
 | ADR-055 | Mode General tetap memakai credential global | Perilaku dasar tetap kompatibel dan custom Module dapat memakai billing/provider berbeda |
 | ADR-056 | Kegagalan konfigurasi credential Module tetap fail-closed; pengecualian operasional dibatasi ADR-060 | Key salah/kosong dan pencabutan akses tidak boleh memicu fallback. Cadangan harus dipilih eksplisit oleh admin |
 | ADR-057 | Disetujui, ditunda: hilangkan input Divisi dan Communication profile; profile otomatis dari Role level, data lama dipertahankan | Menyederhanakan administrasi MVP tanpa penghapusan data. Dikerjakan serentak pada form, backend, runtime, dan import saat penyempurnaan sistem; perilaku saat ini termasuk ADR-005 belum diubah |
@@ -892,8 +911,19 @@ Status catatan ini hanya persetujuan rencana. Tidak ada perubahan kode, database
 | ADR-059 | Batch import atomik dengan pengaturan akses eksplisit di form admin | Kesalahan baris tidak menghasilkan simpan parsial; jabatan dari spreadsheet tidak boleh otomatis menaikkan akses. Whitelist awal nonaktif dan akses module tetap default-deny |
 | ADR-060 | Module memilih AI utama dan cadangan opsional dari AI terdaftar | Menyederhanakan form menjadi dua pilihan nama, mempertahankan Module lama, dan hanya mengalihkan kegagalan koneksi/timeout/408/429/5xx ke cadangan yang dipilih admin |
 | ADR-061 | Satu percobaan maksimal 30 detik per AI dan satu penulisan history setelah sukses | Menghindari retry bertumpuk, duplikasi history, perpindahan konteks, dan bocornya body error/secret dalam log. General tidak dijadikan cadangan |
+| ADR-062 | Key Settings memakai Fernet, master terpisah di environment | Blank preserves, fail-closed decrypt, endpoint resmi, tanpa plaintext SQLite, legacy tetap berjalan |
+| ADR-063 | Empat provider dengan adapter protocol eksplisit | Claude native Messages; GPT/DeepSeek/Gemini compatible. General tidak dimigrasikan otomatis |
+| ADR-064 | Tes manual, sintetis, terbatas, dan revision-aware | Mencegah pengiriman data bisnis, biaya retry diam-diam, error mentah, dan status tes usang |
 
 ## 16. Changelog dokumen
+
+### 2 September 2026 — v1.13
+
+- Settings AI untuk API key terenkripsi, empat provider, endpoint otomatis, tes koneksi dan status aktif;
+- migrasi additive mempertahankan credential environment, seluruh data, dan dropdown AI utama/cadangan;
+- master terpisah, binding profile/provider, safe errors/audit, batas form/tes dan invalidasi hasil usang;
+- 132 tes otomatis lulus, termasuk enkripsi, keamanan form, migrasi, adapter HTTP simulasi, failover lintas provider, concurrency, cancellation dan hasil tes usang;
+- DK menyetujui finalisasi dan deployment melalui GitHub → Railway; 132 tes lokal lulus ulang, tanpa reset data. Status deployment diperiksa melalui commit status Railway dan HTTP health/admin. Master produksi memerlukan akses Railway terautentikasi sebelum penyimpanan credential baru dapat dinyatakan siap. Uji API berbayar belum dilakukan.
 
 ### 1.12 — 2 September 2026
 

@@ -22,9 +22,10 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 
 from app.config import Settings, load_settings
+from app.credentials import PROVIDERS, encryption_is_ready
 from app.database import AIRuntimeProfile, Database, Membership, User
 from app.document_ingestion import MAX_UPLOAD_BYTES, extract_uploaded_document
-from app.providers import runtime_profile_is_configured
+from app.providers import AI_TEST_MESSAGES, runtime_profile_is_configured, test_ai_connection
 from app.role_profiles import load_role_profiles
 from app.user_import import MAX_USER_IMPORT_BYTES, UserImportValidationError, read_user_import
 
@@ -59,9 +60,15 @@ class LoginLimiter:
 
 
 def create_admin_app(settings: Settings, database: Database) -> FastAPI:
+    # SDK DEBUG output can contain request bodies or headers. This also applies
+    # to admin-only uvicorn startup, which does not pass through app.main.
+    for name in ("openai", "httpx", "httpcore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
     root = settings.project_root.resolve()
     templates = Jinja2Templates(directory=str(root / "templates"))
     limiter = LoginLimiter()
+    ai_test_limiter = LoginLimiter(max_attempts=3, window_seconds=60)
+    ai_tests_running: set[str] = set()
     role_profiles = load_role_profiles(settings.role_profiles_file)
     profile_options = [
         {"id": profile.profile_id, "label": profile.label}
@@ -1243,6 +1250,26 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             },
         )
 
+    @app.get("/admin/settings", response_class=HTMLResponse)
+    async def settings_page(request: Request):
+        return _login_redirect(request, settings) or RedirectResponse("/admin/settings/ai", status_code=303)
+
+    @app.get("/admin/settings/ai", response_class=HTMLResponse)
+    async def ai_settings(request: Request):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        return templates.TemplateResponse(
+            request=request, name="admin/ai_settings.html", context={
+                "active_page": "settings", "admin_username": settings.admin_username,
+                "csrf_token": _csrf_token(request, settings),
+                "runtime_profiles": _runtime_profile_views(database),
+                "encryption_ready": encryption_is_ready(),
+                "notice": request.query_params.get("notice", ""),
+                "error": request.query_params.get("error", ""),
+            },
+        )
+
     @app.get("/admin/runtime-profiles/new", response_class=HTMLResponse)
     async def new_runtime_profile(request: Request):
         redirect = _login_redirect(request, settings)
@@ -1259,7 +1286,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
         redirect = _login_redirect(request, settings)
         if redirect:
             return redirect
-        form = await request.form()
+        form = await _credential_form(request)
         if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
             return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
         values = _runtime_profile_form_values(form)
@@ -1273,6 +1300,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 values["base_url"],
                 actor=settings.admin_username,
                 active=values["active"] == "1",
+                api_key=str(form.get("api_key", "")) if "api_key" in form else None,
             )
         except ValueError as exc:
             return templates.TemplateResponse(
@@ -1287,12 +1315,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 ),
                 status_code=400,
             )
-        return _modules_redirect(
-            notice=(
-                f"Credential profile {profile.label} berhasil dibuat. "
-                f"Isi {profile.api_key_env} di environment sebelum digunakan."
-            )
-        )
+        return _ai_settings_redirect(notice=f"AI {profile.label} disimpan. Klik Tes koneksi sebelum digunakan.")
 
     @app.get(
         "/admin/runtime-profiles/{profile_id}/edit",
@@ -1326,7 +1349,13 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
         redirect = _login_redirect(request, settings)
         if redirect:
             return redirect
-        form = await request.form()
+        try:
+            current_profile = database.get_ai_runtime_profile(profile_id)
+        except ValueError:
+            current_profile = None
+        if current_profile is None:
+            return HTMLResponse("AI tidak ditemukan.", status_code=404)
+        form = await _credential_form(request)
         if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
             return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
         values = _runtime_profile_form_values(form)
@@ -1339,6 +1368,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 values["model"],
                 values["base_url"],
                 actor=settings.admin_username,
+                api_key=str(form.get("api_key", "")) or None,
             )
         except ValueError as exc:
             profile = database.get_ai_runtime_profile(profile_id)
@@ -1355,29 +1385,59 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 ),
                 status_code=400,
             )
-        return _modules_redirect(notice="Credential profile berhasil diperbarui")
+        return _ai_settings_redirect(notice="AI berhasil diperbarui. Tes koneksi ulang untuk memeriksa konfigurasi baru.")
 
     @app.post("/admin/runtime-profiles/{profile_id}/status")
     async def update_runtime_profile_status(request: Request, profile_id: str):
         redirect = _login_redirect(request, settings)
         if redirect:
             return redirect
-        form = await request.form()
+        form = await _credential_form(request)
         if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
             return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
         target = str(form.get("active", ""))
         if target not in {"0", "1"}:
-            return _modules_redirect(error="Status credential profile tidak valid")
+            return _ai_settings_redirect(error="Status credential profile tidak valid")
         try:
             profile = database.set_ai_runtime_profile_active(
                 profile_id, target == "1", actor=settings.admin_username
             )
         except ValueError as exc:
-            return _modules_redirect(error=str(exc))
+            return _ai_settings_redirect(error=str(exc))
         status = "diaktifkan" if profile.active else "dinonaktifkan"
-        return _modules_redirect(
+        return _ai_settings_redirect(
             notice=f"Credential profile {profile.label} berhasil {status}"
         )
+
+    @app.post("/admin/runtime-profiles/{profile_id}/test")
+    async def probe_runtime_profile(request: Request, profile_id: str):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await _credential_form(request)
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        try:
+            profile = database.get_ai_runtime_profile(profile_id)
+        except ValueError:
+            profile = None
+        if profile is None:
+            return HTMLResponse("AI tidak ditemukan.", status_code=404)
+        if (profile_id in ai_tests_running or len(ai_tests_running) >= 2
+                or ai_test_limiter.blocked(profile_id) or ai_test_limiter.blocked("__all__")):
+            return HTMLResponse("Tes sedang berjalan atau batas tes tercapai. Coba lagi satu menit lagi.", status_code=429)
+        ai_test_limiter.failure(profile_id)
+        ai_test_limiter.failure("__all__")
+        ai_tests_running.add(profile_id)
+        try:
+            status = await test_ai_connection(profile)
+            recorded = database.record_ai_connection_test(profile, status, settings.admin_username)
+        finally:
+            ai_tests_running.discard(profile_id)
+        if not recorded:
+            return _ai_settings_redirect(error="Konfigurasi berubah selama tes. Ulangi tes untuk konfigurasi terbaru.")
+        message = f"{profile.label}: {AI_TEST_MESSAGES[status]}"
+        return _ai_settings_redirect(notice=message) if status == "success" else _ai_settings_redirect(error=message)
 
     @app.get("/admin/modules/new", response_class=HTMLResponse)
     async def new_module(request: Request):
@@ -2042,6 +2102,11 @@ def _runtime_profile_views(
             "base_url": profile.base_url,
             "active": profile.active,
             "configured": runtime_profile_is_configured(profile),
+            "provider_label": PROVIDERS.get(profile.provider, (profile.provider, ""))[0],
+            "encrypted": bool(profile.api_key_ciphertext),
+            "test_message": AI_TEST_MESSAGES.get(profile.last_test_status, "Belum diuji"),
+            "test_status": profile.last_test_status,
+            "test_at": profile.last_test_at,
         }
         for profile in profiles
     ]
@@ -2056,6 +2121,20 @@ def _runtime_profile_form_values(form) -> dict[str, str]:
         "base_url": str(form.get("base_url", "")).strip(),
         "active": "1" if form.get("active") == "1" else "0",
     }
+
+
+async def _credential_form(request: Request):
+    # Bound the complete body before parsing; never persist or echo this body.
+    data = bytearray()
+    async for chunk in request.stream():
+        data.extend(chunk)
+        if len(data) > 16_384:
+            raise HTTPException(status_code=413, detail="Form AI terlalu besar.")
+    request._body = bytes(data)
+    form = await request.form(max_files=0, max_fields=12)
+    if len(form.multi_items()) != len(form):
+        raise HTTPException(status_code=400, detail="Field form ganda tidak diizinkan.")
+    return form
 
 
 def _runtime_profile_form_context(
@@ -2077,15 +2156,22 @@ def _runtime_profile_form_context(
     }
     defaults.update(values or {})
     return {
-        "active_page": "modules",
+        "active_page": "settings",
         "admin_username": settings.admin_username,
         "csrf_token": _csrf_token(request, settings),
         "mode": mode,
         "profile": profile,
         "values": defaults,
         "configured": runtime_profile_is_configured(profile) if profile else False,
+        "encryption_ready": encryption_is_ready(),
+        "providers": PROVIDERS,
         "error": error,
     }
+
+
+def _ai_settings_redirect(notice: str = "", *, error: str = "") -> RedirectResponse:
+    query = urlencode({key: value for key, value in {"notice": notice, "error": error}.items() if value})
+    return RedirectResponse("/admin/settings/ai" + (f"?{query}" if query else ""), status_code=303)
 
 
 def _modules_redirect(
@@ -2119,6 +2205,7 @@ def _module_redirect(
 
 
 _ACTIVITY_ACTION_LABELS = {
+    "ai_runtime_profile.tested": "Koneksi AI diuji",
     "users.imported": "Import user baru",
     "company.created": "Company dibuat",
     "company.updated": "Company diperbarui",
@@ -2156,6 +2243,9 @@ _ACTIVITY_ACTION_LABELS = {
 }
 
 _ACTIVITY_DETAIL_LABELS = {
+    "secret_source": "Sumber key",
+    "key_replaced": "API key diganti",
+    "test_status": "Hasil tes koneksi",
     "created_users": "User baru",
     "created_memberships": "Membership baru",
     "skipped_rows": "Baris ID sudah terdaftar",

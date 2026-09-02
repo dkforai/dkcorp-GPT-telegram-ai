@@ -1,0 +1,29 @@
+{% extends "admin/base.html" %}
+{% block title %}Settings AI · DK Corp AI Admin{% endblock %}
+{% block page_title %}Settings · AI{% endblock %}
+{% block content %}
+  <div class="page-lead">
+    <div><h2>AI terdaftar</h2><p>Daftarkan GPT, Claude, DeepSeek, atau Gemini. AI aktif dapat dipilih sebagai utama atau cadangan pada setiap Module.</p></div>
+    <a class="primary-link" href="/admin/runtime-profiles/new">Tambah AI</a>
+  </div>
+  {% if notice %}<div class="notice success" role="status">{{ notice }}</div>{% endif %}
+  {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+  {% if not encryption_ready %}<div class="notice error">Penyimpanan key baru membutuhkan <code>AI_CREDENTIAL_ENCRYPTION_KEY</code> di environment server. Credential environment yang sudah ada tetap berjalan.</div>{% endif %}
+  <div class="panel table-panel"><div class="table-wrap"><table>
+    <thead><tr><th>Nama AI</th><th>Provider / Model</th><th>API key</th><th>Tes terakhir</th><th>Status</th><th>Action</th></tr></thead>
+    <tbody>{% for profile in runtime_profiles %}<tr>
+      <td><strong>{{ profile.label }}</strong><small class="block">{{ profile.profile_id }}</small></td>
+      <td>{{ profile.provider_label }}<small class="block">{{ profile.model }}</small></td>
+      <td>{% if profile.encrypted %}Terenkripsi{% else %}Environment <code>{{ profile.api_key_env }}</code>{% endif %}<small class="block">{% if profile.configured %}Key tersedia{% else %}Perlu konfigurasi{% endif %}</small></td>
+      <td>{{ profile.test_message }}{% if profile.test_at %}<small class="block">{{ profile.test_at }} (UTC)</small>{% endif %}</td>
+      <td><span class="status-badge {% if profile.active %}active{% endif %}">{% if profile.active %}Active{% else %}Inactive{% endif %}</span></td>
+      <td><div class="row-actions">
+        <a class="secondary-link" href="/admin/runtime-profiles/{{ profile.profile_id }}/edit">Edit</a>
+        <form method="post" action="/admin/runtime-profiles/{{ profile.profile_id }}/test"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="text-button" type="submit">Tes koneksi</button></form>
+        <form method="post" action="/admin/runtime-profiles/{{ profile.profile_id }}/status"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="active" value="{% if profile.active %}0{% else %}1{% endif %}"><button class="text-button {% if profile.active %}danger{% endif %}" type="submit">{% if profile.active %}Nonaktifkan{% else %}Aktifkan{% endif %}</button></form>
+      </div></td>
+    </tr>{% else %}<tr><td colspan="6" class="empty-state">Belum ada AI. Klik Tambah AI untuk mendaftarkan koneksi pertama.</td></tr>{% endfor %}</tbody>
+  </table></div></div>
+  <p class="muted-text">Tes koneksi mengirim pesan uji singkat, memakai sedikit kuota API, dan tidak mengirim knowledge atau history. Maksimal tiga tes per menit dan dua tes bersamaan pada server ini. Hasil tes bukan jaminan saldo atau ketersediaan berikutnya.</p>
+  <p><a class="secondary-link" href="/admin/modules">Pilih AI pada Module</a></p>
+{% endblock %}
