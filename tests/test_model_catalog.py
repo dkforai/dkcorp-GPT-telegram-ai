@@ -216,7 +216,11 @@ def test_settings_to_module_end_to_end(client, db, monkeypatch):
     profile = db.list_ai_runtime_profiles()[0]
     assert not profile.model and not profile.base_url and profile.active
     assert profile.label != "forged-label"
-    assert 'name="ai_selection"' not in client.get("/admin/modules/new").text
+    empty = client.get("/admin/modules/new").text
+    assert 'name="ai_selection"' not in empty
+    assert 'Belum ada model AI yang tersedia' in empty
+    assert 'href="/admin/settings/ai"' in empty and 'Tes &amp; ambil model' in empty
+    assert 'Belum ada AI aktif' not in empty
     async def discover(p):
         assert p.profile_id == profile.profile_id
         return CatalogResult("success", (CatalogModel("gpt-4.1", True), CatalogModel("gpt-4.1-mini", True),

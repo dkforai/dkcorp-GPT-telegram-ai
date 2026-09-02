@@ -12,7 +12,7 @@
     {% if not companies %}
       <div class="notice error">Belum ada company aktif. Aktifkan company terlebih dahulu.</div>
     {% elif not runtime_profiles %}
-      <div class="notice error">Belum ada AI aktif. <a href="/admin/runtime-profiles/new">Daftarkan AI</a> terlebih dahulu.</div>
+      <div class="notice error">Belum ada model AI yang tersedia. Buka <a href="/admin/settings/ai">Settings AI</a> untuk mendaftarkan provider atau menjalankan Tes &amp; ambil model pada provider yang sudah aktif.</div>
     {% else %}
       <div class="form-grid">
         <label>Company<select name="company_id" required>{% for company in companies %}<option value="{{ company.company_id }}" {% if values.company_id == company.company_id %}selected{% endif %}>{{ company.name }}</option>{% endfor %}</select><small>Module hanya tersedia di company ini.</small></label>

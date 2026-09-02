@@ -109,7 +109,7 @@ Jawaban ke user
 | Document Ingestion | Sebagian | Upload PDF, DOCX, TXT, dan Markdown menjadi draft teks; OCR dan `.doc` belum |
 | Chat History | Sudah | SQLite dipisahkan per user, perusahaan, dan module; General memakai scope kosong tersendiri |
 | Provider Abstraction | Implementasi v1.13 | OpenAI/DeepSeek/Gemini compatible API; Claude native Messages; General tetap OpenAI/DeepSeek |
-| Settings AI | Rilis v1.14 dalam proses deployment; produksi terakhir terverifikasi v1.13.1 | Form Provider + API Key, discovery model, pilihan model per Module; 183 tes lokal lulus. Verifikasi produksi v1.14 masih menunggu deployment |
+| Settings AI | Implementasi v1.14 deployed; smoke HTTP produksi terverifikasi | Form Provider + API Key dan readiness encryption terverifikasi; 183 tes lokal lulus. Registry produksi masih kosong, sehingga tes provider nyata/pemilihan model produksi belum dilakukan |
 | AI utama dan cadangan per Module | Sudah | Dua pilihan dari AI terdaftar; cadangan opsional, failover terbatas, tanpa fallback global; encrypted key atau legacy environment |
 | Telegram Response Renderer | Sudah | Safe HTML, split, link preview off, dan fallback plain text |
 | Conversation Delivery Policy | Belum | Akan mengatur panjang, ritme, dan progressive disclosure |
@@ -692,10 +692,12 @@ AI terdaftar menyimpan metadata dan API key terenkripsi di SQLite. Profile lama 
 - Implementasi diuji dengan SQLite sementara dan HTTP mock. Rilis v1.13 melalui GitHub → Railway tanpa reset data. Pada 2 September 2026, master produksi yang sebelumnya belum ada dipasang melalui Railway CLI terautentikasi dengan target project/service/environment eksplisit. Key dibuat dalam memori dan dikirim melalui stdin, bukan argumen perintah, output, file repository, atau database; variable existing dipertahankan.
 - Deployment aktivasi master `c61d258c-5bc3-48be-a58b-7234316f6277` berstatus `SUCCESS`. HTTP health, login admin, Settings AI dan form Tambah AI terverifikasi; warning master hilang dan empat provider tersedia. Ini memverifikasi readiness konfigurasi, bukan keberhasilan panggilan provider. 132 tes lokal lulus ulang dengan data sementara; tidak ada credential uji ditambahkan atau reset data produksi. Koneksi berbayar empat akun provider belum diuji.
 - Salinan backup master di secret manager terpisah belum dibuat oleh proses deployment ini. Operator tetap wajib menyimpan backup master terpisah dari SQLite dan tidak merotasinya tanpa migrasi ciphertext. Login dashboard aplikasi tidak memberikan akses Railway Variables.
+- Rilis v1.14 commit `a383167` melalui GitHub → Railway terverifikasi `SUCCESS`, deployment `48883395-d1c1-4941-b59f-3e47a2c4bc5b`. Health 200, akses anonim Settings/Tambah AI diarahkan ke login, login admin berhasil, Settings dan form dua-field empat provider berstatus 200, master encryption siap, serta tidak ada key lokal dipantulkan dalam HTML. Registry AI produksi kosong; Module baru menampilkan kondisi belum ada model, bukan dropdown. Pilihan utama/cadangan dan runtime diuji dengan fixture lokal, bukan akun provider produksi. Tidak ada reset data, rotasi master, atau credential uji dibuat di produksi.
+- Kondisi Module tanpa opsi model mengarahkan admin ke Settings AI untuk mendaftarkan provider atau mengambil katalog koneksi aktif; bukan menganggap semua koneksi belum aktif. Pesan ini juga berlaku sebelum tes katalog pertama.
 
 Referensi resmi: [OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create), [Claude Messages](https://platform.claude.com/docs/en/api/messages/create), [Gemini compatibility](https://ai.google.dev/gemini-api/docs/openai), [DeepSeek Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/), [Fernet](https://cryptography.io/en/latest/fernet/).
 
-Discovery: [OpenAI Models](https://developers.openai.com/api/reference/python/resources/models/methods/list), [Claude Models](https://platform.claude.com/docs/en/api/models/list), [DeepSeek Models](https://api-docs.deepseek.com/api/list-models/), [Gemini Models](https://ai.google.dev/api/models). Implementasi v1.14 diverifikasi lokal dengan HTTP simulasi/SQLite sementara. Deployment melalui GitHub → Railway telah diotorisasi DK dan sedang difinalisasi; verifikasi produksi masih menunggu deployment. Tes akun provider nyata belum dilakukan untuk perubahan ini.
+Discovery: [OpenAI Models](https://developers.openai.com/api/reference/python/resources/models/methods/list), [Claude Models](https://platform.claude.com/docs/en/api/models/list), [DeepSeek Models](https://api-docs.deepseek.com/api/list-models/), [Gemini Models](https://ai.google.dev/api/models). Implementasi v1.14 diverifikasi lokal dengan HTTP simulasi/SQLite sementara serta smoke HTTP produksi setelah deployment. Tes akun provider nyata belum dilakukan untuk perubahan ini.
 
 ### 10.1. AI utama dan AI cadangan Module
 
@@ -928,13 +930,14 @@ Status catatan ini hanya persetujuan rencana. Tidak ada perubahan kode, database
 
 ## 16. Changelog dokumen
 
-### 2 September 2026 — v1.14 (rilis dalam proses deployment)
+### 2 September 2026 — v1.14
 
 - Tambah AI hanya Provider + API Key, nama/ID otomatis dan aktif saat disimpan; perubahan provider existing ditolak oleh form/server;
 - Tes & ambil model membaca katalog empat provider, termasuk pagination berbatas, tanpa inferensi berbayar/data perusahaan; snapshot atomik dan invalidasi credential revision;
 - katalog model dan pilihan model utama/cadangan per Module, kompatibilitas legacy, validasi pasangan dan penolakan model non-chat/unsupported;
 - 183 tes otomatis lulus, termasuk HTTP mock provider/pagination, respons gagal/malformed, batas katalog, timeout/cancellation, preservasi pilihan, rotasi key, stale test, penolakan secret yang dipantulkan sebagai cursor URL, serta alur form sampai runtime. Migrasi profile/module lama dan preservasi ciphertext/playbook diuji berulang. Satu warning deprecation Starlette/httpx yang sudah ada tetap muncul;
-- DK mengotorisasi finalisasi dan deployment melalui GitHub → Railway. Release tidak mereset database atau mengganti master encryption key. Verifikasi produksi v1.14 masih menunggu deployment; tes memakai API key provider nyata belum dilakukan.
+- deployment implementasi `a383167` berstatus `SUCCESS` pada Railway (`48883395-d1c1-4941-b59f-3e47a2c4bc5b`), health/auth/form Provider + API Key/readiness encryption produksi terverifikasi. Pesan Module tanpa katalog diperjelas untuk mengarahkan admin ke tes provider, dengan regresi lokal;
+- tidak mereset database atau mengganti master encryption key. Registry AI produksi masih kosong saat verifikasi; tes memakai API key provider nyata dan pilihan model produksi belum dilakukan.
 
 ### 2 September 2026 — v1.13.1
 
