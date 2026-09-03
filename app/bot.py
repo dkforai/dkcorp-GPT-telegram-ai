@@ -47,6 +47,11 @@ class InternalBot:
             .concurrent_updates(self.settings.max_concurrent_updates)
             .build()
         )
+        # /? is not a valid Telegram command name. Match the literal text before
+        # the ordinary chat handler, regardless of Telegram's entity tagging.
+        application.add_handler(
+            MessageHandler(filters.TEXT & filters.Regex(r"\A\s*/\?\s*\Z"), self.help)
+        )
         application.add_handler(CommandHandler("start", self.start))
         application.add_handler(CommandHandler("help", self.help))
         application.add_handler(CommandHandler("whoami", self.whoami))
@@ -88,6 +93,8 @@ class InternalBot:
         memberships = self.database.list_memberships(user.telegram_id)
         if not memberships:
             return "Akunmu belum mempunyai akses perusahaan. Hubungi admin."
+        if len(memberships) == 1:
+            return self._module_list_text(user, memberships[0])
         active = self.database.get_active_membership(user.telegram_id)
         lines = ["Pilih perusahaan aktif:"]
         for membership in memberships:
@@ -96,6 +103,40 @@ class InternalBot:
                 f"{marker}/company {membership.company_id} — {membership.company_name}"
             )
         return "\n".join(lines)
+
+    def _help_text(self, user: User) -> str:
+        memberships = self.database.list_memberships(user.telegram_id)
+        lines = [
+            "Menu yang tersedia:",
+            "/? atau /help — lihat menu ini",
+            "/start — mulai dan tampilkan menu",
+            "/whoami — lihat profil dan akses aktif",
+        ]
+        if len(memberships) > 1:
+            lines.append("/company — pilih perusahaan aktif")
+        if memberships:
+            lines.extend([
+                "/module — lihat atau pilih module kerja",
+                "/reset — hapus riwayat percakapan pada company/module aktif saja",
+            ])
+        sections = ["\n".join(lines)]
+        if not memberships:
+            sections.append("Akunmu belum mempunyai akses perusahaan. Hubungi admin.")
+            return "\n\n".join(sections)
+        if len(memberships) > 1:
+            sections.append(self._company_list_text(user))
+        membership = memberships[0] if len(memberships) == 1 else self._active_membership(user)
+        if membership:
+            sections.append(self._module_list_text(user, membership))
+        else:
+            sections.append("Pilih perusahaan di atas untuk melihat module yang bisa kamu akses.")
+        return "\n\n".join(sections)
+
+    async def _reply_menu(self, update: Update, text: str) -> None:
+        for chunk in _split_message(text, size=3500):
+            await update.effective_message.reply_text(
+                chunk, parse_mode=None, disable_web_page_preview=True
+            )
 
     def _module_list_text(self, user: User, membership: Membership) -> str:
         modules = self.database.list_accessible_modules(
@@ -129,28 +170,17 @@ class InternalBot:
         async with self._serialized_user(update) as user:
             if user is None:
                 return
-            membership = self._active_membership(user)
-            company_text = (
-                f" Perusahaan aktif: {membership.company_name}."
-                if membership
-                else " Pilih perusahaan dengan /company sebelum mulai."
-            )
-            await update.effective_message.reply_text(
+            await self._reply_menu(
+                update,
                 f"Halo {user.name}. Saya siap membantu sebagai asisten internal."
-                f"{company_text} Ketik /help untuk melihat perintah."
+                f"\n\n{self._help_text(user)}",
             )
 
     async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         async with self._serialized_user(update) as user:
             if user is None:
                 return
-            await update.effective_message.reply_text(
-                "/whoami — lihat profil akses\n"
-                "/company — lihat atau ganti perusahaan aktif\n"
-                "/module — lihat atau ganti module kerja aktif\n"
-                "/reset — hapus konteks percakapan\n"
-                "/help — daftar perintah"
-            )
+            await self._reply_menu(update, self._help_text(user))
 
     async def whoami(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         async with self._serialized_user(update) as user:
@@ -184,7 +214,7 @@ class InternalBot:
             if user is None:
                 return
             if not context.args:
-                await update.effective_message.reply_text(self._company_list_text(user))
+                await self._reply_menu(update, self._company_list_text(user))
                 return
 
             company_id = context.args[0].strip().casefold()
@@ -211,9 +241,7 @@ class InternalBot:
                 await update.effective_message.reply_text(self._company_list_text(user))
                 return
             if not context.args:
-                await update.effective_message.reply_text(
-                    self._module_list_text(user, membership)
-                )
+                await self._reply_menu(update, self._module_list_text(user, membership))
                 return
 
             module_id = context.args[0].strip().casefold()

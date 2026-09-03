@@ -11,6 +11,7 @@ import httpx
 import pytest
 from openai import APIConnectionError, APIStatusError
 from telegram.error import BadRequest
+from telegram import Message, Update, User as TelegramUser
 
 from docx import Document
 from fastapi.testclient import TestClient
@@ -786,6 +787,144 @@ def test_company_id_migration_startup_before_all_runtime_writers(tmp_path, monke
     else:
         main_module.main()
         assert events == ["initialize"] + (["migrate"] if migration else []) + ["bootstrap_companies", "bootstrap_users", "admin", "polling"]
+
+
+def _help_bot(tmp_path):
+    database = _company_migration_fixture(tmp_path)
+    settings = _test_settings(tmp_path, tmp_path / "users.json", tmp_path / "companies.json", database_path=database.path)
+    # A menu must not call a provider. This object deliberately has no generate.
+    return InternalBot(settings, database, SimpleNamespace())
+
+
+def _call_menu(bot, method="help", telegram_id=42):
+    replies = []
+    async def reply_text(text, **kwargs):
+        replies.append((text, kwargs))
+    update = SimpleNamespace(effective_user=SimpleNamespace(id=telegram_id), effective_message=SimpleNamespace(reply_text=reply_text))
+    asyncio.run(getattr(bot, method)(update, SimpleNamespace(args=[])))
+    return replies
+
+
+@pytest.mark.parametrize("method", ["help", "start", "company"])
+def test_single_company_help_goes_directly_to_modules_without_company_command(tmp_path, method):
+    bot = _help_bot(tmp_path)
+    with sqlite3.connect(bot.database.path) as connection:
+        connection.execute("UPDATE user_company_memberships SET active=0 WHERE company_id='amazing-malang'")
+    before = _database_rows(bot.database.path)
+    replies = _call_menu(bot, method)
+    text = "".join(reply[0] for reply in replies)
+    assert "/company" not in text
+    assert "Malang Strudel" in text
+    assert "/module general" in text
+    assert "✓ /module threads-generator" in text
+    if method != "company":
+        for command in ("/?", "/help", "/start", "/whoami", "/module", "/reset"):
+            assert command in text
+    assert all(kwargs["parse_mode"] is None for _, kwargs in replies)
+    assert _database_rows(bot.database.path) == before
+
+
+def test_multi_company_help_shows_only_authorized_companies_and_active_company_modules(tmp_path):
+    bot = _help_bot(tmp_path)
+    before = _database_rows(bot.database.path)
+    text = "".join(reply[0] for reply in _call_menu(bot))
+    assert "/company amazing-malang" in text
+    assert "✓ /company malang-strudel" in text
+    assert "/company other" not in text
+    assert "✓ /module threads-generator" in text
+    bot.database.set_active_company(42, "amazing-malang")
+    text = "".join(reply[0] for reply in _call_menu(bot))
+    assert "/module threads-generator" not in text
+    assert "Belum ada module" in text
+    bot.database.set_active_company(42, "malang-strudel")
+    bot.database.set_active_module(42, "threads-generator")
+    assert _database_rows(bot.database.path)["messages"] == before["messages"]
+
+
+def test_multi_company_help_without_selection_does_not_guess_or_expose_modules(tmp_path):
+    bot = _help_bot(tmp_path)
+    with sqlite3.connect(bot.database.path) as connection:
+        connection.execute("UPDATE user_company_memberships SET is_default=0")
+        connection.execute("DELETE FROM user_sessions")
+    before = _database_rows(bot.database.path)
+    text = "".join(reply[0] for reply in _call_menu(bot))
+    assert "/company amazing-malang" in text and "/company malang-strudel" in text
+    assert "/module threads-generator" not in text and "/module general" not in text
+    assert "Pilih perusahaan di atas" in text
+    assert _database_rows(bot.database.path) == before
+
+
+@pytest.mark.parametrize("restriction", ["company_inactive", "membership_inactive", "no_memberships", "module_inactive", "access_inactive", "unpublished", "ai_inactive", "other_user"])
+def test_help_respects_current_access_and_publication(tmp_path, restriction):
+    bot = _help_bot(tmp_path)
+    with sqlite3.connect(bot.database.path) as connection:
+        statements = {
+            "company_inactive": "UPDATE companies SET active=0 WHERE company_id='amazing-malang'",
+            "membership_inactive": "UPDATE user_company_memberships SET active=0 WHERE company_id='amazing-malang'",
+            "no_memberships": "UPDATE user_company_memberships SET active=0",
+            "module_inactive": "UPDATE modules SET active=0",
+            "access_inactive": "UPDATE module_access SET active=0",
+            "unpublished": "UPDATE module_playbook_state SET published_version_id=NULL",
+            "ai_inactive": "UPDATE ai_runtime_profiles SET active=0",
+        }
+        if restriction in statements:
+            connection.execute(statements[restriction])
+    before = _database_rows(bot.database.path)
+    text = "".join(reply[0] for reply in _call_menu(bot, telegram_id=1234 if restriction == "other_user" else 42))
+    if restriction in {"company_inactive", "membership_inactive"}:
+        assert "/company" not in text
+        assert "/module threads-generator" in text
+    else:
+        assert "/module threads-generator" not in text
+    if restriction == "no_memberships":
+        assert "belum mempunyai akses perusahaan" in text
+        assert "/company" not in text and "/module" not in text
+    if restriction == "other_user":
+        assert "Akses belum terdaftar" in text
+        assert "Malang Strudel" not in text and "Amazing Malang" not in text
+    assert _database_rows(bot.database.path) == before
+
+
+@pytest.mark.parametrize(("text", "entity", "expected"), [
+    ("/?", False, "help"), ("/?", True, "help"), ("  /? \n", False, "help"),
+    ("/help", True, "help"), ("/start", True, "start"),
+    ("Bagaimana cara /?", False, "chat"), ("/? ide konten", False, "chat"),
+])
+def test_question_mark_help_dispatch_bypasses_ai(tmp_path, monkeypatch, text, entity, expected):
+    bot = _help_bot(tmp_path)
+    application = bot.build_application()
+    application.bot._bot_user = TelegramUser(999, "Test", is_bot=True, username="test_bot")
+    message = {"message_id": 1, "date": 0, "chat": {"id": 42, "type": "private"}, "from": {"id": 42, "first_name": "DK", "is_bot": False}, "text": text}
+    if entity:
+        message["entities"] = [{"type": "bot_command", "offset": 0, "length": len(text)}]
+    update = Update.de_json({"update_id": 1, "message": message}, application.bot)
+    matches = [(handler, handler.check_update(update)) for handler in application.handlers[0]]
+    handler, checked = next((handler, checked) for handler, checked in matches if checked is not None and checked is not False)
+    assert handler.callback.__name__ == expected
+    if expected != "chat":
+        replies = []
+        async def reply_text(self, value, **kwargs):
+            replies.append(value)
+        monkeypatch.setattr(Message, "reply_text", reply_text)
+        before = _database_rows(bot.database.path)
+        context = application.context_types.context.from_update(update, application)
+        asyncio.run(handler.handle_update(update, application, checked, context))
+        assert replies and "/company malang-strudel" in "".join(replies)
+        assert _database_rows(bot.database.path) == before
+
+
+def test_help_long_module_list_is_complete_and_split(tmp_path, monkeypatch):
+    bot = _help_bot(tmp_path)
+    module = bot.database.list_accessible_modules(42, "malang-strudel")[0]
+    modules = [replace(module, module_id=f"module-{i}", name=f"Module {i} " + "x" * 60) for i in range(150)]
+    monkeypatch.setattr(bot.database, "list_accessible_modules", lambda *args: modules)
+    before = _database_rows(bot.database.path)
+    replies = _call_menu(bot)
+    assert len(replies) > 1
+    assert all(len(text) <= 3500 for text, _ in replies)
+    combined = "".join(text for text, _ in replies)
+    assert all(f"/module module-{i} —" in combined for i in range(150))
+    assert _database_rows(bot.database.path) == before
 
 
 def test_module_provider_resolver_uses_named_environment_without_fallback(

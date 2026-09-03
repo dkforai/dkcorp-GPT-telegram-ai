@@ -5,7 +5,7 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 1.17 |
+| Versi | 1.18 |
 | Terakhir diperbarui | 3 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
@@ -115,6 +115,7 @@ Jawaban ke user
 | Conversation Delivery Policy | Belum | Akan mengatur panjang, ritme, dan progressive disclosure |
 | Multi-company membership | Sudah | Tabel membership SQLite; JSON hanya bootstrap awal |
 | Company router dan active context | Sudah | Command `/company` dan session active company |
+| Menu command adaptif | v1.18 siap rilis; 276 tes lokal lulus; deployment disetujui, menunggu verifikasi | `/?`, `/help`, dan `/start`; satu company langsung daftar module, lebih dari satu menampilkan pilihan company; selalu sesuai akses aktif |
 | Migrasi Company ID oleh operator | v1.17 deployed; produksi memakai `amz` dan `ms`; 255 tes lulus | Startup-only, backup SQLite terverifikasi, transaksi atomik, seluruh relasi dan history dipertahankan; bukan field edit admin |
 | Module router dan active context | Sudah | Command `/module`, General context, default-deny module access, dan reset module saat company berubah |
 | Company-scoped instruction | Sudah | Draft dan versi publish tersimpan di SQLite; file company menjadi fallback transisi |
@@ -943,6 +944,17 @@ Paket form/backend/runtime/import telah diterapkan, diuji lokal, dan dideploy. C
 | ADR-066 | Module memilih pasangan koneksi+model, dengan legacy fallback eksplisit | Satu key untuk banyak model; pemilihan server-validated, snapshot atomik/revision-aware, key rotation menginvalidasi katalog, dan pilihan lama tidak diubah diam-diam |
 | ADR-067 | Hanya blok naskah siap salin yang polos, penjelasan tetap safe HTML | Model menandai isi naskah berdasarkan tujuan, bukan nama module; renderer mengirim bagian terpisah dan membersihkan penanda sebelum history/limit/split. Tidak memutasi konten published atau history lama |
 | ADR-068 | Rename Company ID hanya sebagai maintenance startup, bukan edit form | Runtime lama harus berhenti; backup konsisten, FK deferred, pembandingan seluruh row, audit dan repeat-safe mencegah relasi hilang atau writer memakai ID lama |
+| ADR-069 | Menu command ditentukan akses efektif, bukan respons AI | Literal `/?` diproses sebelum chat; `/help` dan `/start` memakai menu yang sama. Company chooser hanya untuk >1 membership/company aktif, daftar module tetap default-deny |
+
+### Menu Telegram adaptif
+
+User mengetik `/?` atau `/help` untuk melihat perintah yang tersedia. `/start` menambahkan sapaan dan memakai menu yang sama. Command umum mencakup `/start`, `/?`, `/help`, `/whoami`, dan, bila ada membership aktif, `/module` serta `/reset` untuk scope aktif saja. Tidak ada panggilan provider, perubahan session, atau penulisan history saat melihat menu.
+
+Jumlah company dihitung dari `list_memberships`, yang mensyaratkan membership dan company aktif. Satu company langsung menampilkan daftar module dan General, tanpa command/pilihan `/company`. Lebih dari satu company menampilkan command dan pilihan `/company <id>` serta module pada company aktif. Jika belum ada company aktif/default, menu meminta pemilihan company sebelum menampilkan module. User tanpa membership diberi petunjuk menghubungi admin, tanpa company/module. Whitelist tetap diperiksa sebelum menu ditampilkan.
+
+Daftar module memakai resolver akses yang sudah ada: company/membership/module/access/AI aktif dan playbook published. Tidak menampilkan module milik company lain atau module yang belum diberikan. `/company` tanpa argumen untuk satu company juga menampilkan daftar module; command eksplisit `/company <id>` tetap tervalidasi seperti sebelumnya. Menu panjang dipecah menjadi pesan maksimal 3500 karakter, tanpa menghilangkan pilihan terakhir.
+
+Karena `?` bukan karakter nama command yang diterima `CommandHandler`, literal `/?` (dengan whitespace tepi opsional) memakai text filter sebelum handler chat pada group yang sama. Ini bekerja baik dengan maupun tanpa entity `bot_command` dari Telegram. Penyebutan `/?` di dalam kalimat bukan permintaan menu. Tidak mengubah native command list Telegram/BotFather, schema, credential, atau data produksi.
 
 ### Migrasi Company ID saat maintenance
 
@@ -955,6 +967,14 @@ Urutan startup adalah initialize schema, migrasi jika diminta, bootstrap, lalu a
 Restart dengan mapping yang sama menjadi no-op hanya jika target lengkap, sumber tidak tersisa, dan audit cocok. Setelah migrasi terverifikasi, hapus `COMPANY_ID_MIGRATION` dari environment. ID lama bukan alias dan URL admin lama perlu dibuka ulang dari menu. Backup berisi data privat dan ciphertext credential, bukan master encryption key; jangan commit atau membagikannya. Pemulihan harus dilakukan saat semua writer berhenti menggunakan SQLite backup API, bukan menimpa file database hidup atau mengabaikan WAL.
 
 ## 16. Changelog dokumen
+
+### 3 September 2026 — v1.18
+
+- menambahkan menu `/?` yang sama dengan `/help` dan `/start`, dengan perintah umum dan pilihan sesuai akses user;
+- menyembunyikan `/company` untuk nol/satu company aktif, menampilkan module langsung untuk satu company, dan menampilkan pilihan company hanya untuk multi-company;
+- memakai ACL dan published status module yang sudah ada, tanpa inference AI, mutasi konteks, atau penulisan history; daftar panjang dipecah tanpa truncation;
+- 276 tes lokal lulus, termasuk 21 kasus menu/routing: literal `/?` dengan/tanpa entity Telegram, `/help`/`/start`, single/multi/no company, default kosong, pembatasan akses/publish/AI, user tidak terdaftar, preservasi session/history, dan daftar 150 module tanpa truncation;
+- DK menyetujui commit/deploy melalui GitHub → Railway; hasil produksi dicatat setelah verifikasi. Tidak mengubah ID company hasil migrasi v1.17, data produksi, atau native command list Telegram.
 
 ### 3 September 2026 — v1.17
 

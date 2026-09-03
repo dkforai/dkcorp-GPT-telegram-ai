@@ -46,7 +46,7 @@ Pemrosesan update memakai controlled concurrency. User berbeda dapat diproses pa
 - Akses module bersifat default-deny dan diberikan per membership
 - Module aktif dapat dilihat atau diganti melalui `/module`; mode General tetap tersedia
 - History chat dipisahkan per user, perusahaan, dan module aktif
-- Perintah `/start`, `/help`, `/company`, `/module`, `/whoami`, dan `/reset`
+- Menu adaptif `/?` atau `/help`, serta perintah `/start`, `/company`, `/module`, `/whoami`, dan `/reset`
 - Jawaban panjang otomatis dipecah agar muat di Telegram
 
 ## Menjalankan lokal
@@ -142,14 +142,20 @@ Saat migrasi pertama, history lama yang belum memiliki company ID dipindahkan ke
 Command Telegram:
 
 ```text
-/company                    daftar perusahaan yang dapat diakses
-/company amazing-malang     memilih perusahaan aktif
+/? atau /help               menu perintah dan pilihan sesuai akses user
+/start                      sapaan dan menu yang sama
+/company                    pilihan perusahaan, hanya muncul untuk >1 company aktif
+/company amz                memilih perusahaan aktif (contoh ID Amazing Malang)
 /module                     daftar module yang boleh diakses pada perusahaan aktif
 /module marketing           memilih module dan playbook aktif
 /module general             kembali ke konteks perusahaan tanpa module khusus
 /whoami                     melihat membership dan profile aktif
 /reset                      menghapus history company/module yang sedang aktif saja
 ```
+
+Menu menghitung membership dan company yang sama-sama aktif. Jika hanya satu company, langsung tampil seluruh module yang boleh dipakai pada company itu beserta General, tanpa `/company`. Jika lebih dari satu, tampil pilihan company dan module perusahaan yang sedang aktif; bila company belum dipilih, user memilih company terlebih dahulu. Command umum tetap ditampilkan sesuai akses. `/company` tanpa argumen pada user satu company juga langsung menampilkan module, tanpa mengganti context. Akses company tidak otomatis membuka seluruh module: module harus aktif, published, memiliki AI aktif, dan diberikan kepada membership. User tanpa membership mendapat arahan ke admin; user belum terdaftar tidak melihat daftar company/module.
+
+`/?` ditangani sebagai teks khusus sebelum chat AI karena tanda `?` bukan nama command Telegram yang valid. `/help` tetap tersedia sebagai command standar. Menu tidak memanggil AI, menulis history, atau mengubah company/module aktif. Daftar panjang dikirim dalam beberapa pesan agar tidak terpotong.
 
 ## Communication profile
 
