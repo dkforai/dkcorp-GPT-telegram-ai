@@ -148,6 +148,7 @@ Command Telegram:
 /company amz                memilih perusahaan aktif (contoh ID Amazing Malang)
 /module                     daftar module yang boleh diakses pada perusahaan aktif
 /module marketing           memilih module dan playbook aktif
+/TG atau /tg                memilih module berkode TG di company aktif
 /module general             kembali ke konteks perusahaan tanpa module khusus
 /whoami                     melihat membership dan profile aktif
 /reset                      menghapus history company/module yang sedang aktif saja
@@ -156,6 +157,8 @@ Command Telegram:
 Menu menghitung membership dan company yang sama-sama aktif. Jika hanya satu company, langsung tampil seluruh module yang boleh dipakai pada company itu beserta General, tanpa `/company`. Jika lebih dari satu, tampil pilihan company dan module perusahaan yang sedang aktif; bila company belum dipilih, user memilih company terlebih dahulu. Command umum tetap ditampilkan sesuai akses. `/company` tanpa argumen pada user satu company juga langsung menampilkan module, tanpa mengganti context. Akses company tidak otomatis membuka seluruh module: module harus aktif, published, memiliki AI aktif, dan diberikan kepada membership. User tanpa membership mendapat arahan ke admin; user belum terdaftar tidak melihat daftar company/module.
 
 `/?` ditangani sebagai teks khusus sebelum chat AI karena tanda `?` bukan nama command Telegram yang valid. `/help` tetap tersedia sebagai command standar. Menu tidak memanggil AI, menulis history, atau mengubah company/module aktif. Daftar panjang dikirim dalam beberapa pesan agar tidak terpotong.
+
+Kode singkat diatur melalui **Modules → Kelola → Kode singkat → Simpan pengaturan**, tanpa publish ulang playbook. Opsional, 2–3 huruf/angka ASCII, diawali huruf, tidak membedakan huruf besar/kecil, dan unik per company (termasuk module nonaktif). Tidak boleh bentrok dengan ID module lain atau command sistem. `/?` menampilkan `/TG` bila alias TG diisi. `/module TG` dan `/module threads-generator` tetap menuju ID internal yang sama, sehingga akses dan history tidak berubah. Alias hanya berlaku pada company aktif dan tetap membutuhkan whitelist, membership, module/access/AI aktif serta playbook published. Kosongkan field untuk menghapus alias. Pesan biasa `TG` tanpa slash tidak mengganti module.
 
 ## Communication profile
 

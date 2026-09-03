@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -22,6 +23,7 @@ from app.role_profiles import load_role_profiles, resolve_communication_profile,
 from app.telegram_renderer import markdown_to_telegram_html, prepare_response_parts
 
 logger = logging.getLogger(__name__)
+MODULE_SHORTCUT = re.compile(r"\A\s*/([A-Za-z][A-Za-z0-9]{1,2})(?:@([A-Za-z0-9_]+))?\s*\Z")
 
 
 class InternalBot:
@@ -58,6 +60,7 @@ class InternalBot:
         application.add_handler(CommandHandler("company", self.company))
         application.add_handler(CommandHandler("module", self.module))
         application.add_handler(CommandHandler("reset", self.reset))
+        application.add_handler(MessageHandler(filters.TEXT & filters.Regex(MODULE_SHORTCUT), self.module_shortcut))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.chat))
         return application
 
@@ -151,7 +154,8 @@ class InternalBot:
         ]
         for module in modules:
             marker = "✓ " if active and active.module_id == module.module_id else ""
-            lines.append(f"{marker}/module {module.module_id} — {module.name}")
+            command = f"/{module.short_code.upper()}" if module.short_code else f"/module {module.module_id}"
+            lines.append(f"{marker}{command} — {module.name}")
         if not modules:
             lines.append(
                 "Belum ada module yang dipublikasikan dan diberikan kepadamu."
@@ -252,17 +256,38 @@ class InternalBot:
                     "History berikutnya memakai konteks General yang terpisah."
                 )
                 return
-            module = self.database.set_active_module(user.telegram_id, module_id)
-            if module is None:
-                await update.effective_message.reply_text(
-                    "Module tidak ditemukan, belum dipublikasikan, atau aksesmu "
-                    "belum diberikan.\n\n" + self._module_list_text(user, membership)
-                )
+            await self._select_module(update, user, membership, module_id)
+
+    async def module_shortcut(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        match = MODULE_SHORTCUT.fullmatch(update.effective_message.text or "")
+        if match is None:
+            return
+        if match[2] and match[2].casefold() != context.bot.username.casefold():
+            return
+        async with self._serialized_user(update) as user:
+            if user is None:
                 return
-            await update.effective_message.reply_text(
-                f"Module aktif diubah ke {module.name}. Playbook dan history "
-                "berikutnya memakai konteks module ini."
+            membership = self._active_membership(user)
+            if membership is None:
+                await self._reply_menu(update, self._company_list_text(user))
+                return
+            await self._select_module(update, user, membership, match[1], short_code_only=True)
+
+    async def _select_module(
+        self, update: Update, user: User, membership: Membership, module_id: str,
+        *, short_code_only: bool = False,
+    ) -> None:
+        module = self.database.set_active_module(user.telegram_id, module_id, short_code_only=short_code_only)
+        if module is None:
+            await self._reply_menu(
+                update, "Module tidak ditemukan, belum dipublikasikan, atau aksesmu "
+                "belum diberikan.\n\n" + self._module_list_text(user, membership)
             )
+            return
+        await update.effective_message.reply_text(
+            f"Module aktif diubah ke {module.name}. Playbook dan history "
+            "berikutnya memakai konteks module ini."
+        )
 
     async def reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         async with self._serialized_user(update) as user:

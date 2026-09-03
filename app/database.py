@@ -96,6 +96,7 @@ class AIModule:
     backup_ai_runtime_profile_id: str = ""
     ai_model: str = ""
     backup_ai_model: str = ""
+    short_code: str = ""
 
 
 class Database:
@@ -379,9 +380,13 @@ class Database:
                     "ALTER TABLE modules ADD COLUMN backup_ai_runtime_profile_id "
                     "TEXT REFERENCES ai_runtime_profiles(profile_id)"
                 )
-            for column in ("ai_model", "backup_ai_model"):
+            for column in ("ai_model", "backup_ai_model", "short_code"):
                 if column not in module_columns:
                     connection.execute(f"ALTER TABLE modules ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+            connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS modules_short_code_unique "
+                "ON modules(company_id, short_code COLLATE NOCASE) WHERE short_code != ''"
+            )
 
             knowledge_columns = {
                 row["name"]
@@ -1489,6 +1494,7 @@ class Database:
                     m.company_id,
                     c.name AS company_name,
                     m.module_id,
+                    m.short_code,
                     m.name,
                     m.description,
                     m.ai_runtime_profile_id,
@@ -1542,7 +1548,7 @@ class Database:
                 """
                 SELECT m.company_id, c.name AS company_name, m.module_id,
                        m.name, m.description, m.ai_runtime_profile_id, m.active,
-                       m.backup_ai_runtime_profile_id, m.ai_model, m.backup_ai_model
+                       m.backup_ai_runtime_profile_id, m.ai_model, m.backup_ai_model, m.short_code
                 FROM modules m
                 JOIN companies c ON c.company_id = m.company_id
                 WHERE m.company_id = ? AND m.module_id = ?
@@ -1563,10 +1569,12 @@ class Database:
         backup_ai_runtime_profile_id: object = "",
         ai_model: object = "",
         backup_ai_model: object = "",
+        short_code: object = "",
     ) -> AIModule:
         normalized_company = _validate_company_id(company_id)
         normalized_name = _validate_module_name(name)
         normalized_description = _validate_module_description(description)
+        normalized_code = _validate_module_short_code(short_code)
         normalized_profile = _validate_runtime_profile_id(ai_runtime_profile_id)
         normalized_backup = _validate_backup_profile_id(
             backup_ai_runtime_profile_id, normalized_profile, ai_model, backup_ai_model
@@ -1595,13 +1603,14 @@ class Database:
                         where_column="company_id",
                         where_value=normalized_company,
                     )
+                _require_unique_module_command(connection, normalized_company, normalized_module, normalized_code)
                 connection.execute(
                     """
                     INSERT INTO modules (
                         company_id, module_id, name, description,
                         ai_runtime_profile_id, backup_ai_runtime_profile_id, active,
-                        created_at, updated_at, ai_model, backup_ai_model
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        created_at, updated_at, ai_model, backup_ai_model, short_code
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         normalized_company,
@@ -1615,6 +1624,7 @@ class Database:
                         now,
                         selected_model,
                         selected_backup_model,
+                        normalized_code,
                     ),
                 )
                 _write_audit(
@@ -1630,6 +1640,7 @@ class Database:
                         "backup_ai_runtime_profile_id": normalized_backup,
                         "ai_model": selected_model,
                         "backup_ai_model": selected_backup_model,
+                        "short_code": normalized_code,
                         "active": active,
                     },
                 )
@@ -1651,6 +1662,7 @@ class Database:
         backup_ai_runtime_profile_id: object = None,
         ai_model: object = None,
         backup_ai_model: object = None,
+        short_code: object = None,
     ) -> AIModule:
         normalized_company = _validate_company_id(company_id)
         normalized_module = _validate_module_id(module_id)
@@ -1663,13 +1675,17 @@ class Database:
             current = connection.execute(
                 """
                 SELECT name, description, ai_runtime_profile_id,
-                       backup_ai_runtime_profile_id, ai_model, backup_ai_model FROM modules
+                       backup_ai_runtime_profile_id, ai_model, backup_ai_model, short_code FROM modules
                 WHERE company_id = ? AND module_id = ?
                 """,
                 (normalized_company, normalized_module),
             ).fetchone()
             if current is None:
                 raise ValueError("Module tidak ditemukan")
+            normalized_code = _validate_module_short_code(
+                current["short_code"] if short_code is None else short_code
+            )
+            _require_unique_module_command(connection, normalized_company, normalized_module, normalized_code)
             selected_model = _validate_model_selection(
                 connection, normalized_profile,
                 current["ai_model"] if ai_model is None and current["ai_runtime_profile_id"] == normalized_profile else ai_model,
@@ -1691,7 +1707,7 @@ class Database:
                 """
                 UPDATE modules
                 SET name = ?, description = ?, ai_runtime_profile_id = ?,
-                    backup_ai_runtime_profile_id = ?, updated_at = ?, ai_model = ?, backup_ai_model = ?
+                    backup_ai_runtime_profile_id = ?, updated_at = ?, ai_model = ?, backup_ai_model = ?, short_code = ?
                 WHERE company_id = ? AND module_id = ?
                 """,
                 (
@@ -1702,6 +1718,7 @@ class Database:
                     _now(),
                     selected_model,
                     selected_backup_model,
+                    normalized_code,
                     normalized_company,
                     normalized_module,
                 ),
@@ -1715,6 +1732,8 @@ class Database:
                 {
                     "name_before": current["name"],
                     "name_after": normalized_name,
+                    "short_code_before": current["short_code"],
+                    "short_code_after": normalized_code,
                     "ai_runtime_profile_before": current["ai_runtime_profile_id"],
                     "ai_runtime_profile_after": normalized_profile,
                     "backup_ai_runtime_profile_before": current["backup_ai_runtime_profile_id"],
@@ -1799,6 +1818,7 @@ class Database:
                     m.company_id,
                     c.name AS company_name,
                     m.module_id,
+                    m.short_code,
                     m.name,
                     m.description,
                     m.ai_runtime_profile_id,
@@ -2151,7 +2171,7 @@ class Database:
                 """
                 SELECT m.company_id, c.name AS company_name, m.module_id,
                        m.name, m.description, m.ai_runtime_profile_id, m.active,
-                       m.backup_ai_runtime_profile_id, m.ai_model, m.backup_ai_model
+                       m.backup_ai_runtime_profile_id, m.ai_model, m.backup_ai_model, m.short_code
                 FROM module_access a
                 JOIN modules m
                     ON m.company_id = a.company_id
@@ -2199,7 +2219,7 @@ class Database:
         )
 
     def set_active_module(
-        self, telegram_id: int, module_id: str
+        self, telegram_id: int, module_id: str, *, short_code_only: bool = False
     ) -> AIModule | None:
         membership = self.get_active_membership(telegram_id)
         if membership is None:
@@ -2211,7 +2231,8 @@ class Database:
                 for item in self.list_accessible_modules(
                     telegram_id, membership.company_id
                 )
-                if item.module_id == requested_module
+                if item.short_code == requested_module
+                or (not short_code_only and item.module_id == requested_module)
             ),
             None,
         )
@@ -3460,6 +3481,7 @@ def _module_from_row(row: sqlite3.Row) -> AIModule:
         company_id=row["company_id"],
         company_name=row["company_name"],
         module_id=row["module_id"],
+        short_code=row["short_code"],
         name=row["name"],
         description=row["description"],
         ai_runtime_profile_id=str(row["ai_runtime_profile_id"] or ""),
@@ -3565,6 +3587,35 @@ def _validate_company_name(value: object) -> str:
     if not 2 <= len(name) <= 100:
         raise ValueError("Nama company harus terdiri dari 2-100 karakter")
     return name
+
+
+def _validate_module_short_code(value: object) -> str:
+    code = str(value or "").strip()
+    if not code:
+        return ""
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{1,2}", code):
+        raise ValueError("Kode singkat harus 2-3 huruf/angka, diawali huruf (contoh TG)")
+    code = code.casefold()
+    if code in {"start", "help", "whoami", "company", "module", "reset", "general", "none", "off"}:
+        raise ValueError("Kode singkat tersebut dipakai oleh perintah sistem")
+    return code
+
+
+def _require_unique_module_command(
+    connection: sqlite3.Connection, company_id: str, module_id: str, short_code: str
+) -> None:
+    # Keep aliases and canonical IDs unambiguous, including inactive modules.
+    conflict = connection.execute(
+        """
+        SELECT 1 FROM modules WHERE company_id = ? AND module_id != ? AND (
+            (short_code != '' AND lower(short_code) IN (?, ?))
+            OR (? != '' AND lower(module_id) = ?)
+        ) LIMIT 1
+        """,
+        (company_id, module_id, module_id, short_code, short_code, short_code),
+    ).fetchone()
+    if conflict:
+        raise ValueError("Kode singkat atau ID sudah digunakan module lain pada company ini")
 
 
 def _validate_module_id(value: object) -> str:

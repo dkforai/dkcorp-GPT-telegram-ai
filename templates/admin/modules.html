@@ -17,7 +17,7 @@
         <tbody>
           {% for module in modules %}
             <tr>
-              <td><strong>{{ module.name }}</strong><small class="block">{{ module.module_id }}</small>{% if module.description %}<small class="block">{{ module.description | truncate(80, true) }}</small>{% endif %}</td>
+              <td><strong>{{ module.name }}</strong><small class="block">{{ module.module_id }}</small>{% if module.short_code %}<small class="block">/{{ module.short_code | upper }}</small>{% endif %}{% if module.description %}<small class="block">{{ module.description | truncate(80, true) }}</small>{% endif %}</td>
               <td><strong>{{ module.company_name }}</strong><small class="block">{{ module.company_id }}</small></td>
               <td>{% if module.ai_runtime_profile_label %}<strong>{{ module.ai_runtime_profile_label }}</strong><small class="block">{{ module.ai_model }}{% if not module.ai_runtime_profile_active %} · Nonaktif{% endif %}</small>{% else %}<span class="status-badge danger">Belum dipilih</span>{% endif %}</td>
               <td>{{ module.backup_ai_label or 'Belum dipilih' }}{% if module.backup_ai_runtime_profile_id %}<small class="block">{{ module.backup_ai_model }}{% if not module.backup_ai_active %} · Nonaktif / belum tersedia{% endif %}</small>{% endif %}</td>

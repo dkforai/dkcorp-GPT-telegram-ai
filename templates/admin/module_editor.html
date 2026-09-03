@@ -14,6 +14,7 @@
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <div class="form-section-title"><h3>Identitas module</h3><p>Module ID dikunci setelah dibuat.</p></div>
       <label>Nama module<input name="name" type="text" value="{{ state.name }}" minlength="2" maxlength="100" required></label>
+      <label class="full-field">Kode singkat <span class="optional">Opsional</span><input name="short_code" type="text" value="{{ state.short_code | upper }}" minlength="2" maxlength="3" pattern="[A-Za-z][A-Za-z0-9]{1,2}" placeholder="TG"><small>2–3 huruf/angka, diawali huruf. Contoh /TG atau /tg. Unik dalam company ini. Berlaku setelah Simpan pengaturan, tanpa publish ulang. Kosongkan untuk menghapus alias; perintah lama /module {{ state.module_id }} tetap berlaku.</small></label>
       <label class="full-field">Deskripsi <span class="optional">Opsional</span><textarea name="description" maxlength="500" rows="4">{{ state.description }}</textarea></label>
       <label>Model AI utama<select name="ai_selection" required>
         {% if ai_selection not in runtime_profiles | map(attribute='value') | list %}<option value="" selected disabled>{{ state.ai_model or 'Belum dipilih' }} · tidak tersedia, tes provider atau pilih ulang</option>{% endif %}
@@ -32,6 +33,7 @@
       <h3>Status runtime</h3>
       <ul>
         <li>Status module: {% if state.active %}Active{% else %}Inactive{% endif %}.</li>
+        <li>Perintah: {% if state.short_code %}/{{ state.short_code | upper }}{% else %}/module {{ state.module_id }}{% endif %}.</li>
         <li>Playbook live: {% if state.published_version_number %}v{{ state.published_version_number }}{% else %}belum ada{% endif %}.</li>
         <li>AI utama: {{ state.ai_runtime_profile_label or 'belum dipilih' }} · {{ state.ai_model or 'model belum dipilih' }}{% if not state.ai_runtime_profile_active %} (nonaktif / belum tersedia){% endif %}.</li>
         <li>AI cadangan: {{ state.backup_ai_label or 'belum dipilih' }}{% if state.backup_ai_runtime_profile_id %} · {{ state.backup_ai_model }}{% if not state.backup_ai_active %} (nonaktif / belum tersedia){% endif %}{% endif %}.</li>

@@ -1483,6 +1483,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 ai_model=values["ai_model"],
                 backup_ai_model=values["backup_ai_model"],
                 active=values["active"] == "1",
+                short_code=values["short_code"],
             )
         except ValueError as exc:
             return templates.TemplateResponse(
@@ -1550,6 +1551,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                     if "backup_ai_selection" in form or "backup_ai_runtime_profile_id" in form else None),
                 ai_model=values["ai_model"],
                 backup_ai_model=values["backup_ai_model"],
+                short_code=values["short_code"] if "short_code" in form else None,
             )
         except ValueError as exc:
             return _module_redirect(company_id, module_id, error=str(exc))
@@ -2029,6 +2031,7 @@ def _module_form_values(form) -> dict[str, str | None]:
         "company_id": str(form.get("company_id", "")).strip(),
         "name": str(form.get("name", "")).strip(),
         "description": str(form.get("description", "")).strip(),
+        "short_code": str(form.get("short_code", "")).strip(),
         "ai_runtime_profile_id": primary.strip() if "ai_selection" in form else str(form.get("ai_runtime_profile_id", "")).strip(),
         "backup_ai_runtime_profile_id": backup.strip() if "backup_ai_selection" in form else str(form.get("backup_ai_runtime_profile_id", "")).strip(),
         "ai_model": model if "ai_selection" in form else None,
@@ -2056,6 +2059,7 @@ def _module_form_context(
         "backup_ai_runtime_profile_id": "",
         "ai_selection": "",
         "backup_ai_selection": "",
+        "short_code": "",
         "active": "1",
     }
     defaults.update({key: value for key, value in (values or {}).items() if value})
@@ -2314,6 +2318,9 @@ _ACTIVITY_DETAIL_LABELS = {
     "version_number": "Versi",
     "module_count": "Jumlah module",
     "module_ids": "Module",
+    "short_code": "Kode singkat",
+    "short_code_before": "Kode singkat sebelumnya",
+    "short_code_after": "Kode singkat baru",
     "ai_runtime_profile_id": "AI utama",
     "ai_runtime_profile_before": "AI utama sebelumnya",
     "ai_runtime_profile_after": "AI utama baru",

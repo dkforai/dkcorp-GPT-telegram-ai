@@ -913,6 +913,174 @@ def test_question_mark_help_dispatch_bypasses_ai(tmp_path, monkeypatch, text, en
         assert _database_rows(bot.database.path) == before
 
 
+def _assign_test_short_code(database, code="TG"):
+    module = database.get_module_admin("malang-strudel", "threads-generator")
+    return database.update_module(module.company_id, module.module_id, module.name,
+                                  module.description, "admin", module.ai_runtime_profile_id,
+                                  short_code=code)
+
+
+def test_module_short_code_preserves_identity_history_versions_and_legacy_clients(tmp_path):
+    database = _company_migration_fixture(tmp_path)
+    before = _database_rows(database.path)
+    module = _assign_test_short_code(database)
+    assert module.short_code == "tg"
+    assert database.list_modules_admin()[0]["short_code"] == "tg"
+    assert database.get_module_playbook_admin(module.company_id, module.module_id)["short_code"] == "tg"
+    for request in ("TG", "tg", "threads-generator"):
+        assert database.set_active_module(42, request) == module
+    database.update_module(module.company_id, module.module_id, module.name,
+                           module.description, "admin", module.ai_runtime_profile_id)
+    assert database.get_module_admin(module.company_id, module.module_id) == module
+    after = _database_rows(database.path)
+    for table in before:
+        if table not in {"modules", "user_sessions", "admin_audit_events", "sqlite_sequence"}:
+            assert after[table] == before[table]
+    assert after["user_sessions"][0]["active_module_id"] == "threads-generator"
+    assert after["modules"][0]["id"] == before["modules"][0]["id"]
+    _assign_test_short_code(database, "")
+    assert database.set_active_module(42, "tg") is None
+    assert database.set_active_module(42, "threads-generator").module_id == "threads-generator"
+
+
+@pytest.mark.parametrize("code", ["x", "long", "off", "OFF", "/tg", "t-g", "1tg", "t g", "t💡", "KG"])
+def test_module_short_code_rejects_invalid_without_mutation(tmp_path, code):
+    database = _company_migration_fixture(tmp_path)
+    before = _database_rows(database.path)
+    with pytest.raises(ValueError):
+        _assign_test_short_code(database, code)
+    assert _database_rows(database.path) == before
+
+
+def test_module_short_code_namespace_and_company_isolation(tmp_path):
+    database = _company_migration_fixture(tmp_path)
+    module = _assign_test_short_code(database)
+    for module_id, code in [("other-module", "TG"), ("tg", ""), ("another", "tG")]:
+        with pytest.raises(ValueError, match="sudah digunakan"):
+            database.create_module(module.company_id, module_id, "Other module", "", "admin",
+                                   module.ai_runtime_profile_id, short_code=code)
+    database.create_module(module.company_id, "ig", "Instagram", "", "admin", module.ai_runtime_profile_id)
+    with pytest.raises(ValueError, match="sudah digunakan"):
+        _assign_test_short_code(database, "IG")
+    # Even inactive aliases remain reserved within a company.
+    database.set_module_active(module.company_id, module.module_id, False, "admin")
+    with pytest.raises(ValueError):
+        database.update_module(module.company_id, "ig", "Instagram", "", "admin", module.ai_runtime_profile_id, short_code="TG")
+    other = database.create_module("amazing-malang", "writer", "Other writer", "", "admin", module.ai_runtime_profile_id, short_code="TG")
+    database.save_module_playbook_draft(other.company_id, other.module_id, "Other playbook", "admin")
+    database.publish_module_playbook(other.company_id, other.module_id, "admin")
+    database.set_membership_module_access(42, other.company_id, [other.module_id], "admin")
+    database.set_active_company(42, other.company_id)
+    assert database.set_active_module(42, "TG") == other
+    with database._connect() as connection:
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute("UPDATE modules SET short_code='TG' WHERE company_id=? AND module_id='ig'", (module.company_id,))
+
+
+def test_module_short_code_legacy_schema_migration_and_company_rename(tmp_path):
+    database = _company_migration_fixture(tmp_path)
+    with database._connect() as connection:
+        connection.execute("DROP INDEX modules_short_code_unique")
+        connection.execute("ALTER TABLE modules DROP COLUMN short_code")
+    database.initialize()
+    database.initialize()
+    assert database.get_module_admin("malang-strudel", "threads-generator").short_code == ""
+    _assign_test_short_code(database)
+    database.create_company("dk-corp-group", "DK Corp Group", "admin")
+    backup = database.migrate_company_ids({"dk-corp-group": "DKGroups", "malang-strudel": "ms"}, "admin")
+    assert backup and database.get_company("dkgroups").name == "DK Corp Group"
+    assert database.get_company("dk-corp-group") is None
+    assert database.set_active_module(42, "TG").company_id == "ms"
+    assert database.migrate_company_ids({"dk-corp-group": "DKGroups", "malang-strudel": "ms"}, "admin") is None
+
+
+@pytest.mark.parametrize("text,entity", [("/TG", True), ("/tg", False), ("/Tg@test_bot", True), ("/tg@OTHER_bot", True), ("/zz", True)])
+def test_module_shortcut_dispatch_menu_and_no_ai(tmp_path, monkeypatch, text, entity):
+    bot = _help_bot(tmp_path)
+    _assign_test_short_code(bot.database)
+    bot.database.clear_active_module(42)
+    menu = "".join(reply[0] for reply in _call_menu(bot))
+    assert "/TG — Threads generator" in menu
+    application = bot.build_application()
+    application.bot._bot_user = TelegramUser(999, "Test", is_bot=True, username="test_bot")
+    message = {"message_id": 1, "date": 0, "chat": {"id": 42, "type": "private"}, "from": {"id": 42, "first_name": "DK", "is_bot": False}, "text": text}
+    if entity:
+        message["entities"] = [{"type": "bot_command", "offset": 0, "length": len(text)}]
+    update = Update.de_json({"update_id": 1, "message": message}, application.bot)
+    handler, checked = next((h, c) for h in application.handlers[0] if (c := h.check_update(update)) is not None and c is not False)
+    assert handler.callback.__name__ == "module_shortcut"
+    replies = []
+    async def reply_text(self, value, **kwargs):
+        replies.append(value)
+    monkeypatch.setattr(Message, "reply_text", reply_text)
+    before = _database_rows(bot.database.path)
+    context = application.context_types.context.from_update(update, application)
+    asyncio.run(handler.handle_update(update, application, checked, context))
+    if "OTHER_bot" in text or text == "/zz":
+        assert _database_rows(bot.database.path) == before
+        assert not replies if "OTHER_bot" in text else "tidak ditemukan" in replies[0]
+    else:
+        assert bot.database.get_active_module(42, "malang-strudel").module_id == "threads-generator"
+        assert "diubah ke Threads generator" in replies[0]
+        assert _database_rows(bot.database.path)["messages"] == before["messages"]
+
+
+@pytest.mark.parametrize("mode", ["unregistered", "whitelist", "membership", "company", "module", "unpublished", "profile", "access", "other-company"])
+def test_module_shortcut_denies_without_mutating_context(tmp_path, mode):
+    bot = _help_bot(tmp_path)
+    module = _assign_test_short_code(bot.database)
+    user_id = 999 if mode == "unregistered" else 42
+    with bot.database._connect() as connection:
+        statements = {
+            "whitelist": "UPDATE users SET active=0 WHERE telegram_id=42",
+            "membership": "UPDATE user_company_memberships SET active=0",
+            "company": "UPDATE companies SET active=0",
+            "module": "UPDATE modules SET active=0",
+            "unpublished": "UPDATE module_playbook_state SET published_version_id=NULL",
+            "profile": "UPDATE ai_runtime_profiles SET active=0",
+            "access": "UPDATE module_access SET active=0",
+            "other-company": "UPDATE user_sessions SET active_company_id='amazing-malang', active_module_id=''",
+        }
+        if mode in statements:
+            connection.execute(statements[mode])
+    before = _database_rows(bot.database.path)
+    replies = []
+    async def reply_text(text, **kwargs):
+        replies.append(text)
+    update = SimpleNamespace(effective_user=SimpleNamespace(id=user_id), effective_message=SimpleNamespace(text="/TG", reply_text=reply_text))
+    asyncio.run(bot.module_shortcut(update, SimpleNamespace()))
+    assert replies and not any("diubah ke Threads generator" in reply for reply in replies)
+    assert _database_rows(bot.database.path) == before
+
+
+def test_admin_short_code_create_update_validation_csrf_and_legacy_preservation(tmp_path):
+    database, primary, _ = _database_with_ai_pair(tmp_path)
+    settings = _test_settings(tmp_path, tmp_path / "users.json", tmp_path / "companies.json", database_path=database.path)
+    with TestClient(create_admin_app(settings, database)) as client:
+        assert client.post("/admin/modules/company-a/threads", data={"short_code": "TG"}, follow_redirects=False).status_code == 303
+        client.post("/admin/login", data={"username": "admin", "password": "strong-password"})
+        page = client.get("/admin/modules/new")
+        assert 'name="short_code"' in page.text
+        csrf = re.search(r'name="csrf_token" value="([a-f0-9]+)"', page.text).group(1)
+        data = {"csrf_token": csrf, "company_id": "company-a", "name": "Threads", "active": "1", "ai_runtime_profile_id": primary.profile_id, "short_code": "TG"}
+        assert client.post("/admin/modules", data={**data, "short_code": "long"}).status_code == 400
+        assert client.post("/admin/modules", data=data).status_code == 200
+        path = "/admin/modules/company-a/threads"
+        assert 'value="TG"' in client.get(path).text
+        assert "/TG" in client.get("/admin/modules").text
+        before = database.get_module_admin("company-a", "threads")
+        assert before.short_code == "tg"
+        assert client.post(path, data={**data, "csrf_token": "bad", "short_code": "IG"}).status_code == 403
+        client.post(path, data={**data, "short_code": "off"})
+        assert database.get_module_admin("company-a", "threads") == before
+        client.post(path, data={k: v for k, v in data.items() if k != "short_code"})
+        assert database.get_module_admin("company-a", "threads") == before
+        client.post(path, data={**data, "short_code": "IG"})
+        assert database.get_module_admin("company-a", "threads").short_code == "ig"
+        client.post(path, data={**data, "short_code": ""})
+        assert database.get_module_admin("company-a", "threads").short_code == ""
+
+
 def test_help_long_module_list_is_complete_and_split(tmp_path, monkeypatch):
     bot = _help_bot(tmp_path)
     module = bot.database.list_accessible_modules(42, "malang-strudel")[0]

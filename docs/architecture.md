@@ -5,7 +5,7 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 1.18 |
+| Versi | 1.19 |
 | Terakhir diperbarui | 3 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
@@ -118,6 +118,7 @@ Jawaban ke user
 | Menu command adaptif | v1.18 deployed; 276 tes lokal lulus; Railway dan HTTP produksi terverifikasi | `/?`, `/help`, dan `/start`; satu company langsung daftar module, lebih dari satu menampilkan pilihan company; selalu sesuai akses aktif |
 | Migrasi Company ID oleh operator | v1.17 deployed; produksi memakai `amz` dan `ms`; 255 tes lulus | Startup-only, backup SQLite terverifikasi, transaksi atomik, seluruh relasi dan history dipertahankan; bukan field edit admin |
 | Module router dan active context | Sudah | Command `/module`, General context, default-deny module access, dan reset module saat company berubah |
+| Kode singkat module | v1.19 implementasi lokal; 304 tes lulus; menunggu deployment | Alias opsional 2–3 karakter per company; `/TG`, `/tg`, dan `/module TG` memilih ID canonical yang sama; menu sesuai akses |
 | Company-scoped instruction | Sudah | Draft dan versi publish tersimpan di SQLite; file company menjadi fallback transisi |
 | AI Module Playbook | Sudah | Registry per company, draft, preview, immutable publish, restore-to-draft, status, dan runtime prompt |
 | Authorization per knowledge | Sebagian | Sudah company-scoped; knowledge khusus module, division, dan clearance belum |
@@ -301,7 +302,7 @@ Folder adalah bentuk transisi yang mudah diaudit. Target produksi skala lanjut m
 | `users` | Identitas Telegram global |
 | `companies` | Master perusahaan |
 | `user_company_memberships` | Jabatan, divisi, level, dan profile per perusahaan |
-| `modules` | Modul milik perusahaan; pasangan `ai_runtime_profile_id`/`ai_model` untuk utama dan `backup_ai_runtime_profile_id`/`backup_ai_model` untuk cadangan; model kosong mempertahankan fixed-model legacy |
+| `modules` | Modul milik perusahaan; `short_code` opsional unik case-insensitive per company; pasangan `ai_runtime_profile_id`/`ai_model` untuk utama dan `backup_ai_runtime_profile_id`/`backup_ai_model` untuk cadangan; model kosong mempertahankan fixed-model legacy |
 | `ai_runtime_profiles` | Koneksi provider/endpoint, ciphertext API key atau environment lama, status tes dan timestamp katalog; model hanya untuk kompatibilitas profile lama |
 | `ai_model_catalog` | Snapshot model per koneksi provider, flag kompatibilitas adapter chat, alasan dan timestamp; bukan daftar model hardcoded |
 | `module_access` | Hak membership terhadap modul |
@@ -945,6 +946,17 @@ Paket form/backend/runtime/import telah diterapkan, diuji lokal, dan dideploy. C
 | ADR-067 | Hanya blok naskah siap salin yang polos, penjelasan tetap safe HTML | Model menandai isi naskah berdasarkan tujuan, bukan nama module; renderer mengirim bagian terpisah dan membersihkan penanda sebelum history/limit/split. Tidak memutasi konten published atau history lama |
 | ADR-068 | Rename Company ID hanya sebagai maintenance startup, bukan edit form | Runtime lama harus berhenti; backup konsisten, FK deferred, pembandingan seluruh row, audit dan repeat-safe mencegah relasi hilang atau writer memakai ID lama |
 | ADR-069 | Menu command ditentukan akses efektif, bukan respons AI | Literal `/?` diproses sebelum chat; `/help` dan `/start` memakai menu yang sama. Company chooser hanya untuk >1 membership/company aktif, daftar module tetap default-deny |
+| ADR-070 | Kode singkat module sebagai alias, bukan rename ID canonical | Admin dapat mengganti alias tanpa memindahkan history, akses, playbook, atau credential. Alias unik per company, case-insensitive, berbagi namespace dengan ID canonical, dan tetap memakai ACL |
+
+### Kode singkat module
+
+Field opsional `Kode singkat` pada tambah/edit module menerima 2–3 huruf/angka ASCII, diawali huruf. Server menyimpan lowercase dan UI/menu menampilkan uppercase. Blank menghapus alias; field yang tidak dikirim client lama mempertahankan nilai lama. Penyimpanan identitas berlaku langsung, tanpa publish ulang playbook.
+
+Schema additive menambah `modules.short_code TEXT NOT NULL DEFAULT ''` dengan unique partial index `(company_id, short_code COLLATE NOCASE)` untuk nilai nonkosong. Tidak mengisi alias massal otomatis. Transaksi `BEGIN IMMEDIATE` memeriksa benturan alias, ID module lain (termasuk nonaktif), dan command sistem seperti `off`. Kode sama boleh berada di company berbeda. Perubahan tercatat di audit `module.created`/`module.updated`.
+
+`/TG`, `/tg`, dan `/module TG` memilih module dalam company aktif saja. `/module <id-lama>` tetap berlaku. Handler shortcut tepat 2–3 karakter dipasang setelah command bawaan dan sebelum chat, bekerja dengan/tanpa entity Telegram serta memeriksa suffix `@bot_username` bila ada. Shortcut tidak memanggil AI, tidak menyimpan pesan ke history, dan tidak melewati whitelist atau resolver akses module. Session selalu menyimpan ID canonical, bukan alias. `TG` tanpa slash tetap pesan chat. Kode tidak dikenal ditolak tanpa mengubah konteks; tidak mencoba company lain.
+
+Menu `/?`, `/help`, `/start`, dan daftar `/module` memakai alias jika tersedia, atau command lama bila kosong. Whitelist, company/membership/module/access/AI aktif dan playbook published tetap disyaratkan. Penetapan `TG` untuk Threads generator adalah konfigurasi data module yang diminta DK, bukan hardcode nama module dalam routing.
 
 ### Menu Telegram adaptif
 
@@ -967,6 +979,14 @@ Urutan startup adalah initialize schema, migrasi jika diminta, bootstrap, lalu a
 Restart dengan mapping yang sama menjadi no-op hanya jika target lengkap, sumber tidak tersisa, dan audit cocok. Setelah migrasi terverifikasi, hapus `COMPANY_ID_MIGRATION` dari environment. ID lama bukan alias dan URL admin lama perlu dibuka ulang dari menu. Backup berisi data privat dan ciphertext credential, bukan master encryption key; jangan commit atau membagikannya. Pemulihan harus dilakukan saat semua writer berhenti menggunakan SQLite backup API, bukan menimpa file database hidup atau mengabaikan WAL.
 
 ## 16. Changelog dokumen
+
+### 3 September 2026 — v1.19
+
+- menambahkan field Kode singkat pada tambah/edit module dan menampilkannya pada katalog; ID canonical tetap immutable;
+- menambahkan shortcut Telegram case-insensitive, resolver alias dan menu adaptif dengan ACL yang sama; session, history, playbook, dan pilihan AI tetap menggunakan ID canonical;
+- migrasi schema additive, unique index, pemeriksaan benturan namespace, audit, kompatibilitas client lama, dan penghapusan alias;
+- seluruh 304 tes lokal lulus, termasuk 28 tes baru untuk validasi kode, isolasi company, duplicate alias/ID, schema legacy, migrasi Company ID bersama alias, form/CSRF, routing Telegram, dan penolakan akses tanpa mutasi. Satu warning deprecation Starlette/httpx yang sudah ada tetap muncul;
+- DK meminta `dk-corp-group` → `DKGroups`; ID disimpan normalized `dkgroups`, command `/company DKGroups` diterima. DK menyetujui commit/deploy, penetapan TG, dan maintenance startup ADR-068 dengan backup otomatis. Preflight produksi memastikan sumber ada, target belum dipakai, Threads generator tetap Published v2 dengan primary `gpt-5.1` dan backup `gpt-4o`. Penetapan TG dan migrasi produksi belum dijalankan.
 
 ### 3 September 2026 — v1.18
 
