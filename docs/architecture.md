@@ -5,7 +5,7 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 1.15 |
+| Versi | 1.16 |
 | Terakhir diperbarui | 3 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
@@ -88,7 +88,7 @@ Conversation Delivery Policy
 pendek, bertahap, dan satu tujuan (belum diimplementasikan penuh)
     ↓
 Telegram Response Renderer
-safe HTML + split + fallback plain text
+pisahkan naskah siap salin (polos) dari penjelasan (safe HTML) + split
     ↓
 Jawaban ke user
 ```
@@ -97,7 +97,7 @@ Jawaban ke user
 
 | Lapisan | Status | Implementasi saat ini |
 |---|---|---|
-| Telegram Bot | Sudah | Long polling dan respons HTML terformat |
+| Telegram Bot | Sudah | Long polling; respons HTML biasa dan blok naskah siap salin polos pada implementasi v1.16 |
 | Update Reliability | Sudah | Pending update dipertahankan, concurrency terbatas, dan serialization per user |
 | Authentication | Sudah | Whitelist Telegram ID |
 | User Context | Sudah | Identity global dan membership per perusahaan |
@@ -111,7 +111,7 @@ Jawaban ke user
 | Provider Abstraction | Implementasi v1.13 | OpenAI/DeepSeek/Gemini compatible API; Claude native Messages; General tetap OpenAI/DeepSeek |
 | Settings AI | Implementasi v1.14 deployed; smoke HTTP produksi terverifikasi | Form Provider + API Key dan readiness encryption terverifikasi; 183 tes lokal lulus. Registry produksi masih kosong, sehingga tes provider nyata/pemilihan model produksi belum dilakukan |
 | AI utama dan cadangan per Module | Sudah | Dua pilihan dari AI terdaftar; cadangan opsional, failover terbatas, tanpa fallback global; encrypted key atau legacy environment |
-| Telegram Response Renderer | Sudah | Safe HTML, split, link preview off, dan fallback plain text |
+| Telegram Response Renderer | v1.16 siap rilis; 233 tes lulus; deployment disetujui, menunggu verifikasi | Safe HTML untuk jawaban biasa, teks polos khusus blok naskah siap salin; limit gabungan/history/split dan link preview off |
 | Conversation Delivery Policy | Belum | Akan mengatur panjang, ritme, dan progressive disclosure |
 | Multi-company membership | Sudah | Tabel membership SQLite; JSON hanya bootstrap awal |
 | Company router dan active context | Sudah | Command `/company` dan session active company |
@@ -119,7 +119,7 @@ Jawaban ke user
 | Company-scoped instruction | Sudah | Draft dan versi publish tersimpan di SQLite; file company menjadi fallback transisi |
 | AI Module Playbook | Sudah | Registry per company, draft, preview, immutable publish, restore-to-draft, status, dan runtime prompt |
 | Authorization per knowledge | Sebagian | Sudah company-scoped; knowledge khusus module, division, dan clearance belum |
-| Response Validator | Sebagian | Batas panjang, split, escape HTML, dan fallback; belum ada policy classifier |
+| Response Validator | Sebagian | Pemisahan blok siap salin, normalisasi selektif, pemeriksaan jawaban kosong, batas panjang, dan split; belum ada policy classifier |
 | Admin Panel | Sebagian | Company, user, membership, Instruction, Knowledge, Module, dan module access writable; Activity read-only |
 | Retrieval/RAG | Belum | Seluruh knowledge dimuat sampai batas karakter |
 
@@ -590,54 +590,65 @@ Knowledge reference
 Chat history dan pertanyaan terbaru
 ```
 
-Aturan dengan prioritas lebih rendah tidak boleh menonaktifkan aturan keamanan pada lapisan di atasnya.
+Aturan dengan prioritas lebih rendah tidak boleh menonaktifkan aturan keamanan pada lapisan di atasnya. Kontrak pengiriman ditempatkan di akhir system prompt: jawaban biasa tetap terformat, hanya isi naskah siap salin memakai blok khusus. Kontrak format tidak mengubah substansi bisnis maupun aturan keamanan.
 
 ## 9. Telegram Response Renderer
 
 Telegram Response Renderer adalah lapisan teknis di Python. Lapisan ini tidak menentukan apakah jawaban harus strategis, taktis, atau operasional. Tugasnya hanya memastikan draft respons tampil konsisten dan aman di Telegram.
 
 ```text
-Draft AI dalam subset Markdown
+Jawaban AI: penjelasan Markdown + blok naskah siap salin bila relevan
     ↓
-Escape semua HTML mentah
+Pisahkan blok [[COPY_TEXT]] ... [[/COPY_TEXT]]
+    ├── di luar blok → pertahankan Markdown
+    └── isi blok → normalisasi subset markup menjadi teks polos
     ↓
-Konversi markup yang diizinkan
+Batas panjang gabungan dan pemeriksaan jawaban tidak kosong
     ↓
-Pecah pesan dengan ruang aman terhadap batas Telegram
+Simpan history tanpa penanda pengiriman
     ↓
-Kirim dengan parse_mode=HTML
-    ↓ jika Telegram menolak parsing
-Fallback ke plain text
+Kirim setiap bagian tersendiri, split dengan target 3.500 karakter
+    ├── penjelasan → safe HTML + fallback plain text jika parsing ditolak
+    └── naskah → parse_mode=None, tanpa formatting entities
 ```
 
-### 9.1 Format input yang didukung
+### 9.1 Pemilihan format berdasarkan isi
 
-| Input AI | Hasil Telegram HTML | Fungsi |
+Default tetap renderer HTML sebagaimana ADR-008. Bold, italic, inline code, fenced code, bullet, quote, spoiler, heading, dan link HTTP/HTTPS diproses seperti sebelumnya. HTML mentah dari model di-escape; bukan dieksekusi.
+
+Kontrak AI meminta `[[COPY_TEXT]]` dan `[[/COPY_TEXT]]` pada baris tersendiri hanya untuk ISI naskah siap disalin/diposting, misalnya Threads, caption Instagram, copy iklan, dan draft pesan. Judul/nomor pilihan, sapaan, pertanyaan, analisis, tips, dan petunjuk lanjutan tetap di luar blok. Setiap alternatif naskah memakai blok sendiri agar copy-paste tidak membawa petunjuk admin/bot. Perbedaan ini berlaku berdasarkan tujuan isi, bukan hardcode nama module: pilihan akun dalam Threads generator tetap terformat, sementara General dapat menghasilkan caption polos.
+
+`prepare_response_parts` menghasilkan bagian beratribut `copyable`. Hanya bagian tersebut yang memakai normalisasi berikut.
+
+| Input AI legacy | Hasil teks polos | Catatan |
 |---|---|---|
-| `**teks**` | `<b>teks</b>` | Bold |
-| `*teks*` | `<i>teks</i>` | Italic |
-| `` `teks` `` | `<code>teks</code>` | Inline code |
-| triple backtick | `<pre>...</pre>` | Code block |
-| `- item` | `• item` | Bullet |
-| `> kutipan` | `<blockquote>...</blockquote>` | Quote |
-| `||teks||` | `<tg-spoiler>teks</tg-spoiler>` | Spoiler |
-| `[label](https://...)` | `<a href="...">label</a>` | Link HTTPS/HTTP |
+| `**teks**`, `__teks__` | teks | Tanpa bold |
+| `*teks*`, `_teks_` | teks | Tanpa italic |
+| `` `teks` `` | teks | Isi literal dipertahankan |
+| fenced code triple backtick | isi kode dengan indentasi | Tidak dibungkus style code block |
+| `- item`, `1. item` | tetap berupa daftar teks | Tidak mengubah urutan pilihan |
+| `> kutipan` | kutipan | Baris `>` kosong menjadi baris kosong |
+| `||teks||`, `~~teks~~` | teks | Tanpa spoiler/strikethrough |
+| `[label](https://...)` | label (https://...) | URL tidak hilang ketika disalin |
 
-Heading Markdown diubah menjadi bold. Tabel, raw HTML, nested formatting, dan skema URL selain HTTP/HTTPS tidak menjadi bagian kontrak MVP.
+Di dalam blok siap salin, heading Markdown menjadi teks biasa. Kontrak meminta naskah tanpa tanda kutip pembungkus maupun bullet per baris. Paragraf, hashtag, emoji, dan tanda baca konten tetap dipertahankan. Pembersihan bersifat best-effort untuk subset legacy, bukan parser Markdown umum; HTML literal dan markup tak dikenal tidak diinterpretasikan di jalur polos. URL/mention dapat tetap dikenali otomatis oleh aplikasi Telegram.
+
+Pemilihan blok bergantung pada kepatuhan model terhadap kontrak output; bukan classifier semantik deterministik atau API tambahan. Tanpa penanda, jawaban tetap terformat. Parser hanya mengenali penanda pada baris tersendiri di luar fenced code penjelasan. Blok tanpa penutup dianggap polos sampai akhir; penanda penutup liar/nested dihilangkan, bagian kosong tidak dikirim. Format campuran, penanda, dan limit diuji memakai fixture; kualitas penandaan oleh provider nyata belum diverifikasi.
 
 ### 9.2 Security boundary
 
-- Semua `<`, `>`, dan `&` dari output model di-escape.
-- Model tidak boleh mengirim HTML mentah.
-- Hanya renderer yang boleh menghasilkan tag HTML Telegram.
-- Link Markdown hanya dirender bila memakai `http://` atau `https://`.
-- Pesan dipecah dari source dengan target 3.500 karakter agar berada di bawah batas 4.096 karakter Telegram setelah entities parsing.
-- Jika Telegram menolak HTML, sistem mencatat warning tanpa isi pesan dan mengirim chunk yang sama sebagai plain text.
+- Jawaban biasa memakai safe HTML dengan escape semua HTML mentah dari model. Hanya tag buatan renderer diizinkan; parsing ditolak Telegram memakai fallback plain text.
+- Blok siap salin memakai `parse_mode=None`, tanpa formatting entities. Penanda hanya memengaruhi pengiriman/format, bukan izin, routing, atau tool execution.
+- URL HTTP/HTTPS dipertahankan sebagai teks; renderer tidak mengambil isi URL atau menjalankan kode.
+- Pemisahan penanda dan normalisasi selektif berlangsung sebelum limit karakter dan split, agar penanda tidak bocor di batas chunk. Budget panjang berlaku gabungan termasuk pemisah history; jawaban kosong tidak disimpan sebagai sukses.
+- Setiap bagian dikirim sebagai pesan tersendiri dengan target split 3.500 karakter. Jalur plain tidak memakai fallback HTML; jalur biasa mempertahankan fallback parsing lama.
 - Link preview dinonaktifkan untuk respons AI.
+- Berlaku sama pada General, AI utama Module, dan AI cadangan. Routing, timeout, credential, otorisasi, dan company/module isolation tidak berubah.
+- History baru menyimpan gabungan teks bagian tanpa penanda, tetap mempertahankan Markdown penjelasan dan naskah polos. History existing, pesan Telegram lama, dan versi published playbook/instruction/knowledge tidak diubah; tidak ada migrasi database.
 
 ### 9.3 Batas tanggung jawab
 
-Renderer tidak mengatur panjang ideal, jumlah pilihan, tone, satu pesan satu tujuan, atau progressive disclosure. Semua itu adalah tanggung jawab Conversation Delivery Policy yang akan dibangun terpisah.
+Renderer hanya memisahkan artefak siap salin dari penjelasan melalui kontrak penanda. Panjang ideal, jumlah pilihan, tone, satu pesan satu tujuan, dan progressive disclosure umum tetap menjadi tanggung jawab Conversation Delivery Policy yang akan dibangun terpisah.
 
 ## 10. Data dan penyimpanan
 
@@ -870,7 +881,7 @@ Paket form/backend/runtime/import telah diterapkan, diuji lokal, dan dideploy. C
 | ADR-005 | Jabatan dipisahkan dari communication profile | Struktur organisasi tidak selalu sama dengan level komunikasi |
 | ADR-006 | Dokumen arsitektur Markdown sebagai source of truth | Mudah diperbarui bersama source code sebelum dibuat PDF |
 | ADR-007 | Conversation Delivery Policy dipisahkan dari Telegram Renderer | Cara menyampaikan pesan tidak dicampur dengan format teknis channel |
-| ADR-008 | Model menghasilkan subset Markdown, Python menghasilkan safe HTML | Mencegah raw HTML model sekaligus menjaga tampilan Telegram konsisten |
+| ADR-008 | Model menghasilkan subset Markdown, Python menghasilkan safe HTML; tetap default dengan pengecualian ADR-067 | Menjaga jawaban biasa terformat dan aman; naskah siap salin memiliki jalur polos khusus |
 | ADR-009 | Satu bot dan satu codebase untuk seluruh perusahaan | Menghindari fragmentasi bot, akses, knowledge, dan maintenance |
 | ADR-010 | Jabatan dan profile disimpan pada user-company membership | Satu orang dapat mempunyai peran berbeda pada perusahaan berbeda |
 | ADR-011 | Company Instruction dipisahkan dari Business Knowledge | Instruksi AI tidak boleh bercampur dengan fakta dan dokumen referensi |
@@ -929,8 +940,17 @@ Paket form/backend/runtime/import telah diterapkan, diuji lokal, dan dideploy. C
 | ADR-064 | Tes manual, sintetis, terbatas, dan revision-aware | Mencegah pengiriman data bisnis, biaya retry diam-diam, error mentah, dan status tes usang |
 | ADR-065 | Registrasi Provider + API Key dan katalog model dari API resmi | Menghilangkan input nama/model, memisahkan koneksi dari model, serta menampilkan kapabilitas adapter secara jujur; v1.14 mengganti tes inferensi UI ADR-064 menjadi tes katalog read-only |
 | ADR-066 | Module memilih pasangan koneksi+model, dengan legacy fallback eksplisit | Satu key untuk banyak model; pemilihan server-validated, snapshot atomik/revision-aware, key rotation menginvalidasi katalog, dan pilihan lama tidak diubah diam-diam |
+| ADR-067 | Hanya blok naskah siap salin yang polos, penjelasan tetap safe HTML | Model menandai isi naskah berdasarkan tujuan, bukan nama module; renderer mengirim bagian terpisah dan membersihkan penanda sebelum history/limit/split. Tidak memutasi konten published atau history lama |
 
 ## 16. Changelog dokumen
+
+### 3 September 2026 — v1.16
+
+- merevisi rancangan sebelum deploy sesuai koreksi DK: bukan seluruh jawaban polos, hanya isi naskah siap disalin (Threads/caption/draft pesan); penjelasan, sapaan, dan tips tetap terformat;
+- mempertahankan renderer HTML dan fallback lama, menambah protokol blok siap salin serta normalisasi subset markup khusus di dalam blok;
+- memisahkan naskah ke pesan polos sendiri, tanpa label/petunjuk. Pemilihan berbasis isi oleh model, tidak hardcode module. Penanda dihapus sebelum history/limit/split; data lama tidak diubah;
+- 233 tes lokal lulus, termasuk jawaban campuran, beberapa alternatif, sapaan module tetap HTML, caption di General polos, penanda tidak lengkap, limit gabungan, literal fenced code, fallback HTML, serta preservasi teks/indentasi. Tes memakai fixture tanpa memanggil AI/Telegram produksi; warning deprecation Starlette/httpx existing tetap ada;
+- DK menyetujui commit dan deployment perbaikan format melalui GitHub → Railway; verifikasi produksi dicatat setelah deployment berhasil. Perubahan Company ID tidak termasuk rilis ini dan tetap ditunda. Tidak ada perubahan model/credential/timeout maupun mutasi data bisnis produksi.
 
 ### 3 September 2026 — v1.15
 

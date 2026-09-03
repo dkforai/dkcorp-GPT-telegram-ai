@@ -12,7 +12,7 @@ Telegram → whitelist Telegram ID → company membership
          → company instruction + company knowledge
          → optional active module + published module playbook
          → company/module-scoped history SQLite → AI provider
-         → safe HTML renderer → Telegram
+         → renderer HTML biasa / teks polos khusus naskah siap salin → Telegram
 ```
 
 Bot memakai **long polling** dan tidak memerlukan webhook. Admin panel memakai HTTP server dalam container yang sama. Domain Railway hanya diperlukan untuk membuka halaman admin.
@@ -32,8 +32,8 @@ Pemrosesan update memakai controlled concurrency. User berbeda dapat diproses pa
 - Pending Telegram update dipertahankan saat bot restart
 - Controlled concurrency dengan urutan pesan per user tetap dijaga
 - Provider abstraction OpenAI/DeepSeek melalui API yang kompatibel dengan OpenAI
-- Telegram renderer untuk bold, italic, code, link, quote, spoiler, dan code block
-- Raw HTML dari model di-escape dan fallback plain text tersedia
+- Jawaban biasa tetap terformat; naskah siap copy-paste seperti Threads/caption dikirim sebagai pesan polos tersendiri
+- Hanya blok naskah siap salin yang dibersihkan dari style; penjelasan, pertanyaan, dan tips tetap memakai safe HTML
 - Admin web dengan login, dashboard, company registry, dan user access directory
 - Company Management untuk menambah, mengganti nama, mengaktifkan, dan menonaktifkan tenant
 - Users & Access Management untuk whitelist dan membership per company
@@ -338,20 +338,15 @@ Pengujian tidak memanggil Telegram atau AI API.
 
 ## Telegram Response Renderer
 
-AI menghasilkan subset Markdown yang terbatas. `app/telegram_renderer.py` meng-escape raw HTML lalu mengubah markup yang didukung menjadi Telegram HTML. Jawaban dikirim dengan `parse_mode=HTML`, link preview dinonaktifkan, dan parsing yang ditolak Telegram otomatis memakai fallback plain text.
+Jawaban biasa tetap memakai subset Markdown menjadi safe Telegram HTML (bold, italic, command, quote, dan lainnya). Jika Telegram menolak HTML, chunk tersebut memakai fallback teks. Format polos tidak dipaksakan pada semua jawaban atau semua percakapan dalam module tertentu.
 
-Format yang didukung:
+Khusus naskah siap disalin/diposting seperti Threads, caption Instagram, copy iklan, atau draft pesan, AI diminta menandai ISINYA dengan `[[COPY_TEXT]]` dan `[[/COPY_TEXT]]` pada baris tersendiri. Penjelasan/judul pilihan/tips ada di luar blok. `app/telegram_renderer.py` memisahkan blok ini sebagai pesan polos (`parse_mode=None`) dan menghilangkan penandanya; setiap alternatif menjadi pesan tersendiri. Pesan biasa di sekitarnya tetap terformat. Sapaan dan pemilihan akun di Threads generator tetap normal; General juga bisa menghasilkan caption siap salin.
 
-````text
-**bold**
-*italic*
-`inline code`
-```code block```
-- bullet
-> quote
-||spoiler||
-[label](https://example.com)
-````
+Hanya isi blok siap salin yang dibersihkan dari subset markup lama. Paragraf, hashtag, emoji, dan URL tetap dipertahankan. Link berlabel menjadi `label (URL)`. Normalisasi dilakukan sebelum limit gabungan/split/history agar penanda tidak bocor ketika jawaban panjang dipotong. History baru menyimpan teks tanpa penanda pengiriman; Markdown penjelasan tetap ada. Preview tautan dinonaktifkan pada kedua jalur.
+
+Pemilihan blok bergantung pada model mengikuti kontrak output, bukan pencocokan nama module/kata kunci atau classifier tambahan. Tanpa penanda, jawaban tetap masuk jalur terformat. Parser menerima penanda pada baris tersendiri, mengabaikannya dalam fenced code penjelasan, dan memakai teks polos sampai akhir bila penutup blok hilang. Pembersihan subset markup bersifat best-effort, bukan parser Markdown umum. Telegram masih dapat mengenali URL/mention otomatis.
+
+Tidak ada perubahan pada model, credential, published playbook, atau data lama. Pesan Telegram dan history existing tidak ditulis ulang.
 
 Conversation Delivery Policy seperti batas kata, satu pesan satu tujuan, dan progressive disclosure sengaja belum digabung ke renderer. Lapisan tersebut akan dikembangkan terpisah.
 
@@ -379,7 +374,7 @@ app/
   providers.py    abstraction AI provider
   prompts.py      penyusun system prompt
   role_profiles.py loader dan resolver communication profile
-  telegram_renderer.py safe HTML renderer Telegram
+  telegram_renderer.py safe HTML + blok teks polos khusus naskah siap salin
   main.py         startup
 config/
   companies.json

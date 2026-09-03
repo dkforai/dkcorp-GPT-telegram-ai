@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from openai import APIConnectionError, APIStatusError
+from telegram.error import BadRequest
 
 from docx import Document
 from fastapi.testclient import TestClient
@@ -28,7 +29,10 @@ from app.providers import (
     ModuleGenerationError, ModuleProviderResolver, RuntimeCredentialError,
 )
 from app.role_profiles import load_role_profiles, resolve_communication_profile
-from app.telegram_renderer import markdown_to_telegram_html
+from app.telegram_renderer import (
+    TELEGRAM_OUTPUT_CONTRACT, TelegramResponsePart, markdown_to_telegram_html,
+    prepare_response_parts, to_telegram_plain_text,
+)
 
 
 def _test_settings(
@@ -635,7 +639,8 @@ def test_module_provider_resolver_uses_named_environment_without_fallback(
     assert calls == [("openai", "module-secret", "gpt-5.4-mini", None)]
 
 
-def test_bot_routes_module_chat_to_module_provider_and_general_to_global(tmp_path):
+@pytest.mark.parametrize("long_answer", [False, True])
+def test_bot_routes_module_chat_to_module_provider_and_general_to_global(tmp_path, long_answer):
     database = Database(tmp_path / "routing.db")
     database.initialize()
     database.create_company("company-a", "Company A", actor="admin")
@@ -685,10 +690,15 @@ def test_bot_routes_module_chat_to_module_provider_and_general_to_global(tmp_pat
 
         async def generate(self, _system_prompt, _history, _user_text):
             self.calls += 1
+            assert _system_prompt.endswith(TELEGRAM_OUTPUT_CONTRACT)
             return self.answer
 
-    global_provider = FakeProvider("global-answer")
-    module_provider = FakeProvider("module-answer")
+    module_answer = "module-answer" + ("a" * 4000 if long_answer else "")
+    global_provider = FakeProvider("> **global-answer**")
+    module_provider = FakeProvider(
+        f"**Pilihan 1**\n[[COPY_TEXT]]\n> **{module_answer}**\n"
+        "[[/COPY_TEXT]]\n**Silakan pilih**"
+    )
     resolver_profiles: list[str] = []
 
     class FakeResolver(ModuleProviderResolver):
@@ -705,9 +715,20 @@ def test_bot_routes_module_chat_to_module_provider_and_general_to_global(tmp_pat
     )
     bot = InternalBot(settings, database, global_provider, FakeResolver())
     replies: list[str] = []
+    reply_modes = []
+    reject_html_once = False
 
-    async def reply_text(value: str, **_kwargs) -> None:
+    async def reply_text(value: str, **kwargs) -> None:
+        nonlocal reject_html_once
+        assert "parse_mode" in kwargs
+        assert not kwargs.get("entities")
+        assert kwargs["disable_web_page_preview"] is True
+        assert len(value) <= 3600
+        if reject_html_once and kwargs["parse_mode"] == "HTML":
+            reject_html_once = False
+            raise BadRequest("Mock HTML parse rejection")
         replies.append(value)
+        reply_modes.append(kwargs["parse_mode"])
 
     async def send_chat_action(*_args, **_kwargs) -> None:
         return None
@@ -725,14 +746,44 @@ def test_bot_routes_module_chat_to_module_provider_and_general_to_global(tmp_pat
     assert module_provider.calls == 1
     assert global_provider.calls == 0
     assert resolver_profiles == ["marketing-openai"]
-    assert "module-answer" in replies[-1]
+    assert replies[0] == "<b>Pilihan 1</b>"
+    assert "".join(replies[1:-1]) == module_answer
+    assert replies[-1] == "<b>Silakan pilih</b>"
+    assert reply_modes == ["HTML", *([None] * (len(replies) - 2)), "HTML"]
+    assert database.get_history(42, 12, "company-a", module.module_id)[-1] == {
+        "role": "assistant", "content": f"**Pilihan 1**\n\n{module_answer}\n\n**Silakan pilih**",
+    }
 
     database.clear_active_module(42)
     message.text = "Pertanyaan general"
     asyncio.run(bot.chat(update, context))
     assert module_provider.calls == 1
     assert global_provider.calls == 1
-    assert "global-answer" in replies[-1]
+    assert replies[-1] == "<blockquote><b>global-answer</b></blockquote>"
+    assert reply_modes[-1] == "HTML"
+    assert database.get_history(42, 12, "company-a", "")[-1] == {
+        "role": "assistant", "content": "> **global-answer**",
+    }
+
+    # General can also produce a copy-ready caption, without a module-name rule.
+    global_provider.answer = "[[COPY_TEXT]]\nCaption Instagram #Piko\n[[/COPY_TEXT]]"
+    asyncio.run(bot.chat(update, context))
+    assert replies[-1] == "Caption Instagram #Piko" and reply_modes[-1] is None
+
+    # Even inside the same module, greetings and explanations stay formatted.
+    database.set_active_module(42, module.module_id)
+    module_provider.answer = "**Halo**, pilih akun `b`."
+    asyncio.run(bot.chat(update, context))
+    assert replies[-1] == "<b>Halo</b>, pilih akun <code>b</code>."
+    assert reply_modes[-1] == "HTML"
+
+    # A parsing rejection affects only that ordinary chunk, not the copy block
+    # or the formatted guidance following it.
+    reject_html_once = True
+    module_provider.answer = "**Judul**\n[[COPY_TEXT]]\nCaption #Piko\n[[/COPY_TEXT]]\n**Tips**"
+    asyncio.run(bot.chat(update, context))
+    assert replies[-3:] == ["**Judul**", "Caption #Piko", "<b>Tips</b>"]
+    assert reply_modes[-3:] == [None, None, "HTML"]
 
 
 def test_company_content_is_scoped_to_configured_paths(tmp_path):
@@ -1868,7 +1919,15 @@ def test_split_message():
     assert [len(chunk) for chunk in chunks] == [4000, 4000, 1000]
 
 
-def test_telegram_renderer_formats_supported_markup():
+def test_split_plain_text_preserves_paragraphs_and_indentation():
+    source = to_telegram_plain_text("```python\n" + "# comment\n" * 360 + "    print('ok')\n```")
+    chunks = _split_message(source, size=3500)
+    assert "".join(chunks) == source
+    assert all(len(chunk) <= 3500 for chunk in chunks)
+    assert "    print('ok')" in chunks[-1]
+
+
+def test_telegram_renderer_removes_legacy_markup():
     source = (
         "# Diagnosis\n\n"
         "**Conversion** turun dan *perlu dicek*.\n"
@@ -1877,22 +1936,113 @@ def test_telegram_renderer_formats_supported_markup():
         "> Data belum cukup\n"
         "||Jawaban quiz||"
     )
-    rendered = markdown_to_telegram_html(source)
-    assert "<b>Diagnosis</b>" in rendered
-    assert "<b>Conversion</b>" in rendered
-    assert "<i>perlu dicek</i>" in rendered
-    assert "• Buka <code>/whoami</code>" in rendered
-    assert '<a href="https://example.com/guide?a=1&amp;b=2">panduan</a>' in rendered
-    assert "<blockquote>Data belum cukup</blockquote>" in rendered
-    assert "<tg-spoiler>Jawaban quiz</tg-spoiler>" in rendered
+    assert to_telegram_plain_text(source) == (
+        "Diagnosis\n\nConversion turun dan perlu dicek.\n"
+        "- Buka /whoami\n- Baca panduan (https://example.com/guide?a=1&b=2)\n"
+        "Data belum cukup\nJawaban quiz"
+    )
 
 
-def test_telegram_renderer_escapes_model_html_and_code():
+def test_telegram_plain_text_preserves_literal_html_and_code():
     source = "<b>raw</b> & aman\n```python\nif a < b:\n    print('&')\n```"
+    assert to_telegram_plain_text(source) == "<b>raw</b> & aman\nif a < b:\n    print('&')"
+
+
+def test_telegram_plain_text_threads_copy_paste_regression():
+    source = (
+        "1. Edukasi Farm\n> Batu dingin gini enaknya ngapain\n>\n"
+        "> Aku sama kawan lagi demen jemur pagi 🐐\n\n"
+        "**Pilih 1 yang paling pas buat diposting hari ini**\n"
+        "Ketik *belum* atau `/module threads-generator`."
+    )
+    assert to_telegram_plain_text(source) == (
+        "1. Edukasi Farm\nBatu dingin gini enaknya ngapain\n\n"
+        "Aku sama kawan lagi demen jemur pagi 🐐\n\n"
+        "Pilih 1 yang paling pas buat diposting hari ini\n"
+        "Ketik belum atau /module threads-generator."
+    )
+
+
+@pytest.mark.parametrize(("source", "expected"), [
+    ("#MalangStrudel @piko harga Rp25.000 & diskon 5% 🐐", "#MalangStrudel @piko harga Rp25.000 & diskon 5% 🐐"),
+    ("api_key user_name x > 3\n>= 10\n>100\n2 * 3 * 4", "api_key user_name x > 3\n>= 10\n>100\n2 * 3 * 4"),
+    ("***tebal miring*** __tebal__ _miring_ ~~hapus~~ ||spoiler||", "tebal miring tebal miring hapus spoiler"),
+    ("**tebal dan *miring***", "tebal dan miring"),
+    ("[**Panduan**](https://example.com/a_(b)?x=1&y=2)", "Panduan (https://example.com/a_(b)?x=1&y=2)"),
+    ("[https://example.com](https://example.com)", "https://example.com"),
+    ("https://example.com/__a__?x=1&y=2", "https://example.com/__a__?x=1&y=2"),
+    (r"\*literal\* \`literal\`", "*literal* `literal`"),
+    (r"`\*literal\*`", r"\*literal\*"),
+    ("```python\n# comment\nx = '**literal**'\n    y = 2 ** 3\n```", "# comment\nx = '**literal**'\n    y = 2 ** 3"),
+    ("> > nested\n>\n> paragraf\r\n* pilihan", "nested\n\nparagraf\n- pilihan"),
+    ("\x00plain0\x00 `aman`", "\x00plain0\x00 aman"),
+    (">\n---\n** **", ""),
+])
+def test_telegram_plain_text_keeps_content(source, expected):
+    assert to_telegram_plain_text(source) == expected
+
+
+@pytest.mark.parametrize(("source", "expected"), [
+    ("**Analisis Threads**\n> Kutipan biasa", [TelegramResponsePart("**Analisis Threads**\n> Kutipan biasa")]),
+    ("**Pilih akun**\n- a. Piko\n- b. Farm", [TelegramResponsePart("**Pilih akun**\n- a. Piko\n- b. Farm")]),
+    ("**Opsi 1**\n[[COPY_TEXT]]\n> Caption **Piko**\n>\n> #Malang 🐐\n[[/COPY_TEXT]]\n**Pilih yang sesuai**", [
+        TelegramResponsePart("**Opsi 1**"), TelegramResponsePart("Caption Piko\n\n#Malang 🐐", True), TelegramResponsePart("**Pilih yang sesuai**"),
+    ]),
+    ("[[COPY_TEXT]]\nCaption A\n[[/COPY_TEXT]]\n[[COPY_TEXT]]\nCaption B\n[[/COPY_TEXT]]", [TelegramResponsePart("Caption A", True), TelegramResponsePart("Caption B", True)]),
+    ("[[COPY_TEXT]]\n**Caption belum ditutup**", [TelegramResponsePart("Caption belum ditutup", True)]),
+    ("[[/COPY_TEXT]]\n**Analisis**", [TelegramResponsePart("**Analisis**")]),
+    ("[[COPY_TEXT]]\n[[COPY_TEXT]]\nIsi\n[[/COPY_TEXT]]", [TelegramResponsePart("Isi", True)]),
+    ("[[COPY_TEXT]]\n>\n---\n[[/COPY_TEXT]]", []),
+    ("Contoh penanda [[COPY_TEXT]] sebagai teks.", [TelegramResponsePart("Contoh penanda [[COPY_TEXT]] sebagai teks.")]),
+    ("```text\n[[COPY_TEXT]]\nContoh literal\n[[/COPY_TEXT]]\n```", [TelegramResponsePart("```text\n[[COPY_TEXT]]\nContoh literal\n[[/COPY_TEXT]]\n```")]),
+    ("[[COPY_TEXT]]\r\nParagraf 1\r\n\r\nParagraf 2\r\n[[/COPY_TEXT]]", [TelegramResponsePart("Paragraf 1\n\nParagraf 2", True)]),
+])
+def test_copy_ready_parts_do_not_flatten_other_answers(source, expected):
+    assert prepare_response_parts(source, 12000) == expected
+
+
+@pytest.mark.parametrize("limit", [0, 1, 7, 13, 40, 12000])
+def test_copy_ready_parts_share_budget_without_leaking_markers(limit):
+    source = "**Judul**\n[[COPY_TEXT]]\n" + "caption " * 1000 + "\n[[/COPY_TEXT]]\n**Tips**"
+    parts = prepare_response_parts(source, limit)
+    history = "\n\n".join(part.text for part in parts)
+    assert len(history) <= limit
+    assert "[[COPY_TEXT]]" not in history and "[[/COPY_TEXT]]" not in history
+    if len(parts) > 1:
+        assert parts[1].copyable is True
+
+
+def test_ordinary_html_renderer_keeps_format_and_escapes_raw_html():
+    source = "# Diagnosis\n**tebal** *miring* `command`\n> quote\n||spoiler||\n<b>literal</b> & data"
     rendered = markdown_to_telegram_html(source)
-    assert "&lt;b&gt;raw&lt;/b&gt; &amp; aman" in rendered
-    assert "<pre>if a &lt; b:\n    print('&amp;')</pre>" in rendered
-    assert rendered.count("<b>") == 0
+    for fragment in ("<b>Diagnosis</b>", "<b>tebal</b>", "<i>miring</i>", "<code>command</code>", "<blockquote>quote</blockquote>", "<tg-spoiler>spoiler</tg-spoiler>", "&lt;b&gt;literal&lt;/b&gt; &amp; data"):
+        assert fragment in rendered
+
+
+def test_empty_plain_text_answer_does_not_write_history(tmp_path):
+    database = Database(tmp_path / "empty-response.db")
+    database.initialize()
+    database.create_company("company-a", "Company A", "admin")
+    database.create_user_with_membership(42, "DK", "company-a", "Owner", "", "gm", "executive", "", "admin")
+    replies = []
+
+    async def generate(*_args):
+        return "[[COPY_TEXT]]\n>\n---\n```\n\n```\n[[/COPY_TEXT]]"
+
+    async def reply_text(text, **_kwargs):
+        replies.append(text)
+
+    async def send_chat_action(*_args, **_kwargs):
+        pass
+
+    settings = _test_settings(tmp_path, tmp_path / "users.json", tmp_path / "companies.json", project_root=tmp_path)
+    bot = InternalBot(settings, database, SimpleNamespace(generate=generate))
+    message = SimpleNamespace(text="belum", reply_text=reply_text)
+    update = SimpleNamespace(effective_user=SimpleNamespace(id=42), effective_chat=SimpleNamespace(id=42), effective_message=message)
+    context = SimpleNamespace(bot=SimpleNamespace(send_chat_action=send_chat_action))
+    asyncio.run(bot.chat(update, context))
+    assert len(replies) == 1 and "gagal memproses" in replies[0]
+    assert database.get_history(42, 12, "company-a", "") == []
 
 
 def _ai_pair():

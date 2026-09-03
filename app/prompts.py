@@ -3,7 +3,7 @@ from __future__ import annotations
 from app.company_context import CompanyContent
 from app.database import AIModule, Company, Membership, User
 from app.role_profiles import CommunicationProfile
-from app.telegram_renderer import TELEGRAM_MARKUP_CONTRACT
+from app.telegram_renderer import TELEGRAM_OUTPUT_CONTRACT
 
 
 def build_system_prompt(
@@ -24,7 +24,6 @@ def build_system_prompt(
         f"User saat ini: {user.name}",
         f"Jabatan pada perusahaan aktif: {membership.job_title or '-'}",
         f"Role level: {membership.role_level or '-'}",
-        TELEGRAM_MARKUP_CONTRACT,
     ]
     if company_content.profile:
         parts.append(
@@ -70,4 +69,5 @@ def build_system_prompt(
             f"<knowledge company_id=\"{company.company_id}\">\n"
             f"{company_content.knowledge}\n</knowledge>"
         )
+    parts.append(TELEGRAM_OUTPUT_CONTRACT)
     return "\n\n".join(parts)

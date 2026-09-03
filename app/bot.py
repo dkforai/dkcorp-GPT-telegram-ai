@@ -19,7 +19,7 @@ from app.providers import (
     AIProvider, ModuleGenerationError, ModuleProviderResolver, RuntimeCredentialError,
 )
 from app.role_profiles import load_role_profiles, resolve_communication_profile, profile_id_for_role
-from app.telegram_renderer import markdown_to_telegram_html
+from app.telegram_renderer import markdown_to_telegram_html, prepare_response_parts
 
 logger = logging.getLogger(__name__)
 
@@ -340,7 +340,12 @@ class InternalBot:
                 answer = await self.provider.generate(
                     system_prompt, history, user_text
                 )
-            answer = answer[: self.settings.max_response_chars]
+            # Only marked copy-ready content is normalized; explanations retain
+            # their Markdown. Never put the delivery markers in user history.
+            parts = prepare_response_parts(answer, self.settings.max_response_chars)
+            if not parts:
+                raise RuntimeError("Jawaban AI kosong setelah normalisasi")
+            answer = "\n\n".join(part.text for part in parts)
             self.database.add_message(
                 user.telegram_id,
                 "user",
@@ -358,23 +363,29 @@ class InternalBot:
             self.database.prune_history(
                 user.telegram_id, membership.company_id, module_id
             )
-            for chunk in _split_message(answer, size=3500):
-                rendered = markdown_to_telegram_html(chunk)
-                try:
-                    await message.reply_text(
-                        rendered,
-                        parse_mode=ParseMode.HTML,
-                        disable_web_page_preview=True,
-                    )
-                except BadRequest:
-                    logger.warning(
-                        "Format HTML ditolak Telegram untuk user %s; fallback plain text",
-                        user.telegram_id,
-                    )
-                    await message.reply_text(
-                        chunk,
-                        disable_web_page_preview=True,
-                    )
+            for part in parts:
+                for chunk in _split_message(part.text, size=3500):
+                    if not chunk.strip():
+                        continue
+                    if part.copyable:
+                        await message.reply_text(
+                            chunk, parse_mode=None, disable_web_page_preview=True,
+                        )
+                        continue
+                    try:
+                        await message.reply_text(
+                            markdown_to_telegram_html(chunk),
+                            parse_mode=ParseMode.HTML,
+                            disable_web_page_preview=True,
+                        )
+                    except BadRequest:
+                        logger.warning(
+                            "Format HTML ditolak Telegram untuk user %s; fallback plain text",
+                            user.telegram_id,
+                        )
+                        await message.reply_text(
+                            chunk, parse_mode=None, disable_web_page_preview=True,
+                        )
         except RuntimeCredentialError as exc:
             logger.error(
                 "Credential runtime tidak siap untuk company=%s module=%s: %s",
@@ -407,8 +418,10 @@ def _split_message(text: str, size: int = 4000) -> list[str]:
         split_at = remaining.rfind("\n", 0, size)
         if split_at < size // 2:
             split_at = size
+        else:
+            split_at += 1  # Keep the newline and the next paragraph's indentation.
         chunks.append(remaining[:split_at])
-        remaining = remaining[split_at:].lstrip()
+        remaining = remaining[split_at:]
     if remaining:
         chunks.append(remaining)
     return chunks
