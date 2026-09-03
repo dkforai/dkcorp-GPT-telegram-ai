@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import sqlite3
+import tempfile
 import unicodedata
 from contextlib import closing
 from dataclasses import dataclass, field, replace
@@ -996,6 +998,125 @@ class Database:
         if company is None:
             raise RuntimeError("Company gagal diperbarui")
         return company
+
+    def migrate_company_ids(self, renames: dict[str, str], actor: str) -> str | None:
+        """Operator-only migration BEFORE starting any bot/admin writers.
+
+        Requires a stopped previous runtime (Railway's single mounted volume).
+        Returns the verified backup path, or None for a previously audited run.
+        This is deliberately not exposed through an admin HTTP endpoint.
+        """
+        if not isinstance(renames, dict) or not renames or len(renames) > 20:
+            raise ValueError("Migrasi membutuhkan mapping Company ID yang tidak kosong")
+        normalized = {}
+        for old, new in renames.items():
+            if not isinstance(old, str) or not isinstance(new, str):
+                raise ValueError("Company ID migrasi harus berupa string")
+            source, target = _validate_company_id(old), _validate_company_id(new)
+            if source in normalized or source == target:
+                raise ValueError("Company ID sumber duplikat atau tidak berubah")
+            normalized[source] = target
+        if len(set(normalized.values())) != len(normalized) or set(normalized) & set(normalized.values()):
+            raise ValueError("Tujuan migrasi duplikat atau bertumpuk dengan sumber")
+        if not actor.strip():
+            raise ValueError("Actor migrasi wajib diisi")
+        references = {
+            "companies": "company_id",
+            "user_company_memberships": "company_id",
+            "user_sessions": "active_company_id",
+            "messages": "company_id",
+            "modules": "company_id",
+            "module_access": "company_id",
+            "company_instruction_versions": "company_id",
+            "company_instruction_state": "company_id",
+            "knowledge_documents": "company_id",
+        }
+        with closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("PRAGMA defer_foreign_keys=ON")
+            if connection.execute("PRAGMA quick_check").fetchall()[0][0] != "ok":
+                raise ValueError("Integritas database belum valid; migrasi dibatalkan")
+            if connection.execute("PRAGMA foreign_key_check").fetchall():
+                raise ValueError("Database memiliki relasi rusak; migrasi dibatalkan")
+            tables = [row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            )]
+            detected = {}
+            for table in tables:
+                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table):
+                    raise ValueError("Schema tidak dikenal; perlu review migrasi")
+                columns = [row[1] for row in connection.execute(f'PRAGMA table_info("{table}")')]
+                scoped = [column for column in columns if column in {"company_id", "active_company_id"}]
+                if scoped:
+                    if len(scoped) != 1:
+                        raise ValueError("Schema Company ID berubah; perlu review migrasi")
+                    detected[table] = scoped[0]
+                for fk in connection.execute(f'PRAGMA foreign_key_list("{table}")'):
+                    if fk[2] == "companies" and references.get(table) != fk[3]:
+                        raise ValueError("Referensi company baru; perlu review migrasi")
+            if detected != references:
+                raise ValueError("Schema Company ID berubah; perlu review migrasi")
+            existing = {row[0] for row in connection.execute("SELECT company_id FROM companies")}
+            previous = connection.execute(
+                "SELECT details_json FROM admin_audit_events WHERE action='company.ids_migrated'"
+            ).fetchall()
+            if all(old not in existing and new in existing for old, new in normalized.items()):
+                if any(json.loads(row[0]).get("renames") == normalized for row in previous):
+                    for table, column in references.items():
+                        for old in normalized:
+                            if connection.execute(f'SELECT 1 FROM "{table}" WHERE "{column}"=? LIMIT 1', (old,)).fetchone():
+                                raise ValueError("Referensi ID lama muncul kembali; perlu review")
+                    return None
+                raise ValueError("ID sumber tidak ada tanpa audit migrasi yang cocok")
+            if any(old not in existing or new in existing for old, new in normalized.items()):
+                raise ValueError("Company sumber tidak ditemukan atau ID tujuan sudah digunakan")
+            for table, column in references.items():
+                for new in normalized.values():
+                    if connection.execute(f'SELECT 1 FROM "{table}" WHERE "{column}"=? LIMIT 1', (new,)).fetchone():
+                        raise ValueError("ID tujuan memiliki referensi lama; tidak boleh menggabungkan data")
+
+            def snapshot(mapping):
+                result = {}
+                for table in tables:
+                    rows = []
+                    for row in connection.execute(f'SELECT * FROM "{table}"'):
+                        values = dict(row)
+                        column = references.get(table)
+                        if column:
+                            values[column] = mapping.get(values[column], values[column])
+                        rows.append(hashlib.sha256(json.dumps(values, sort_keys=True, default=str).encode()).hexdigest())
+                    result[table] = sorted(rows)
+                return result
+
+            expected = snapshot(normalized)
+            backup_dir = self.path.resolve().parent / "backups"
+            backup_dir.mkdir(mode=0o700, exist_ok=True)
+            descriptor, backup_name = tempfile.mkstemp(
+                prefix="before-company-id-", suffix=".db", dir=backup_dir
+            )
+            os.close(descriptor)
+            # A separate read connection sees the pre-migration snapshot while
+            # BEGIN IMMEDIATE prevents other writers. Backing up the writer
+            # connection itself would wait on its own uncommitted transaction.
+            with closing(sqlite3.connect(f"{self.path.resolve().as_uri()}?mode=ro", uri=True)) as source:
+                with closing(sqlite3.connect(backup_name)) as backup:
+                    source.backup(backup)
+                    if backup.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+                        raise ValueError("Cadangan gagal diverifikasi; migrasi dibatalkan")
+                    if backup.execute("PRAGMA foreign_key_check").fetchall():
+                        raise ValueError("Relasi cadangan tidak valid; migrasi dibatalkan")
+            for table, column in references.items():
+                for old, new in normalized.items():
+                    connection.execute(f'UPDATE "{table}" SET "{column}"=? WHERE "{column}"=?', (new, old))
+            if connection.execute("PRAGMA foreign_key_check").fetchall():
+                raise ValueError("Relasi hasil migrasi tidak valid; seluruh perubahan dibatalkan")
+            if snapshot({}) != expected:
+                raise ValueError("Data selain ID berubah; seluruh migrasi dibatalkan")
+            _write_audit(connection, actor, "company.ids_migrated", "company", ",".join(sorted(normalized.values())), {
+                "renames": normalized, "backup_path": backup_name,
+                "verified": "all_rows_preserved_except_company_ids",
+            })
+        return backup_name
 
     def set_company_active(
         self, company_id: str, active: bool, actor: str

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+import os
 
 from app.admin import start_admin_server
 from app.bot import InternalBot
@@ -24,6 +26,12 @@ def main() -> None:
 
     database = Database(settings.database_path)
     database.initialize()
+    migration = os.getenv("COMPANY_ID_MIGRATION", "").strip()
+    if migration:
+        backup = database.migrate_company_ids(json.loads(migration), actor=settings.admin_username)
+        logging.getLogger(__name__).info(
+            "Company ID migration %s", "completed with verified backup" if backup else "already applied"
+        )
     synced_companies = database.bootstrap_companies(settings.companies_file)
     logging.getLogger(__name__).info(
         "Bootstrap %d perusahaan dari konfigurasi", synced_companies

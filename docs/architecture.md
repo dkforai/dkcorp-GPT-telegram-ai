@@ -5,7 +5,7 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 1.16 |
+| Versi | 1.17 |
 | Terakhir diperbarui | 3 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
@@ -115,6 +115,7 @@ Jawaban ke user
 | Conversation Delivery Policy | Belum | Akan mengatur panjang, ritme, dan progressive disclosure |
 | Multi-company membership | Sudah | Tabel membership SQLite; JSON hanya bootstrap awal |
 | Company router dan active context | Sudah | Command `/company` dan session active company |
+| Migrasi Company ID oleh operator | v1.17 siap migrasi, 255 tes lulus | Startup-only, backup SQLite terverifikasi, transaksi atomik, seluruh relasi dan history dipertahankan; bukan field edit admin |
 | Module router dan active context | Sudah | Command `/module`, General context, default-deny module access, dan reset module saat company berubah |
 | Company-scoped instruction | Sudah | Draft dan versi publish tersimpan di SQLite; file company menjadi fallback transisi |
 | AI Module Playbook | Sudah | Registry per company, draft, preview, immutable publish, restore-to-draft, status, dan runtime prompt |
@@ -942,7 +943,24 @@ Paket form/backend/runtime/import telah diterapkan, diuji lokal, dan dideploy. C
 | ADR-066 | Module memilih pasangan koneksi+model, dengan legacy fallback eksplisit | Satu key untuk banyak model; pemilihan server-validated, snapshot atomik/revision-aware, key rotation menginvalidasi katalog, dan pilihan lama tidak diubah diam-diam |
 | ADR-067 | Hanya blok naskah siap salin yang polos, penjelasan tetap safe HTML | Model menandai isi naskah berdasarkan tujuan, bukan nama module; renderer mengirim bagian terpisah dan membersihkan penanda sebelum history/limit/split. Tidak memutasi konten published atau history lama |
 
+### Migrasi Company ID saat maintenance
+
+Company ID tetap otomatis dan terkunci pada form admin. Pengecualian operator tersedia melalui `COMPANY_ID_MIGRATION`, JSON mapping ID lama ke ID baru. Mapping kosong/tidak valid, tujuan yang sudah terpakai, sumber hilang, partial migration, schema referensi baru, atau relasi rusak membuat startup gagal sebelum bot/admin menerima traffic. Tidak ada fallback yang membuat company baru atau menggabungkan history.
+
+Jalankan hanya ketika runtime lama sudah berhenti. Pada Railway, volume produksi `/app/data` mencegah dua deployment aktif memakai volume yang sama, sehingga migrasi dijalankan di startup, bukan pre-deploy yang tidak mendapatkan volume ([referensi volume Railway](https://docs.railway.com/volumes/reference), [ketersediaan volume](https://docs.railway.com/volumes)). Jangan menjalankan instance lokal yang menulis database produksi selama maintenance.
+
+Urutan startup adalah initialize schema, migrasi jika diminta, bootstrap, lalu admin dan polling Telegram. Migrasi mengambil write lock, membuat SQLite backup konsisten dengan file permission `0600` dalam `backups/` di direktori database, memverifikasi integrity/FK backup, dan memindahkan `companies`, membership, session active company, module, module access, instruction state/versions, knowledge documents, serta `messages`. Foreign key tetap aktif dengan deferred validation. Hash seluruh row dibandingkan dengan transformasi ID yang diharapkan sebelum commit; semua perubahan dibatalkan bila berbeda. Nama/path file, isi dan versi dokumen, credential/model AI, status/default, isi pesan, timestamp, dan audit lama tidak diubah. Tambahan hanya satu audit event `company.ids_migrated` dengan mapping dan lokasi backup.
+
+Restart dengan mapping yang sama menjadi no-op hanya jika target lengkap, sumber tidak tersisa, dan audit cocok. Setelah migrasi terverifikasi, hapus `COMPANY_ID_MIGRATION` dari environment. ID lama bukan alias dan URL admin lama perlu dibuka ulang dari menu. Backup berisi data privat dan ciphertext credential, bukan master encryption key; jangan commit atau membagikannya. Pemulihan harus dilakukan saat semua writer berhenti menggunakan SQLite backup API, bukan menimpa file database hidup atau mengabaikan WAL.
+
 ## 16. Changelog dokumen
+
+### 3 September 2026 — v1.17
+
+- DK menyetujui migrasi produksi `amazing-malang` → `amz` dan `malang-strudel` → `ms`, cadangan database, serta SSH key sementara yang wajib dicabut setelah selesai;
+- menambah jalur maintenance startup-only dengan backup, rollback atomik, verifikasi keseluruhan data, dan idempotensi berbasis audit; form admin tetap immutable;
+- 255 tes otomatis lulus, termasuk 22 kasus migrasi/startup: seluruh data dan backup identik kecuali ID, resolusi akses/history setelah rename, repeat tanpa mutasi, konflik mapping, referensi yatim, schema baru, FK rusak, kegagalan backup/audit/trigger, dan larangan runtime mulai sebelum migrasi;
+- pemeriksaan awal produksi menunjukkan 3 company, 5 user, 8 membership, 1 module, 16 pesan, integrity OK dan tanpa FK error; belum merupakan hasil migrasi. Status akhir dan bukti verifikasi dicatat setelah eksekusi.
 
 ### 3 September 2026 — v1.16
 

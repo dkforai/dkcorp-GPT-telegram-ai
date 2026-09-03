@@ -604,6 +604,190 @@ def test_module_access_publish_and_history_are_scoped(tmp_path):
     assert database.set_active_module(42, "marketing") is None
 
 
+def _company_migration_fixture(tmp_path):
+    database = Database(tmp_path / "rename.db")
+    database.initialize()
+    for key, name in [("amazing-malang", "Amazing Malang"), ("malang-strudel", "Malang Strudel"), ("other", "Other")]:
+        database.create_company(key, name, actor="admin")
+    database.create_user_with_membership(42, "DK", "malang-strudel", "Owner", "Management", "gm", "executive", "Keep custom instruction", actor="admin")
+    database.create_membership(42, "amazing-malang", "Owner", "Management", "gm", "executive", "", False, actor="admin")
+    profile = database.create_ai_runtime_profile("", "GPT", "openai", "TEST_AI_KEY", "test-model", "", actor="admin")
+    database.create_module("malang-strudel", "threads-generator", "Threads generator", "description", actor="admin", ai_runtime_profile_id=profile.profile_id)
+    database.save_module_playbook_draft("malang-strudel", "threads-generator", "Playbook v1", actor="admin")
+    database.publish_module_playbook("malang-strudel", "threads-generator", actor="admin")
+    database.set_membership_module_access(42, "malang-strudel", ["threads-generator"], actor="admin")
+    database.set_active_company(42, "malang-strudel")
+    database.set_active_module(42, "threads-generator")
+    database.save_company_instruction_draft("malang-strudel", "Instruction", actor="admin")
+    database.publish_company_instruction("malang-strudel", actor="admin")
+    database.create_knowledge_document("malang-strudel", "playbook", "Knowledge", "Knowledge content", actor="admin")
+    database.publish_knowledge_document("malang-strudel", "playbook", actor="admin")
+    for company, module, text in [("malang-strudel", "threads-generator", "Threads history"), ("malang-strudel", "", "General history"), ("amazing-malang", "", "Amazing history"), ("other", "", "Other history")]:
+        database.add_message(42, "user", text, company, module)
+    return database
+
+
+def _database_rows(path):
+    with sqlite3.connect(path) as connection:
+        connection.row_factory = sqlite3.Row
+        tables = [row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+        return {table: [dict(row) for row in connection.execute(f'SELECT * FROM "{table}"')] for table in tables}
+
+
+def test_company_id_migration_preserves_all_data_backup_and_runtime(tmp_path):
+    database = _company_migration_fixture(tmp_path)
+    before = _database_rows(database.path)
+    mapping = {"amazing-malang": "amz", "malang-strudel": "ms"}
+    backup = Path(database.migrate_company_ids(mapping, actor="admin"))
+    assert backup.stat().st_mode & 0o777 == 0o600
+    assert _database_rows(backup) == before
+    after = _database_rows(database.path)
+    for table, rows in before.items():
+        if table == "sqlite_sequence":
+            continue  # Only the new audit event advances its sequence.
+        expected = []
+        for row in rows:
+            row = dict(row)
+            for column in ("company_id", "active_company_id"):
+                if column in row:
+                    row[column] = mapping.get(row[column], row[column])
+            expected.append(row)
+        assert after[table][:len(rows)] == expected
+        if table != "admin_audit_events":
+            assert len(after[table]) == len(rows)
+    assert len(after["admin_audit_events"]) == len(before["admin_audit_events"]) + 1
+    event = after["admin_audit_events"][-1]
+    assert event["action"] == "company.ids_migrated"
+    assert json.loads(event["details_json"])["renames"] == mapping
+    assert database.get_active_membership(42).company_id == "ms"
+    assert database.get_active_module(42, "ms").module_id == "threads-generator"
+    assert database.get_membership_admin(42, "ms").is_default
+    assert database.get_company("amz").name == "Amazing Malang"
+    assert database.get_company("ms").instruction_file == "companies/malang-strudel/instruction.md"
+    assert database.get_company("malang-strudel") is None
+    assert database.get_history(42, 20, "ms", "threads-generator")[0]["content"] == "Threads history"
+    assert database.get_history(42, 20, "ms")[0]["content"] == "General history"
+    assert database.get_history(42, 20, "amz")[0]["content"] == "Amazing history"
+    assert database.get_published_company_instruction("ms") == "Instruction"
+    assert database.get_published_module_playbook("ms", "threads-generator") == "Playbook v1"
+    assert database.get_knowledge_document_admin("ms", "playbook")["published_version_id"] is not None
+    assert database.migrate_company_ids(mapping, actor="admin") is None
+    assert _database_rows(database.path) == after
+    assert len(list(backup.parent.glob("*.db"))) == 1
+    database.initialize()
+    assert database.get_active_module(42, "ms").module_id == "threads-generator"
+
+
+@pytest.mark.parametrize("mapping", [
+    {}, [], {"amazing-malang": "bad/id"}, {"amazing-malang": "amazing-malang"},
+    {"amazing-malang": "ms", "malang-strudel": "ms"},
+    {"amazing-malang": "malang-strudel", "malang-strudel": "ms"},
+    {"missing": "ms"}, {"amazing-malang": "other"}, {"amazing-malang": 123},
+    {"amazing-malang": "amz", "missing": "ms"},
+])
+def test_company_id_migration_invalid_mapping_changes_nothing(tmp_path, mapping):
+    database = _company_migration_fixture(tmp_path)
+    before = _database_rows(database.path)
+    with pytest.raises(ValueError):
+        database.migrate_company_ids(mapping, actor="admin")
+    assert _database_rows(database.path) == before
+    assert not (tmp_path / "backups").exists()
+
+
+@pytest.mark.parametrize("failure", ["new_reference", "broken_fk", "trigger_failure", "trigger_mutation", "backup_failure"])
+def test_company_id_migration_fail_closed_and_rolls_back(tmp_path, monkeypatch, failure):
+    database = _company_migration_fixture(tmp_path)
+    with sqlite3.connect(database.path) as connection:
+        if failure == "new_reference":
+            connection.execute("CREATE TABLE future_table (company_id TEXT REFERENCES companies(company_id))")
+        elif failure == "broken_fk":
+            connection.execute("UPDATE user_sessions SET active_company_id='missing'")
+        elif failure == "trigger_failure":
+            connection.execute("CREATE TRIGGER fail_rename BEFORE UPDATE ON modules BEGIN SELECT RAISE(ABORT, 'stop'); END")
+        elif failure == "trigger_mutation":
+            connection.execute("CREATE TRIGGER change_name AFTER UPDATE ON companies BEGIN UPDATE companies SET name='unexpected' WHERE company_id=NEW.company_id; END")
+    if failure == "backup_failure":
+        import app.database as database_module
+        monkeypatch.setattr(database_module.tempfile, "mkstemp", lambda **kwargs: (_ for _ in ()).throw(OSError("disk full")))
+    before = _database_rows(database.path)
+    with pytest.raises((ValueError, sqlite3.IntegrityError, OSError)):
+        database.migrate_company_ids({"amazing-malang": "amz", "malang-strudel": "ms"}, actor="admin")
+    assert _database_rows(database.path) == before
+
+
+def test_company_id_migration_requires_matching_audit_and_no_stale_references(tmp_path):
+    database = _company_migration_fixture(tmp_path)
+    mapping = {"amazing-malang": "amz", "malang-strudel": "ms"}
+    database.migrate_company_ids(mapping, actor="admin")
+    database.add_message(42, "user", "stale writer", "malang-strudel")
+    with pytest.raises(ValueError, match="Referensi ID lama"):
+        database.migrate_company_ids(mapping, actor="admin")
+    with sqlite3.connect(database.path) as connection:
+        connection.execute("DELETE FROM messages WHERE company_id='malang-strudel'")
+        connection.execute("DELETE FROM admin_audit_events WHERE action='company.ids_migrated'")
+    with pytest.raises(ValueError, match="tanpa audit"):
+        database.migrate_company_ids(mapping, actor="admin")
+
+
+def test_company_id_migration_rejects_orphan_target_history(tmp_path):
+    database = _company_migration_fixture(tmp_path)
+    database.add_message(42, "user", "unrelated old scope", "ms")
+    before = _database_rows(database.path)
+    with pytest.raises(ValueError, match="tidak boleh menggabungkan"):
+        database.migrate_company_ids({"malang-strudel": "ms"}, actor="admin")
+    assert _database_rows(database.path) == before
+
+
+def test_company_id_migration_audit_failure_rolls_back(tmp_path, monkeypatch):
+    import app.database as database_module
+    database = _company_migration_fixture(tmp_path)
+    before = _database_rows(database.path)
+    def fail_audit(*args, **kwargs):
+        raise sqlite3.OperationalError("audit unavailable")
+    monkeypatch.setattr(database_module, "_write_audit", fail_audit)
+    with pytest.raises(sqlite3.OperationalError):
+        database.migrate_company_ids({"malang-strudel": "ms"}, actor="admin")
+    assert _database_rows(database.path) == before
+    backup = next((tmp_path / "backups").glob("*.db"))
+    assert _database_rows(backup) == before
+
+
+@pytest.mark.parametrize("migration", ["", '{"old":"new"}', 'invalid json'])
+def test_company_id_migration_startup_before_all_runtime_writers(tmp_path, monkeypatch, migration):
+    import app.main as main_module
+    events = []
+    settings = _test_settings(tmp_path, tmp_path / "users.json", tmp_path / "companies.json")
+    monkeypatch.setattr(main_module, "load_settings", lambda: settings)
+    monkeypatch.setenv("COMPANY_ID_MIGRATION", migration)
+    class FakeDatabase:
+        def __init__(self, path):
+            pass
+        def initialize(self):
+            events.append("initialize")
+        def migrate_company_ids(self, mapping, actor):
+            assert mapping == {"old": "new"}
+            events.append("migrate")
+            return "verified-backup"
+        def bootstrap_companies(self, path):
+            events.append("bootstrap_companies")
+            return 0
+        def bootstrap_users(self, path):
+            events.append("bootstrap_users")
+            return 0
+    monkeypatch.setattr(main_module, "Database", FakeDatabase)
+    monkeypatch.setattr(main_module, "start_admin_server", lambda *args: events.append("admin"))
+    monkeypatch.setattr(main_module, "create_provider", lambda *args: SimpleNamespace())
+    application = SimpleNamespace(run_polling=lambda **kwargs: events.append("polling"))
+    monkeypatch.setattr(main_module, "InternalBot", lambda *args: SimpleNamespace(build_application=lambda: application))
+    if migration == "invalid json":
+        with pytest.raises(json.JSONDecodeError):
+            main_module.main()
+        assert events == ["initialize"]
+    else:
+        main_module.main()
+        assert events == ["initialize"] + (["migrate"] if migration else []) + ["bootstrap_companies", "bootstrap_users", "admin", "polling"]
+
+
 def test_module_provider_resolver_uses_named_environment_without_fallback(
     monkeypatch,
 ):

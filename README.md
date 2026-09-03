@@ -296,6 +296,12 @@ Penyederhanaan ADR-057 diterapkan pada form tambah user, tambah/edit membership,
 
 Bot dan admin tetap memakai satu replica selama database menggunakan SQLite.
 
+### Migrasi Company ID oleh operator
+
+Company ID tidak diedit lewat form. Untuk migrasi yang sudah disetujui, operator dapat mengatur `COMPANY_ID_MIGRATION` berupa JSON mapping, misalnya `{"company-lama":"company-baru"}`, lalu deploy/restart. Ini hanya aman ketika runtime lama sudah berhenti dan tidak ada writer lain; volume tunggal Railway memastikan deployment lama tidak berjalan bersamaan dengan deployment pengganti. Jangan menjalankannya pada bot/admin lokal yang masih menulis database yang sama.
+
+Startup membuat backup SQLite terverifikasi di folder `backups/` di sebelah database, lalu memindahkan ID dan seluruh referensi dalam satu transaksi sebelum bot/admin aktif. Isi history, dokumen, versi, path file, membership, pilihan model/key, dan audit lama dipertahankan. Konflik atau pemeriksaan gagal menghentikan startup, bukan melanjutkan migrasi sebagian. Eksekusi ulang hanya dilewati bila audit migrasi yang sama terverifikasi. Hapus variable setelah sukses. ID lama tidak menjadi alias. Backup privat jangan di-commit; restore harus dilakukan dalam maintenance dengan SQLite backup API dan seluruh writer berhenti.
+
 ### Update data di Railway
 
 Company, user, membership, Company Instruction, Knowledge, Module, serta aksesnya dikelola dari dashboard admin. Database, versi instruction/knowledge/playbook, dan history tetap aman selama volume `/app/data` terpasang.
