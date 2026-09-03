@@ -125,10 +125,10 @@ Jawaban ke user
 | Authorization per knowledge | Sebagian | Sudah company-scoped; knowledge khusus module, division, dan clearance belum |
 | Response Validator | Sebagian | Pemisahan blok siap salin, normalisasi selektif, pemeriksaan jawaban kosong, batas panjang, dan split; belum ada policy classifier |
 | Admin Panel | Sebagian | Company, user, membership, Instruction, Knowledge, Module, dan module access writable; Activity read-only |
-| Modul bersama | Implementasi v1.21, verifikasi deployment belum selesai | Registry global terpisah; independent tanpa konteks perusahaan atau company-context dengan membership aktif; published snapshot, kode global unik, private history |
-| Modul Learning | Implementasi v1.21, verifikasi deployment belum selesai | `/learning`, keterangan buku tanpa AI, custom instruction per buku, PDF tersimpan/terekstraksi sekali, jadwal WIB eksklusif pada akhir, review sebelum publish |
+| Modul bersama | v1.21 deployed bersama v1.22; HTTP admin terverifikasi | Registry global terpisah; independent tanpa konteks perusahaan atau company-context dengan membership aktif; published snapshot, kode global unik, private history |
+| Modul Learning | v1.21 deployed bersama v1.22; HTTP admin terverifikasi | `/learning`, keterangan buku tanpa AI, custom instruction per buku, PDF tersimpan/terekstraksi sekali, jadwal WIB eksklusif pada akhir, review sebelum publish |
 | Retrieval/RAG | Learning saja, indeks lokal disetujui DK | FTS5 + cuplikan tetangga + konteks recent chat, maksimum 16.000 karakter sumber; bukan pencarian semantik. Company knowledge tetap alur lama |
-| Timeout dan retry artikel | v1.22, 357 tes lokal lulus; deployment belum terverifikasi | Khusus `ms/artikel-web-generator`: 120 detik per AI, pending input privat, `ulang`/`/ulang`, pasangan history atomik setelah sukses |
+| Timeout dan retry artikel | v1.22 deployed; 357 tes lokal lulus, Railway/HTTP terverifikasi | Khusus `ms/artikel-web-generator`: 120 detik per AI, pending input privat, `ulang`/`/ulang`, pasangan history atomik setelah sukses; inferensi produksi belum diuji |
 
 ### 4.1 Modul bersama dan Learning (v1.21)
 
@@ -1022,15 +1022,17 @@ Restart dengan mapping yang sama menjadi no-op hanya jika target lengkap, sumber
 
 ### 1.22 — 3 September 2026
 
-- DK menyetujui perbaikan timeout dan retry artikel serta deployment bersama fitur v1.21. Pada catatan ini commit/deployment belum terverifikasi.
+- DK menyetujui perbaikan timeout dan retry artikel serta deployment bersama fitur v1.21. Commit implementasi `571b308` berhasil deployed pada Railway `95333567-a336-450f-9308-adf50c7f5949` dengan status `SUCCESS`.
 - Mengubah batas outer request dan HTTP menjadi 120 detik hanya untuk `ms/artikel-web-generator`; default 30 detik dan pilihan model/konteks modul lain dipertahankan.
 - Menambah pending input privat, command `/ulang` dan kata `ulang` khusus artikel, pemeriksaan konteks, reset, serta transaksi sukses tanpa duplikasi history. Tidak memulihkan input yang sudah hilang sebelum rilis.
 - Menambah 11 tes timeout transport/concurrency/failover/cancellation, retry sukses/gagal, perubahan konteks, pencabutan akses, rollback dan migrasi pending. Ditambah satu regresi agar retrieval Learning memprioritaskan hasil relevan sebelum halaman tetangganya saat budget sempit.
 - Seluruh 357 tes lulus lokal, dengan satu warning deprecation Starlette/httpx existing; `git diff --check` bersih. Provider/HTTP disimulasikan, tanpa panggilan AI berbayar, polling Telegram lokal, atau penambahan data uji produksi. Uji kualitas buku nyata dan respons AI produksi tetap belum dilakukan.
+- Seluruh 40 tes fitur baru diulang dan lulus. Pemeriksaan produksi sesudah deploy memastikan health HTTP 200, admin anonim tetap diarahkan ke login, login berhasil, serta katalog/form Modul bersama, Learning, tambah buku, dan konfigurasi AI Learning HTTP 200. Halaman baru ini sebelumnya 404.
+- Hash field nama, kode, deskripsi, pilihan primary/backup dan draft playbook ketiga modul company sebelum/sesudah deploy identik. Published artikel/Threads tetap v2 dan Google Map Care v1. Tidak mengubah key/model/playbook produksi; Learning masih draft tanpa AI/buku yang dipilih. DK perlu mengatur AI Learning dan mengunggah/review/publish buku pertama. Keberhasilan alur runtime Telegram diverifikasi dengan handler simulasi, bukan pesan user produksi.
 
 ### 1.21 — 3 September 2026
 
-- DK menyetujui implementasi dan deploy tiga menu: Modul perusahaan, Modul bersama, Modul Learning. Saat catatan ini dibuat masih tes lokal, belum dinyatakan deployed.
+- DK menyetujui implementasi dan deploy tiga menu: Modul perusahaan, Modul bersama, Modul Learning. Deployment dilakukan bersama v1.22; lihat verifikasi rilis di atas.
 - Menambah registry global, snapshot draft/published, dua mode konteks, kode global, primary/backup existing dan private history terpisah.
 - Menambah buku PDF tersimpan privat, ekstraksi bounded, review, jadwal WIB, overlap validation dan boundary checks sebelum/sesudah generasi.
 - `/learning` mengirim keterangan tanpa AI; custom instruction per buku menentukan pengalaman belajar; tidak memaksakan rujukan halaman atau label analisis.
