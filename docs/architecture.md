@@ -115,7 +115,7 @@ Jawaban ke user
 | Conversation Delivery Policy | Belum | Akan mengatur panjang, ritme, dan progressive disclosure |
 | Multi-company membership | Sudah | Tabel membership SQLite; JSON hanya bootstrap awal |
 | Company router dan active context | Sudah | Command `/company` dan session active company |
-| Menu command adaptif | v1.18 siap rilis; 276 tes lokal lulus; deployment disetujui, menunggu verifikasi | `/?`, `/help`, dan `/start`; satu company langsung daftar module, lebih dari satu menampilkan pilihan company; selalu sesuai akses aktif |
+| Menu command adaptif | v1.18 deployed; 276 tes lokal lulus; Railway dan HTTP produksi terverifikasi | `/?`, `/help`, dan `/start`; satu company langsung daftar module, lebih dari satu menampilkan pilihan company; selalu sesuai akses aktif |
 | Migrasi Company ID oleh operator | v1.17 deployed; produksi memakai `amz` dan `ms`; 255 tes lulus | Startup-only, backup SQLite terverifikasi, transaksi atomik, seluruh relasi dan history dipertahankan; bukan field edit admin |
 | Module router dan active context | Sudah | Command `/module`, General context, default-deny module access, dan reset module saat company berubah |
 | Company-scoped instruction | Sudah | Draft dan versi publish tersimpan di SQLite; file company menjadi fallback transisi |
@@ -974,7 +974,8 @@ Restart dengan mapping yang sama menjadi no-op hanya jika target lengkap, sumber
 - menyembunyikan `/company` untuk nol/satu company aktif, menampilkan module langsung untuk satu company, dan menampilkan pilihan company hanya untuk multi-company;
 - memakai ACL dan published status module yang sudah ada, tanpa inference AI, mutasi konteks, atau penulisan history; daftar panjang dipecah tanpa truncation;
 - 276 tes lokal lulus, termasuk 21 kasus menu/routing: literal `/?` dengan/tanpa entity Telegram, `/help`/`/start`, single/multi/no company, default kosong, pembatasan akses/publish/AI, user tidak terdaftar, preservasi session/history, dan daftar 150 module tanpa truncation;
-- DK menyetujui commit/deploy melalui GitHub → Railway; hasil produksi dicatat setelah verifikasi. Tidak mengubah ID company hasil migrasi v1.17, data produksi, atau native command list Telegram.
+- DK menyetujui commit/deploy melalui GitHub → Railway. Commit implementasi `866e188` mendapat status Railway `success`; health 200, admin anonim diarahkan ke login, login admin berhasil, serta Companies, Threads generator di `ms`, dan membership DK di `ms` HTTP 200. ID `amz` dan `ms` tetap tersedia;
+- verifikasi routing `/?` dilakukan otomatis dengan objek Update/handler Telegram dan transport balasan simulasi. Tidak menjalankan polling lokal, mengirim pesan Telegram, atau memanggil AI produksi. Uji menu langsung dari akun Telegram dilakukan oleh DK. Tidak mengubah data produksi atau native command list Telegram.
 
 ### 3 September 2026 — v1.17
 
