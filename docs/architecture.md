@@ -111,7 +111,7 @@ Jawaban ke user
 | Provider Abstraction | Implementasi v1.13 | OpenAI/DeepSeek/Gemini compatible API; Claude native Messages; General tetap OpenAI/DeepSeek |
 | Settings AI | Implementasi v1.14 deployed; smoke HTTP produksi terverifikasi | Form Provider + API Key dan readiness encryption terverifikasi; 183 tes lokal lulus. Registry produksi masih kosong, sehingga tes provider nyata/pemilihan model produksi belum dilakukan |
 | AI utama dan cadangan per Module | Sudah | Dua pilihan dari AI terdaftar; cadangan opsional, failover terbatas, tanpa fallback global; encrypted key atau legacy environment |
-| Telegram Response Renderer | v1.16 siap rilis; 233 tes lulus; deployment disetujui, menunggu verifikasi | Safe HTML untuk jawaban biasa, teks polos khusus blok naskah siap salin; limit gabungan/history/split dan link preview off |
+| Telegram Response Renderer | v1.16 deployed; 233 tes lulus; status Railway dan HTTP produksi terverifikasi | Safe HTML untuk jawaban biasa, teks polos khusus blok naskah siap salin; limit gabungan/history/split dan link preview off |
 | Conversation Delivery Policy | Belum | Akan mengatur panjang, ritme, dan progressive disclosure |
 | Multi-company membership | Sudah | Tabel membership SQLite; JSON hanya bootstrap awal |
 | Company router dan active context | Sudah | Command `/company` dan session active company |
@@ -950,7 +950,8 @@ Paket form/backend/runtime/import telah diterapkan, diuji lokal, dan dideploy. C
 - mempertahankan renderer HTML dan fallback lama, menambah protokol blok siap salin serta normalisasi subset markup khusus di dalam blok;
 - memisahkan naskah ke pesan polos sendiri, tanpa label/petunjuk. Pemilihan berbasis isi oleh model, tidak hardcode module. Penanda dihapus sebelum history/limit/split; data lama tidak diubah;
 - 233 tes lokal lulus, termasuk jawaban campuran, beberapa alternatif, sapaan module tetap HTML, caption di General polos, penanda tidak lengkap, limit gabungan, literal fenced code, fallback HTML, serta preservasi teks/indentasi. Tes memakai fixture tanpa memanggil AI/Telegram produksi; warning deprecation Starlette/httpx existing tetap ada;
-- DK menyetujui commit dan deployment perbaikan format melalui GitHub → Railway; verifikasi produksi dicatat setelah deployment berhasil. Perubahan Company ID tidak termasuk rilis ini dan tetap ditunda. Tidak ada perubahan model/credential/timeout maupun mutasi data bisnis produksi.
+- DK menyetujui commit dan deployment perbaikan format melalui GitHub → Railway. Commit implementasi `f78da57` mendapat status Railway `success`; `/health` mengembalikan 200, admin anonim dialihkan ke login, login admin berhasil, serta halaman Companies, Modules, dan Threads generator dapat diakses. Pemeriksaan read-only menemukan Threads generator masih Published v2 dengan primary `gpt-5.1` dan backup `gpt-4o`; pilihan tersebut tidak diubah oleh rilis ini.
+- Verifikasi produksi terbatas pada status deployment dan HTTP, tanpa mengirim pesan Telegram atau inferensi AI berbayar. Kepatuhan model terhadap penanda naskah siap salin perlu diuji melalui respons baru; pesan Telegram lama tidak berubah. Perubahan Company ID tidak termasuk rilis ini dan tetap ditunda. Tidak ada perubahan model/credential/timeout maupun mutasi data bisnis produksi.
 
 ### 3 September 2026 — v1.15
 
