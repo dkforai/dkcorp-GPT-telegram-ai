@@ -146,6 +146,7 @@ Command Telegram:
 /start                      sapaan dan menu yang sama
 /company                    pilihan perusahaan, hanya muncul untuk >1 company aktif
 /company amz                memilih perusahaan aktif (contoh ID Amazing Malang)
+/company DKGroups           memilih DK Corp Group (ID tersimpan dkgroups)
 /module                     daftar module yang boleh diakses pada perusahaan aktif
 /module marketing           memilih module dan playbook aktif
 /TG atau /tg                memilih module berkode TG di company aktif

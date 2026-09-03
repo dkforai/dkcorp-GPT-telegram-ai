@@ -116,9 +116,9 @@ Jawaban ke user
 | Multi-company membership | Sudah | Tabel membership SQLite; JSON hanya bootstrap awal |
 | Company router dan active context | Sudah | Command `/company` dan session active company |
 | Menu command adaptif | v1.18 deployed; 276 tes lokal lulus; Railway dan HTTP produksi terverifikasi | `/?`, `/help`, dan `/start`; satu company langsung daftar module, lebih dari satu menampilkan pilihan company; selalu sesuai akses aktif |
-| Migrasi Company ID oleh operator | v1.17 deployed; produksi memakai `amz` dan `ms`; 255 tes lulus | Startup-only, backup SQLite terverifikasi, transaksi atomik, seluruh relasi dan history dipertahankan; bukan field edit admin |
+| Migrasi Company ID oleh operator | v1.19 produksi memakai `amz`, `ms`, dan `dkgroups`; migrasi serta HTTP admin terverifikasi | Startup-only, backup SQLite terverifikasi, transaksi atomik, seluruh relasi dan history dipertahankan; bukan field edit admin |
 | Module router dan active context | Sudah | Command `/module`, General context, default-deny module access, dan reset module saat company berubah |
-| Kode singkat module | v1.19 implementasi lokal; 304 tes lulus; menunggu deployment | Alias opsional 2–3 karakter per company; `/TG`, `/tg`, dan `/module TG` memilih ID canonical yang sama; menu sesuai akses |
+| Kode singkat module | v1.19 deployed; 304 tes lulus; TG tersimpan dan form produksi terverifikasi | Alias opsional 2–3 karakter per company; `/TG`, `/tg`, dan `/module TG` memilih ID canonical yang sama; menu sesuai akses |
 | Company-scoped instruction | Sudah | Draft dan versi publish tersimpan di SQLite; file company menjadi fallback transisi |
 | AI Module Playbook | Sudah | Registry per company, draft, preview, immutable publish, restore-to-draft, status, dan runtime prompt |
 | Authorization per knowledge | Sebagian | Sudah company-scoped; knowledge khusus module, division, dan clearance belum |
@@ -986,7 +986,11 @@ Restart dengan mapping yang sama menjadi no-op hanya jika target lengkap, sumber
 - menambahkan shortcut Telegram case-insensitive, resolver alias dan menu adaptif dengan ACL yang sama; session, history, playbook, dan pilihan AI tetap menggunakan ID canonical;
 - migrasi schema additive, unique index, pemeriksaan benturan namespace, audit, kompatibilitas client lama, dan penghapusan alias;
 - seluruh 304 tes lokal lulus, termasuk 28 tes baru untuk validasi kode, isolasi company, duplicate alias/ID, schema legacy, migrasi Company ID bersama alias, form/CSRF, routing Telegram, dan penolakan akses tanpa mutasi. Satu warning deprecation Starlette/httpx yang sudah ada tetap muncul;
-- DK meminta `dk-corp-group` → `DKGroups`; ID disimpan normalized `dkgroups`, command `/company DKGroups` diterima. DK menyetujui commit/deploy, penetapan TG, dan maintenance startup ADR-068 dengan backup otomatis. Preflight produksi memastikan sumber ada, target belum dipakai, Threads generator tetap Published v2 dengan primary `gpt-5.1` dan backup `gpt-4o`. Penetapan TG dan migrasi produksi belum dijalankan.
+- DK meminta `dk-corp-group` → `DKGroups`; ID disimpan normalized `dkgroups`, command `/company DKGroups` diterima. DK menyetujui commit/deploy, penetapan TG, dan maintenance startup ADR-068 dengan backup otomatis. Preflight produksi memastikan sumber ada, target belum dipakai, Threads generator tetap Published v2 dengan primary `gpt-5.1` dan backup `gpt-4o`;
+- commit implementasi `71bad79` berhasil deployed melalui GitHub → Railway pada deployment `adf4a2a1-8f78-4f33-8684-37a480c926de`. Alias TG disimpan melalui form admin ber-CSRF untuk `ms/threads-generator`. Perbandingan sebelum/sesudah memastikan nama, deskripsi, pilihan AI, dan isi draft playbook tidak berubah; published tetap v2;
+- migrasi produksi `dk-corp-group` → `dkgroups` berhasil pada deployment `d30df905-e39d-4b95-8bd4-c01159a6530f`. Log startup mencatat `Company ID migration completed with verified backup`, dan Activity mencatat target `dkgroups`, actor `dkadmin`, 3 September 2026 18:35 WIB. Verifikasi backup, hash seluruh row, serta FK dijalankan oleh transaksi ADR-068; tidak mengunduh database atau membuka SSH untuk migrasi ini;
+- pemeriksaan HTTP setelah migrasi memastikan company `amz`, `dkgroups`, dan `ms` tersedia; nama DK Corp Group tetap; akun DK, membership di `dkgroups`/`ms`, instruction, knowledge, dan Threads generator HTTP 200. URL company lama 404 sesuai desain tanpa alias. Field TG, primary `gpt-5.1`, backup `gpt-4o`, dan Published v2 tetap ada;
+- variable sementara `COMPANY_ID_MIGRATION` sudah dihapus melalui Railway setelah verifikasi. Backup privat tetap di direktori `backups/` di samping database produksi; tidak dimasukkan Git. Tes shortcut memakai handler/Update Telegram dengan balasan simulasi, bukan polling lokal, pesan Telegram, atau inferensi AI berbayar. Uji langsung dari akun Telegram tetap dapat dilakukan DK.
 
 ### 3 September 2026 — v1.18
 
