@@ -182,6 +182,14 @@ class Database:
                     created_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS module_pending_requests (
+                    telegram_id INTEGER NOT NULL REFERENCES users(telegram_id),
+                    company_id TEXT NOT NULL REFERENCES companies(company_id),
+                    module_id TEXT NOT NULL, content TEXT NOT NULL,
+                    context_hash TEXT NOT NULL, created_at TEXT NOT NULL,
+                    PRIMARY KEY(telegram_id, company_id, module_id)
+                );
+
                 CREATE TABLE IF NOT EXISTS ai_runtime_profiles (
                     profile_id TEXT PRIMARY KEY,
                     label TEXT NOT NULL,
@@ -442,6 +450,8 @@ class Database:
                 ON module_playbook_versions(module_pk, version_number DESC);
                 """
             )
+            from app.shared_modules import initialize_schema
+            initialize_schema(connection)
 
     def bootstrap_companies(self, companies_file: Path) -> int:
         """Import JSON only when the company registry is still empty."""
@@ -1030,6 +1040,8 @@ class Database:
             "user_company_memberships": "company_id",
             "user_sessions": "active_company_id",
             "messages": "company_id",
+            "shared_messages": "company_id",
+            "module_pending_requests": "company_id",
             "modules": "company_id",
             "module_access": "company_id",
             "company_instruction_versions": "company_id",
@@ -3399,6 +3411,30 @@ class Database:
                 (telegram_id, company_id, module_id, role, content, _now()),
             )
 
+    def set_pending_request(self, telegram_id, company_id, module_id, content, context_hash):
+        with closing(self._connect()) as c, c:
+            c.execute("""INSERT INTO module_pending_requests VALUES(?,?,?,?,?,?)
+                ON CONFLICT(telegram_id,company_id,module_id) DO UPDATE SET
+                content=excluded.content,context_hash=excluded.context_hash,created_at=excluded.created_at""",
+                (telegram_id, company_id, module_id, content, context_hash, _now()))
+
+    def get_pending_request(self, telegram_id, company_id, module_id):
+        with closing(self._connect()) as c:
+            row = c.execute("SELECT content,context_hash FROM module_pending_requests WHERE telegram_id=? AND company_id=? AND module_id=?",
+                            (telegram_id, company_id, module_id)).fetchone()
+            return dict(row) if row else None
+
+    def complete_pending_request(self, telegram_id, company_id, module_id, content, answer, context_hash):
+        # Save the successful pair and remove the pending input atomically.
+        with closing(self._connect()) as c, c:
+            c.execute("BEGIN IMMEDIATE")
+            result = c.execute("DELETE FROM module_pending_requests WHERE telegram_id=? AND company_id=? AND module_id=? AND content=? AND context_hash=?",
+                               (telegram_id, company_id, module_id, content, context_hash))
+            if result.rowcount != 1:
+                raise ValueError("Pending request changed")
+            c.executemany("INSERT INTO messages(telegram_id,company_id,module_id,role,content,created_at) VALUES(?,?,?,?,?,?)",
+                          [(telegram_id,company_id,module_id,role,text,_now()) for role,text in (("user",content),("assistant",answer))])
+
     def get_history(
         self,
         telegram_id: int,
@@ -3423,6 +3459,8 @@ class Database:
         self, telegram_id: int, company_id: str = "", module_id: str = ""
     ) -> None:
         with self._connect() as connection:
+            connection.execute("DELETE FROM module_pending_requests WHERE telegram_id=? AND company_id=? AND module_id=?",
+                               (telegram_id, company_id, module_id))
             connection.execute(
                 """
                 DELETE FROM messages
@@ -3604,6 +3642,11 @@ def _validate_module_short_code(value: object) -> str:
 def _require_unique_module_command(
     connection: sqlite3.Connection, company_id: str, module_id: str, short_code: str
 ) -> None:
+    if connection.execute(
+        "SELECT 1 FROM shared_modules WHERE lower(short_code) IN (?, ?)",
+        (module_id, short_code),
+    ).fetchone():
+        raise ValueError("Kode atau ID berbenturan dengan modul bersama/Learning")
     # Keep aliases and canonical IDs unambiguous, including inactive modules.
     conflict = connection.execute(
         """

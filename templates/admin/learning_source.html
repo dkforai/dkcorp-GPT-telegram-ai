@@ -1,0 +1,8 @@
+{% extends "admin/base.html" %}
+{% block page_title %}Tinjau ekstraksi PDF{% endblock %}
+{% block content %}
+<div class="page-lead"><div><h2>{{ source.filename }}</h2><p>Halaman {{ page_number }} dari {{ count }}. Teks berikut adalah hasil ekstraksi, bukan jawaban AI.</p></div><a class="secondary-button" href="/admin/learning">Learning</a></div>
+<form method="get" class="panel"><label>Nomor halaman<input type="number" name="page_number" value="{{ page_number }}" min="1" max="{{ count }}" required></label><button class="secondary-button">Lihat halaman</button></form>
+<div class="panel"><pre class="learning-extracted">{{ text or 'Tidak ada teks terbaca pada halaman ini.' }}</pre></div>
+<div class="form-actions">{% if page_number > 1 %}<a class="secondary-button" href="?page_number={{ page_number-1 }}">Sebelumnya</a>{% endif %}{% if page_number < count %}<a class="primary-button" href="?page_number={{ page_number+1 }}">Berikutnya</a>{% endif %}</div>
+{% endblock %}

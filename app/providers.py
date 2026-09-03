@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+from contextvars import ContextVar
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -20,6 +21,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 MODULE_AI_TIMEOUT_SECONDS = 30.0
+ARTICLE_WEB_TIMEOUT_SECONDS = 120.0
+_request_timeout: ContextVar[float | None] = ContextVar("module_request_timeout", default=None)
+
+
+def effective_timeout() -> float:
+    value = _request_timeout.get()
+    return MODULE_AI_TIMEOUT_SECONDS if value is None else value
 
 
 class AIProvider(ABC):
@@ -35,6 +43,7 @@ class OpenAICompatibleProvider(AIProvider):
         self, api_key: str, model: str, base_url: str | None = None,
         *, module_runtime: bool = False,
     ):
+        self.module_runtime = module_runtime
         kwargs = {"api_key": api_key}
         if base_url:
             kwargs["base_url"] = base_url
@@ -74,6 +83,7 @@ class OpenAICompatibleProvider(AIProvider):
         response = await self.client.chat.completions.create(
             model=self.model,
             messages=messages,
+            **({"timeout": effective_timeout()} if self.module_runtime else {}),
         )
         content = response.choices[0].message.content
         if not content or not content.strip():
@@ -118,7 +128,7 @@ class AnthropicProvider(AIProvider):
         try:
             response = await self.client.post("v1/messages", json={
                 "model": self.model, "max_tokens": limit, "system": system, "messages": messages,
-            })
+            }, timeout=effective_timeout())
         except httpx.RequestError:
             raise ProviderRequestError() from None
         if response.status_code != 200:
@@ -230,17 +240,31 @@ class ModuleProviderResolver:
         system_prompt: str,
         history: list[dict[str, str]],
         user_text: str,
+        *, timeout_seconds: float | None = None,
+    ) -> str:
+        if timeout_seconds is not None and timeout_seconds not in {30.0, 120.0}:
+            raise ValueError("Unsupported module timeout")
+        token = _request_timeout.set(timeout_seconds)
+        try:
+            return await self._generate(primary, backup_loader, system_prompt, history, user_text)
+        finally:
+            _request_timeout.reset(token)
+
+    async def _generate(
+        self, primary: AIRuntimeProfile | None,
+        backup_loader: Callable[[], AIRuntimeProfile | None],
+        system_prompt: str, history: list[dict[str, str]], user_text: str,
     ) -> str:
         # Missing/disabled primary credentials must not trigger failover.
         provider = self.resolve(primary)
         try:
-            async with asyncio.timeout(MODULE_AI_TIMEOUT_SECONDS):
+            async with asyncio.timeout(effective_timeout()):
                 return await provider.generate(system_prompt, history, user_text)
         except Exception as exc:
             status = exc.status_code if isinstance(exc, (APIStatusError, ProviderRequestError)) else None
             logger.warning(
-                "module_ai_failed primary=%s error_type=%s status=%s",
-                primary.profile_id, type(exc).__name__, status,
+                "module_ai_failed primary=%s error_type=%s status=%s timeout_seconds=%s",
+                primary.profile_id, type(exc).__name__, status, effective_timeout(),
             )
             if not _can_use_backup(exc):
                 raise ModuleGenerationError("AI utama gagal memproses pesan") from None
@@ -257,13 +281,13 @@ class ModuleProviderResolver:
             primary.profile_id, backup.profile_id,
         )
         try:
-            async with asyncio.timeout(MODULE_AI_TIMEOUT_SECONDS):
+            async with asyncio.timeout(effective_timeout()):
                 return await backup_provider.generate(system_prompt, history, user_text)
         except Exception as exc:
             status = exc.status_code if isinstance(exc, (APIStatusError, ProviderRequestError)) else None
             logger.warning(
-                "module_ai_failed backup=%s error_type=%s status=%s",
-                backup.profile_id, type(exc).__name__, status,
+                "module_ai_failed backup=%s error_type=%s status=%s timeout_seconds=%s",
+                backup.profile_id, type(exc).__name__, status, effective_timeout(),
             )
             raise ModuleGenerationError("AI utama dan AI cadangan tidak tersedia") from None
 

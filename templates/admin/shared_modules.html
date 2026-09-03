@@ -1,0 +1,8 @@
+{% extends "admin/base.html" %}
+{% block page_title %}Modul bersama{% endblock %}
+{% block content %}
+<div class="page-lead"><div><h2>Modul lintas perusahaan</h2><p>Tersedia bagi semua user whitelist aktif. Tidak memerlukan pemberian akses per user.</p></div><a class="primary-button" href="/admin/shared-modules/new">Tambah modul</a></div>
+<div class="panel table-panel"><table><thead><tr><th>Modul</th><th>Perintah</th><th>Konteks draft</th><th>Status</th><th>Aksi</th></tr></thead><tbody>
+{% for item in modules %}<tr><td>{{ item.name }}</td><td>/{{ item.short_code | upper }}</td><td>{{ 'Perusahaan aktif' if item.context_mode == 'company' else 'Independen' }}</td><td>{{ 'Nonaktif' if not item.active else ('Published v' ~ item.revision if item.live_json else 'Draft') }}</td><td><a href="/admin/shared-modules/{{ item.id }}">Kelola</a></td></tr>{% else %}<tr><td colspan="5">Belum ada modul bersama.</td></tr>{% endfor %}
+</tbody></table></div>
+{% endblock %}

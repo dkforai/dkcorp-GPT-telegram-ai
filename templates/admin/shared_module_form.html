@@ -1,0 +1,26 @@
+{% extends "admin/base.html" %}
+{% block page_title %}{{ 'Pengaturan Learning' if learning else 'Modul bersama' }}{% endblock %}
+{% block content %}
+<div class="page-lead"><div><h2>{{ 'AI untuk Learning' if learning else 'Pengaturan modul lintas perusahaan' }}</h2><p>AI utama dan cadangan dari Settings AI. Versi published yang digunakan user.</p></div><a class="secondary-button" href="{{ '/admin/learning' if learning else '/admin/shared-modules' }}">Kembali</a></div>
+{% if notice %}<div class="notice">{{ notice }}</div>{% endif %}
+<form class="panel form-panel" method="post" action="/admin/shared-modules/{{ row.id if row else 'new' }}">
+<input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="revision" value="{{ row.updated_at if row else '' }}">
+{% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+{% if learning %}
+<input type="hidden" name="name" value="Learning"><input type="hidden" name="short_code" value="learning"><input type="hidden" name="context_mode" value="independent"><input type="hidden" name="instruction" value=""><input type="hidden" name="description" value="">
+<p>Perintah /learning. Semua akun whitelist aktif dapat belajar, tanpa membawa konteks perusahaan. Keterangan dan custom instruction diatur pada masing-masing buku.</p>
+{% else %}
+<div class="form-grid"><label>Nama modul<input name="name" value="{{ values.name }}" maxlength="100" required></label><label>Kode singkat<input name="short_code" value="{{ values.short_code | upper }}" pattern="[A-Za-z][A-Za-z0-9]{1,2}" minlength="2" maxlength="3" required><small>Unik di seluruh sistem, termasuk modul perusahaan.</small></label></div>
+<label class="full-field">Konteks<select name="context_mode"><option value="independent" {% if values.context_mode == 'independent' %}selected{% endif %}>Independen, tanpa data perusahaan</option><option value="company" {% if values.context_mode == 'company' %}selected{% endif %}>Gunakan konteks perusahaan aktif user</option></select><small>Mode perusahaan memerlukan membership aktif. Perubahan mode mulai berlaku setelah publish, dengan history terpisah.</small></label>
+<label class="full-field">Deskripsi<textarea name="description" rows="3" maxlength="2000">{{ values.description }}</textarea><small>Dikirim saat user memilih modul.</small></label>
+<label class="full-field">Custom instruction<textarea name="instruction" rows="12" maxlength="50000">{{ values.instruction }}</textarea></label>
+{% endif %}
+<div class="form-grid">{% for field, label in [('ai_selection', 'AI utama'), ('backup_ai_selection', 'AI cadangan')] %}
+<label>{{ label }}<select name="{{ field }}"><option value="">{{ 'Pilih AI utama' if field == 'ai_selection' else 'Tanpa cadangan' }}</option>
+{% for option in runtime_profiles %}<option value="{{ option.value }}" {% if values[field] == option.value %}selected{% endif %} {% if option.disabled %}disabled{% endif %}>{{ option.label }} · {{ option.model }} · {{ option.profile_id }}{% if option.reason %} · {{ option.reason }}{% endif %}</option>{% endfor %}
+</select></label>{% endfor %}</div>
+<p class="muted-text">Cadangan yang dipilih dapat menerima konteks percakapan yang sama ketika AI utama mengalami gangguan operasional. Tidak ada pergantian model otomatis di luar pilihan ini.</p>
+<label class="checkbox-row"><input type="checkbox" name="active" value="1" {% if values.active == '1' %}checked{% endif %}><span><strong>Aktifkan modul</strong><small>Menonaktifkan berlaku langsung saat disimpan. Draft belum dapat dipakai user.</small></span></label>
+<div class="form-actions"><span>{{ 'Published v' ~ row.revision if row and row.live_json else 'Belum dipublikasikan' }}</span><button class="secondary-button" name="action" value="draft">Simpan draft</button><button class="primary-button" name="action" value="publish">Simpan &amp; publish</button></div>
+</form>
+{% endblock %}

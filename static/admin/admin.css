@@ -336,3 +336,5 @@ tbody tr:hover { background: #fcfcfe; }
   .activity-heading { align-items: flex-start; flex-direction: column; gap: 6px; }
   .module-access-grid { grid-template-columns: 1fr; }
 }
+/* Learning source text must wrap, including long words from PDF extraction. */
+.learning-extracted { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.7; }

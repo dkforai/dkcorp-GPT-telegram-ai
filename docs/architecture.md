@@ -5,7 +5,7 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 1.20 |
+| Versi | 1.22 |
 | Terakhir diperbarui | 3 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
@@ -35,7 +35,7 @@ Tujuan utama:
 7. Mutasi administratif harus tervalidasi, dilindungi CSRF, dan dicatat sebagai audit event.
 8. Draft instruction tidak boleh memengaruhi bot. Runtime hanya membaca versi database yang sudah dipublikasikan atau file transisi bila belum ada versi database.
 9. Draft knowledge tidak boleh memengaruhi bot. Runtime membaca versi published dari dokumen aktif; file transisi hanya dipakai sampai publish knowledge pertama pada company tersebut.
-10. Akses module bersifat default-deny per membership. Runtime hanya menerima module aktif yang statusnya aktif, playbook-nya sudah dipublikasikan, dan aksesnya diberikan admin.
+10. Akses module perusahaan bersifat default-deny per membership. Modul bersama/Learning memakai whitelist aktif lintas perusahaan; mode konteks perusahaan tetap memerlukan membership aktif. Semua runtime memerlukan module aktif, published, dan pilihan AI valid.
 11. Draft module playbook tidak boleh memengaruhi bot. History General dan setiap module dipisahkan agar perpindahan pekerjaan tidak mencampur konteks.
 12. API key Module tidak boleh disimpan sebagai plaintext di SQLite, audit, log, atau HTML respons. Key baru di Settings AI memakai authenticated encryption dengan master key terpisah di environment; named environment credential lama tetap didukung. Module memilih utama/cadangan dari registry. Cadangan hanya untuk kegagalan operasional yang diizinkan, bukan melewati akses atau salah konfigurasi.
 
@@ -125,7 +125,40 @@ Jawaban ke user
 | Authorization per knowledge | Sebagian | Sudah company-scoped; knowledge khusus module, division, dan clearance belum |
 | Response Validator | Sebagian | Pemisahan blok siap salin, normalisasi selektif, pemeriksaan jawaban kosong, batas panjang, dan split; belum ada policy classifier |
 | Admin Panel | Sebagian | Company, user, membership, Instruction, Knowledge, Module, dan module access writable; Activity read-only |
-| Retrieval/RAG | Belum | Seluruh knowledge dimuat sampai batas karakter |
+| Modul bersama | Implementasi v1.21, verifikasi deployment belum selesai | Registry global terpisah; independent tanpa konteks perusahaan atau company-context dengan membership aktif; published snapshot, kode global unik, private history |
+| Modul Learning | Implementasi v1.21, verifikasi deployment belum selesai | `/learning`, keterangan buku tanpa AI, custom instruction per buku, PDF tersimpan/terekstraksi sekali, jadwal WIB eksklusif pada akhir, review sebelum publish |
+| Retrieval/RAG | Learning saja, indeks lokal disetujui DK | FTS5 + cuplikan tetangga + konteks recent chat, maksimum 16.000 karakter sumber; bukan pencarian semantik. Company knowledge tetap alur lama |
+| Timeout dan retry artikel | v1.22, 357 tes lokal lulus; deployment belum terverifikasi | Khusus `ms/artikel-web-generator`: 120 detik per AI, pending input privat, `ulang`/`/ulang`, pasangan history atomik setelah sukses |
+
+### 4.1 Modul bersama dan Learning (v1.21)
+
+Tiga menu admin terpisah adalah **Modul perusahaan** (`/admin/modules`, perilaku existing dipertahankan), **Modul bersama** (`/admin/shared-modules`), dan **Modul Learning** (`/admin/learning`). Tidak ada migrasi otomatis module perusahaan menjadi global maupun perluasan ACL lama.
+
+Modul bersama tersedia bagi semua Telegram ID whitelist aktif, bukan publik anonim. Admin menetapkan mode `company` (profile/instruction/knowledge/user preferences dan membership dari company aktif saja) atau `independent` (tidak memuat company, membership, role profile, custom instruction global user, ataupun history company). Independent dapat digunakan tanpa membership. AI utama/cadangan memakai registry, validasi model, dan failover existing. Tidak ada substitusi model maupun fallback credential global.
+
+Kode bersama wajib 2–3 karakter ASCII diawali huruf. Namespace tidak boleh berbenturan dengan alias/ID company di seluruh company maupun built-in. `/shared` menampilkan katalog, `/module KODE` dan `/KODE` memilih module global; `/learning` merupakan command tersendiri. `/?`, `/help`, `/start`, `/module` menambahkan modul global yang tersedia. Command company tetap hanya ditampilkan bila membership aktif lebih dari satu. Pemilihan company/module perusahaan meninggalkan sesi global; pencabutan status/akses global tidak mengalihkan pesan diam-diam ke General.
+
+`shared_modules` menyimpan draft/live JSON, `shared_versions` menyimpan snapshot immutable. Status dan alias operasional berlaku saat disimpan; isi/nama/description/mode/AI berubah di runtime hanya setelah publish. Timestamp mencegah form usang menimpa perubahan admin lain. `shared_messages` dipisahkan menurut user, module, company (kosong untuk independent), mode dan versi module. Publish/perubahan mode memulai konteks baru. Sesi ada di `shared_sessions`. Company ID migration mencakup `shared_messages.company_id` dengan validasi seluruh row dan backup.
+
+Learning memakai satu konfigurasi AI di `/admin/shared-modules/learning`. Pengalaman belajar tidak di-hardcode: setiap entry buku berisi judul (default nama PDF), keterangan pembuka, PDF, custom instruction, mulai dan akhir `datetime-local`, status, serta konfirmasi review ekstraksi. Tidak ada pemisahan library dan materi mingguan. Tidak ada kewajiban nomor halaman atau label analisis AI dalam jawaban.
+
+Jadwal disimpan sebagai WIB dan UTC. Mulai inklusif, akhir eksklusif; default kedua jam 00.00. End harus setelah start dan jadwal live aktif tidak boleh overlap, termasuk saat reaktivasi. `learning_books` mempunyai draft/live snapshot dan `learning_versions` immutable. Runtime memeriksa jadwal pada setiap command/pesan dan kembali sebelum mengirim hasil AI. Jika expire/revoke/versi berubah di tengah request, jawaban lama dibuang. Buku baru aktif mengirim pembuka statis dan memakai history versi buku tersendiri. `learning_session_books` merekam buku yang sudah dibuka user. Pengulangan `/learning` tidak menghapus history. Tidak ada broadcast otomatis, cron, atau fallback ke buku kedaluwarsa.
+
+PDF asli disimpan privat sebagai BLOB di `learning_sources` bersama SHA-256, filename, pages JSON dan laporan ekstraksi. Ini khusus Learning, berbeda dari upload knowledge existing yang hanya menyimpan teks/metadata. Sumber identik diproses sekali/deduplicated; sumber baru tidak menimpa versi lama. Bukan endpoint download publik. Review hanya untuk admin login, escaped HTML, per halaman. PDF maksimal 20 MB, 1.000 halaman dan 2 juta karakter. Ekstraksi `pypdf` di subprocess dengan timeout 40 detik, CPU 30 detik, address space Linux 768 MiB, satu ekstraksi per admin process. Request multipart dibatasi sebelum spooling; CSRF dan audit berlaku. PDF encrypted/rusak/tanpa teks/terlalu besar ditolak, tanpa truncation. PDF scan memerlukan OCR di luar fitur ini. Laporan menampilkan halaman terbaca/tanpa teks; tabel/gambar/urutan teks perlu review manusia. Upload baru selalu draft, menghapus tanda reviewed; publish PDF baru tanpa review ditolak.
+
+DK menyetujui indeks lokal tanpa biaya embedding setelah risiko sinonim/parafrasa dijelaskan. `learning_chunks` per halaman maksimal 2.000 karakter dan SQLite FTS5 `learning_search` dipakai bersama, tanpa embedding atau ringkasan AI. Pencarian mempertimbangkan pesan/recent chat untuk pertanyaan lanjutan; pertanyaan keseluruhan memakai sampel tersebar dengan instruksi agar tidak mengklaim representasi lengkap. Tanpa kecocokan, bot meminta topik/bab, bukan mengarang. Sinonim, parafrasa, konteks lebih lama dari recent history, dan ringkasan keseluruhan buku merupakan keterbatasan nyata. Tidak ada OCR, ringkasan AI, cache respons personal lintas user, atau cache provider berbayar yang ditambahkan diam-diam.
+
+Batas input source 16.000 karakter dan recent history maksimum konfigurasi `HISTORY_LIMIT` dengan batas 24.000 karakter khusus flow baru. Ini bukan pengukuran token exact atau jaminan persentase penghematan. Biaya output/custom instruction tetap ada. PDF/indeks bersama tidak berarti history user dibagikan. Pengujian biaya/relevansi pada buku nyata belum dilakukan. Instruksi DK agar opsi penghematan mendatang dijelaskan metode/risikonya dan diputuskan DK dicatat juga di `AGENTS.md`.
+
+### 4.2 Timeout dan pengulangan modul artikel (v1.22)
+
+Log produksi yang dikirim DK membuktikan Claude primary dan DeepSeek backup gagal dengan `TimeoutError`; backup berhenti sekitar 30 detik setelah failover. Log tersebut tidak membuktikan pembatasan dua pertanyaan, key salah, ataupun akar latensi provider/jaringan. DK menyetujui opsi 120 detik khusus pasangan ID `ms/artikel-web-generator`, tanpa mengganti model, mengurangi konteks, atau mengubah playbook produksi.
+
+Resolver memakai timeout per-request melalui `ContextVar`, baik batas total `asyncio.timeout` maupun HTTP adapter native Claude/OpenAI-compatible. Cache client tidak mengubah timeout request modul lain. Default module termasuk Modul bersama/Learning tetap 30 detik per AI; General dan tes katalog tidak berubah. Satu primary dan maksimal satu backup, tanpa retry SDK; batas generasi artikel sekitar 240 detik bila keduanya mencapai batas. Ini bukan jaminan keberhasilan atau penghematan token. Provider mungkin tetap memproses request yang terputus, sehingga failover atau retry dapat menambah biaya. Jika canonical company/module ID ini dimigrasikan lagi, kebijakan override perlu diperbarui eksplisit.
+
+`module_pending_requests` menyimpan satu input tertunda per `(telegram_id, company_id, module_id)`, content, SHA-256 konteks efektif+history, dan timestamp. Tidak masuk history sukses, prompt user lain, maupun audit log. Input baru menggantikan pending pada scope sama. Sesudah gagal, user dapat mengetik `ulang` atau `/ulang` pada modul artikel yang sama. Retry membaca ulang otorisasi, published prompt, dan history; perubahan hash meminta user mengirim detail kembali. Retry tidak berjalan otomatis. `/ulang` di scope lain tidak mengambil pending artikel; kata biasa `ulang` pada modul lain tetap pesan normal.
+
+Sesudah generasi berhasil, akses dan scope diperiksa kembali; transaksi atomik menyimpan pasangan user+assistant dan menghapus pending dengan pemeriksaan input/hash. `/reset` menghapus history dan pending pada scope aktif. Company ID maintenance menyertakan tabel pending dalam backup dan validasi migrasi. Pending disimpan di SQLite dengan perlindungan file yang sama seperti history; tidak mempunyai TTL otomatis, bertahan hingga sukses, reset, atau ditimpa input baru. Detail yang gagal sebelum versi ini tidak bisa dipulihkan otomatis dan perlu dikirim ulang sekali.
 
 ## 5. Target arsitektur multi-company
 
@@ -724,7 +757,7 @@ Discovery: [OpenAI Models](https://developers.openai.com/api/reference/python/re
 - AI terdaftar dapat dipakai bersama oleh beberapa Module. Perubahan metadata AI berlaku pada semua referensi; perubahan pilihan utama/cadangan pada Module berlaku pada pesan berikutnya tanpa publish ulang playbook.
 - Setiap pesan selalu mencoba AI utama terlebih dahulu. Cadangan yang dipilih hanya dicoba sekali setelah `APIConnectionError` (termasuk timeout SDK), timeout aplikasi, HTTP 408, HTTP 429, atau HTTP 5xx. Kedua AI tidak dipanggil paralel dan tidak ada loop retry/cadangan ketiga.
 - HTTP 400/401/403/404/409/422, error tak dikenal, jawaban kosong/refusal, profile primary nonaktif, atau key primary kosong tidak memicu cadangan. Jawaban/refusal dari provider tidak dianggap alasan untuk mencoba provider lain. Klasifikasi error mengacu pada [OpenAI Docs](https://developers.openai.com/api/docs/guides/error-codes); pemilihan subset untuk failover adalah kebijakan aplikasi.
-- Setiap percobaan Module dibatasi total 30 detik dengan `asyncio.timeout`; client Module memakai timeout 30 detik dan `max_retries=0`. Total panggilan AI paling banyak sekitar 60 detik jika cadangan dipakai. Pengaturan timeout/retry General tidak berubah. Pembatalan task tidak memicu failover.
+- Default setiap percobaan Module dibatasi total 30 detik dengan `asyncio.timeout`; client Module memakai timeout 30 detik dan `max_retries=0`. Total paling banyak sekitar 60 detik jika cadangan dipakai. Pengecualian v1.22 untuk `ms/artikel-web-generator` adalah 120 detik per AI pada HTTP dan outer guard, maksimum sekitar 240 detik; lihat bagian 4.2. Pengaturan timeout/retry General tidak berubah. Pembatalan task tidak memicu failover.
 - Profile/key cadangan baru di-resolve setelah utama gagal. Cadangan nonaktif, hilang, atau tanpa key menghentikan request. Menonaktifkan AI yang hanya dipakai sebagai cadangan tidak mematikan AI utama. Menonaktifkan profile utama tetap mengikuti perilaku lama: Module tidak ditawarkan dan session Module terkait dibersihkan ke General; ini bukan retry request yang gagal memakai key General.
 - Failover memakai system prompt, knowledge, instruction, published playbook, company, user, module, dan history yang sama. Hanya jawaban final sukses yang ditulis bersama pesan user satu kali; jika kedua panggilan gagal, tidak ada penambahan history.
 - Memilih cadangan merupakan izin admin agar konteks yang sama dapat dikirim ke provider cadangan. Hal ini dijelaskan di form. Timeout tidak menjamin provider utama belum memproses request, sehingga biaya dapat timbul pada kedua provider. Dua profil dengan provider/account yang sama belum tentu melindungi dari gangguan atau limit bersama.
@@ -938,7 +971,7 @@ Paket form/backend/runtime/import telah diterapkan, diuji lokal, dan dideploy. C
 | ADR-058 | Import Excel insert-only, ID lama dilewati seluruhnya di dalam write transaction | Memenuhi larangan menimpa data existing, termasuk user nonaktif/membership lama, dan mencegah race antara pengecekan ID dan penyimpanan |
 | ADR-059 | Batch import atomik dengan pengaturan akses eksplisit di form admin | Kesalahan baris tidak menghasilkan simpan parsial; jabatan dari spreadsheet tidak boleh otomatis menaikkan akses. Whitelist awal nonaktif dan akses module tetap default-deny |
 | ADR-060 | Module memilih AI utama dan cadangan opsional dari AI terdaftar | Menyederhanakan form menjadi dua pilihan nama, mempertahankan Module lama, dan hanya mengalihkan kegagalan koneksi/timeout/408/429/5xx ke cadangan yang dipilih admin |
-| ADR-061 | Satu percobaan maksimal 30 detik per AI dan satu penulisan history setelah sukses | Menghindari retry bertumpuk, duplikasi history, perpindahan konteks, dan bocornya body error/secret dalam log. General tidak dijadikan cadangan |
+| ADR-061 | Default satu percobaan maksimal 30 detik per AI; pengecualian artikel pada ADR-073 | Menghindari retry bertumpuk, duplikasi history, perpindahan konteks, dan bocornya body error/secret dalam log. General tidak dijadikan cadangan |
 | ADR-062 | Key Settings memakai Fernet, master terpisah di environment | Blank preserves, fail-closed decrypt, endpoint resmi, tanpa plaintext SQLite, legacy tetap berjalan |
 | ADR-063 | Empat provider dengan adapter protocol eksplisit | Claude native Messages; GPT/DeepSeek/Gemini compatible. General tidak dimigrasikan otomatis |
 | ADR-064 | Tes manual, sintetis, terbatas, dan revision-aware | Mencegah pengiriman data bisnis, biaya retry diam-diam, error mentah, dan status tes usang |
@@ -948,6 +981,10 @@ Paket form/backend/runtime/import telah diterapkan, diuji lokal, dan dideploy. C
 | ADR-068 | Rename Company ID hanya sebagai maintenance startup, bukan edit form | Runtime lama harus berhenti; backup konsisten, FK deferred, pembandingan seluruh row, audit dan repeat-safe mencegah relasi hilang atau writer memakai ID lama |
 | ADR-069 | Menu command ditentukan akses efektif, bukan respons AI | Literal `/?` diproses sebelum chat; `/help` dan `/start` memakai menu yang sama. Company chooser hanya untuk >1 membership/company aktif, daftar module tetap default-deny |
 | ADR-070 | Kode singkat module sebagai alias, bukan rename ID canonical | Admin dapat mengganti alias tanpa memindahkan history, akses, playbook, atau credential. Alias unik per company, case-insensitive, berbagi namespace dengan ID canonical, dan tetap memakai ACL |
+| ADR-071 | Modul bersama memakai registry global terpisah, dua mode konteks dan whitelist aktif | Tidak memperluas ACL modul perusahaan; independent tidak memuat konteks/company history, mode company tetap butuh membership |
+| ADR-072 | Learning memakai PDF privat terindeks lokal sekali, buku terjadwal dan history privat per versi | Menghindari kirim seluruh buku setiap pesan tanpa embedding berbayar; risiko pencarian leksikal diterima DK, tidak ada cache jawaban lintas user |
+| ADR-073 | Override 120 detik hanya `ms/artikel-web-generator`, model/konteks tetap | Menangani batas 30 detik yang terbukti di log; maksimal dua AI, request-local agar tidak mempengaruhi modul lain |
+| ADR-074 | Pending input artikel terpisah dari history; retry manual dan sukses atomik | Detail gagal tidak hilang atau masuk history ganda; otorisasi/scope/hash konteks diperiksa kembali, reset menghapus pending |
 
 ### Kode singkat module
 
@@ -982,6 +1019,23 @@ Urutan startup adalah initialize schema, migrasi jika diminta, bootstrap, lalu a
 Restart dengan mapping yang sama menjadi no-op hanya jika target lengkap, sumber tidak tersisa, dan audit cocok. Setelah migrasi terverifikasi, hapus `COMPANY_ID_MIGRATION` dari environment. ID lama bukan alias dan URL admin lama perlu dibuka ulang dari menu. Backup berisi data privat dan ciphertext credential, bukan master encryption key; jangan commit atau membagikannya. Pemulihan harus dilakukan saat semua writer berhenti menggunakan SQLite backup API, bukan menimpa file database hidup atau mengabaikan WAL.
 
 ## 16. Changelog dokumen
+
+### 1.22 — 3 September 2026
+
+- DK menyetujui perbaikan timeout dan retry artikel serta deployment bersama fitur v1.21. Pada catatan ini commit/deployment belum terverifikasi.
+- Mengubah batas outer request dan HTTP menjadi 120 detik hanya untuk `ms/artikel-web-generator`; default 30 detik dan pilihan model/konteks modul lain dipertahankan.
+- Menambah pending input privat, command `/ulang` dan kata `ulang` khusus artikel, pemeriksaan konteks, reset, serta transaksi sukses tanpa duplikasi history. Tidak memulihkan input yang sudah hilang sebelum rilis.
+- Menambah 11 tes timeout transport/concurrency/failover/cancellation, retry sukses/gagal, perubahan konteks, pencabutan akses, rollback dan migrasi pending. Ditambah satu regresi agar retrieval Learning memprioritaskan hasil relevan sebelum halaman tetangganya saat budget sempit.
+- Seluruh 357 tes lulus lokal, dengan satu warning deprecation Starlette/httpx existing; `git diff --check` bersih. Provider/HTTP disimulasikan, tanpa panggilan AI berbayar, polling Telegram lokal, atau penambahan data uji produksi. Uji kualitas buku nyata dan respons AI produksi tetap belum dilakukan.
+
+### 1.21 — 3 September 2026
+
+- DK menyetujui implementasi dan deploy tiga menu: Modul perusahaan, Modul bersama, Modul Learning. Saat catatan ini dibuat masih tes lokal, belum dinyatakan deployed.
+- Menambah registry global, snapshot draft/published, dua mode konteks, kode global, primary/backup existing dan private history terpisah.
+- Menambah buku PDF tersimpan privat, ekstraksi bounded, review, jadwal WIB, overlap validation dan boundary checks sebelum/sesudah generasi.
+- `/learning` mengirim keterangan tanpa AI; custom instruction per buku menentukan pengalaman belajar; tidak memaksakan rujukan halaman atau label analisis.
+- DK menyetujui indeks lokal tanpa biaya embedding beserta keterbatasan sinonim/parafrasa; bot meminta topik/bab bila sumber tidak ditemukan.
+- Mencatat instruksi DK: peluang penghematan token harus dijelaskan metode/risikonya dan tetap diputuskan DK.
 
 ### 3 September 2026 — v1.20
 

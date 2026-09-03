@@ -1729,6 +1729,9 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             },
         )
 
+    from app.shared_admin import register_shared_routes
+    register_shared_routes(app, settings, database, templates)
+
     @app.get("/admin/{section}", response_class=HTMLResponse)
     async def placeholder(request: Request, section: str):
         redirect = _login_redirect(request, settings)
