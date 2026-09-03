@@ -119,7 +119,7 @@ Jawaban ke user
 | Migrasi Company ID oleh operator | v1.19 produksi memakai `amz`, `ms`, dan `dkgroups`; migrasi serta HTTP admin terverifikasi | Startup-only, backup SQLite terverifikasi, transaksi atomik, seluruh relasi dan history dipertahankan; bukan field edit admin |
 | Module router dan active context | Sudah | Command `/module`, General context, default-deny module access, dan reset module saat company berubah |
 | Kode singkat module | v1.19 deployed; 304 tes lulus; TG tersimpan dan form produksi terverifikasi | Alias opsional 2–3 karakter per company; `/TG`, `/tg`, dan `/module TG` memilih ID canonical yang sama; menu sesuai akses |
-| Konfirmasi perpindahan module | v1.20 implementasi lokal; 317 tes lulus; belum deployed | Konfirmasi diikuti satu baris kosong dan deskripsi terkini dari form module; deskripsi kosong tidak ditampilkan |
+| Konfirmasi perpindahan module | v1.20 deployed; 317 tes lulus; Railway dan HTTP produksi terverifikasi | Konfirmasi diikuti satu baris kosong dan deskripsi terkini dari form module; deskripsi kosong tidak ditampilkan |
 | Company-scoped instruction | Sudah | Draft dan versi publish tersimpan di SQLite; file company menjadi fallback transisi |
 | AI Module Playbook | Sudah | Registry per company, draft, preview, immutable publish, restore-to-draft, status, dan runtime prompt |
 | Authorization per knowledge | Sebagian | Sudah company-scoped; knowledge khusus module, division, dan clearance belum |
@@ -988,7 +988,9 @@ Restart dengan mapping yang sama menjadi no-op hanya jika target lengkap, sumber
 - menambahkan deskripsi dari form module pada konfirmasi perpindahan, dipisahkan tepat satu baris kosong, untuk shortcut serta command `/module`;
 - deskripsi kosong tidak ditampilkan; teks tidak diberi label/tanda kurung tambahan dan tidak dirender sebagai HTML/Markdown;
 - tidak mengubah schema, data produksi, ACL, pemilihan AI, playbook, atau history;
-- seluruh 317 tes lokal lulus, termasuk 13 kasus baru untuk tiga jalur pemilihan, deskripsi kosong/whitespace/teks/markup literal, pengaturan deskripsi tanpa publish ulang, preservasi data di luar session, dan konfirmasi General yang tetap sama. Satu warning deprecation Starlette/httpx lama tetap ada. DK menyetujui commit dan deploy melalui GitHub → Railway; hasil deployment akan diverifikasi sebelum dinyatakan selesai.
+- seluruh 317 tes lokal lulus, termasuk 13 kasus baru untuk tiga jalur pemilihan, deskripsi kosong/whitespace/teks/markup literal, pengaturan deskripsi tanpa publish ulang, preservasi data di luar session, dan konfirmasi General yang tetap sama. Satu warning deprecation Starlette/httpx lama tetap ada;
+- DK menyetujui commit/deploy melalui GitHub → Railway. Commit implementasi `4c062fe` berhasil deployed pada `765bc3a8-c5e9-4627-9afa-b59b6c97269a`. Health HTTP 200, admin anonim tetap diarahkan ke login, login admin berhasil, dan company `amz`/`dkgroups`/`ms` tetap tersedia;
+- form `ms/google-map-care` terverifikasi memiliki kode GMC dan deskripsi terisi. Hash pengaturan nama, kode, deskripsi, pasangan AI, serta isi draft playbook sebelum/sesudah deployment identik. Tidak mengubah data produksi atau mengirim inferensi AI; perilaku balasan diuji dengan handler Telegram dan balasan simulasi. Uji langsung `/gmc` di akun Telegram dapat dilakukan DK.
 
 ### 3 September 2026 — v1.19
 
