@@ -103,7 +103,7 @@ Jawaban ke user
 | User Context | Sudah | Identity global dan membership per perusahaan |
 | Import user Excel | Sudah | `.xls`/`.xlsx`, lima kolom, insert-only untuk ID baru, validasi atomik dan skip total ID lama melalui `/admin/users/import` |
 | Communication Profile | Sudah | Config isi profile terpusat; pilihan profile efektif otomatis dari Role level membership aktif |
-| Penyederhanaan form user/membership | Implementasi v1.15, deployment diotorisasi | Divisi/profile tidak lagi diinput, runtime berbasis Role level, import empat kolom dengan kompatibilitas lima kolom lama. Data legacy dipertahankan; 198 tes lokal lulus |
+| Penyederhanaan form user/membership | v1.15 deployed, form produksi terverifikasi | Divisi/profile tidak lagi diinput, runtime berbasis Role level, import empat kolom dengan kompatibilitas lima kolom lama. Data legacy dipertahankan; 198 tes lokal lulus |
 | Custom Instruction | Sudah | Field global user dan field per membership |
 | Knowledge Loader | Sudah | Published document aktif dari SQLite; folder Markdown menjadi fallback sampai publish pertama |
 | Document Ingestion | Sebagian | Upload PDF, DOCX, TXT, dan Markdown menjadi draft teks; OCR dan `.doc` belum |
@@ -819,7 +819,7 @@ Keputusan 2 September 2026 memilih opsi 1, sederhanakan form tetapi pertahankan 
 - Template import menjadi **Nama, Telegram ID, Perusahaan, Jabatan**. File lima kolom lama tetap diterima; Divisi lama opsional dan tidak menjadi konteks AI.
 - Verifikasi user baru/lama, perubahan Role level, dan user dengan membership beberapa company. Pastikan data lama tetap utuh dan aturan akses tidak berubah.
 
-Paket form/backend/runtime/import telah diterapkan dan diuji lokal. Deployment produksi diotorisasi dan menunggu finalisasi; tidak ada migrasi schema, penghapusan, atau backfill data existing.
+Paket form/backend/runtime/import telah diterapkan, diuji lokal, dan dideploy. Commit implementasi `4d492ea` mendapat status Railway success pada GitHub. HTTP produksi memverifikasi health, proteksi login, form tambah user, import, tambah/edit membership DK, dan daftar membership. Input divisi/profile tidak ditemukan; Role level tetap tersedia dan petunjuk import empat kolom tampil. Tidak ada migrasi schema, penghapusan, atau backfill data existing. Uji perilaku bot memakai fixture lokal, tanpa mengirim pesan Telegram atau membuat membership uji di produksi.
 
 ### Fase 1 — Context-aware MVP
 
@@ -939,7 +939,7 @@ Paket form/backend/runtime/import telah diterapkan dan diuji lokal. Deployment p
 - mempertahankan nilai divisi/profile lama saat edit dan restart, tanpa migrasi schema/backfill/reset. Role baru langsung memengaruhi profile efektif; akses/default/whitelist tetap terpisah;
 - import empat kolom dengan kompatibilitas file lima kolom lama. Telegram ID existing tetap dilewati tanpa modifikasi. Field profile request browser tidak bisa mengalahkan role;
 - 198 tes lokal lulus, termasuk tiga role, role legacy tidak dikenal, manipulasi field lama, preservasi nilai mentah, invalid role/CSRF, beberapa company, serta import empat/lima kolom `.xls`/`.xlsx`. Warning deprecation Starlette/httpx existing tetap ada;
-- commit/deploy diotorisasi DK setelah tes; verifikasi produksi v1.15 menunggu deployment.
+- commit implementasi `4d492ea` dideploy dengan status Railway success, lalu form produksi dan health/auth terverifikasi melalui HTTP terautentikasi. Tidak ada mutasi data bisnis pada smoke check. Uji runtime bot tetap memakai fixture lokal, bukan pesan akun Telegram produksi.
 
 ### 2 September 2026 — v1.14
 
