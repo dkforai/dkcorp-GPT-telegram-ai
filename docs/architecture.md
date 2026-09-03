@@ -5,7 +5,7 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 1.19 |
+| Versi | 1.20 |
 | Terakhir diperbarui | 3 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
@@ -119,6 +119,7 @@ Jawaban ke user
 | Migrasi Company ID oleh operator | v1.19 produksi memakai `amz`, `ms`, dan `dkgroups`; migrasi serta HTTP admin terverifikasi | Startup-only, backup SQLite terverifikasi, transaksi atomik, seluruh relasi dan history dipertahankan; bukan field edit admin |
 | Module router dan active context | Sudah | Command `/module`, General context, default-deny module access, dan reset module saat company berubah |
 | Kode singkat module | v1.19 deployed; 304 tes lulus; TG tersimpan dan form produksi terverifikasi | Alias opsional 2–3 karakter per company; `/TG`, `/tg`, dan `/module TG` memilih ID canonical yang sama; menu sesuai akses |
+| Konfirmasi perpindahan module | v1.20 implementasi lokal; 317 tes lulus; belum deployed | Konfirmasi diikuti satu baris kosong dan deskripsi terkini dari form module; deskripsi kosong tidak ditampilkan |
 | Company-scoped instruction | Sudah | Draft dan versi publish tersimpan di SQLite; file company menjadi fallback transisi |
 | AI Module Playbook | Sudah | Registry per company, draft, preview, immutable publish, restore-to-draft, status, dan runtime prompt |
 | Authorization per knowledge | Sebagian | Sudah company-scoped; knowledge khusus module, division, dan clearance belum |
@@ -958,6 +959,8 @@ Schema additive menambah `modules.short_code TEXT NOT NULL DEFAULT ''` dengan un
 
 Menu `/?`, `/help`, `/start`, dan daftar `/module` memakai alias jika tersedia, atau command lama bila kosong. Whitelist, company/membership/module/access/AI aktif dan playbook published tetap disyaratkan. Penetapan `TG` untuk Threads generator adalah konfigurasi data module yang diminta DK, bukan hardcode nama module dalam routing.
 
+Setelah pemilihan module berhasil melalui shortcut, `/module <id>`, atau `/module <alias>`, bot mempertahankan kalimat konfirmasi lalu menambahkan `\n\n` dan isi `modules.description` yang sudah di-trim. Deskripsi diambil dari identitas module terkini, tanpa inferensi AI atau publish ulang playbook. Deskripsi kosong/whitespace tidak menambah baris atau placeholder. Nama dan deskripsi dikirim sebagai plain text dengan link preview nonaktif, bukan diparsing menjadi HTML/Markdown. Konfirmasi General dan kegagalan akses tidak berubah; pesan konfirmasi tidak dimasukkan ke history.
+
 ### Menu Telegram adaptif
 
 User mengetik `/?` atau `/help` untuk melihat perintah yang tersedia. `/start` menambahkan sapaan dan memakai menu yang sama. Command umum mencakup `/start`, `/?`, `/help`, `/whoami`, dan, bila ada membership aktif, `/module` serta `/reset` untuk scope aktif saja. Tidak ada panggilan provider, perubahan session, atau penulisan history saat melihat menu.
@@ -979,6 +982,13 @@ Urutan startup adalah initialize schema, migrasi jika diminta, bootstrap, lalu a
 Restart dengan mapping yang sama menjadi no-op hanya jika target lengkap, sumber tidak tersisa, dan audit cocok. Setelah migrasi terverifikasi, hapus `COMPANY_ID_MIGRATION` dari environment. ID lama bukan alias dan URL admin lama perlu dibuka ulang dari menu. Backup berisi data privat dan ciphertext credential, bukan master encryption key; jangan commit atau membagikannya. Pemulihan harus dilakukan saat semua writer berhenti menggunakan SQLite backup API, bukan menimpa file database hidup atau mengabaikan WAL.
 
 ## 16. Changelog dokumen
+
+### 3 September 2026 — v1.20
+
+- menambahkan deskripsi dari form module pada konfirmasi perpindahan, dipisahkan tepat satu baris kosong, untuk shortcut serta command `/module`;
+- deskripsi kosong tidak ditampilkan; teks tidak diberi label/tanda kurung tambahan dan tidak dirender sebagai HTML/Markdown;
+- tidak mengubah schema, data produksi, ACL, pemilihan AI, playbook, atau history;
+- seluruh 317 tes lokal lulus, termasuk 13 kasus baru untuk tiga jalur pemilihan, deskripsi kosong/whitespace/teks/markup literal, pengaturan deskripsi tanpa publish ulang, preservasi data di luar session, dan konfirmasi General yang tetap sama. Satu warning deprecation Starlette/httpx lama tetap ada. DK menyetujui commit dan deploy melalui GitHub → Railway; hasil deployment akan diverifikasi sebelum dinyatakan selesai.
 
 ### 3 September 2026 — v1.19
 

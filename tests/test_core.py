@@ -1053,6 +1053,47 @@ def test_module_shortcut_denies_without_mutating_context(tmp_path, mode):
     assert _database_rows(bot.database.path) == before
 
 
+@pytest.mark.parametrize("route", ["shortcut", "module-id", "module-alias"])
+@pytest.mark.parametrize("description", ["", "   ", "Membantu merawat profil Google Maps.", "<b>Deskripsi</b> & **teks**\nhttps://example.com/panduan"])
+def test_module_selection_appends_current_description_as_plain_text(tmp_path, route, description):
+    bot = _help_bot(tmp_path)
+    module = _assign_test_short_code(bot.database, "GMC")
+    # Identity settings apply immediately without republishing the playbook.
+    bot.database.update_module(module.company_id, module.module_id, "Google Map Care",
+                               description, "admin", module.ai_runtime_profile_id)
+    bot.database.clear_active_module(42)
+    before = _database_rows(bot.database.path)
+    replies = []
+    async def reply_text(text, **kwargs):
+        replies.append((text, kwargs))
+    update = SimpleNamespace(effective_user=SimpleNamespace(id=42), effective_message=SimpleNamespace(text="/gmc", reply_text=reply_text))
+    if route == "shortcut":
+        asyncio.run(bot.module_shortcut(update, SimpleNamespace()))
+    else:
+        argument = module.module_id if route == "module-id" else "GMC"
+        asyncio.run(bot.module(update, SimpleNamespace(args=[argument])))
+    expected = "Module aktif diubah ke Google Map Care. Playbook dan history berikutnya memakai konteks module ini."
+    # The existing form/database validator collapses description whitespace.
+    stored_description = " ".join(description.split())
+    if stored_description:
+        expected += "\n\n" + stored_description
+    assert replies == [(expected, {"parse_mode": None, "disable_web_page_preview": True})]
+    assert bot.database.get_active_module(42, module.company_id).module_id == module.module_id
+    after = _database_rows(bot.database.path)
+    assert {k: v for k, v in after.items() if k != "user_sessions"} == {k: v for k, v in before.items() if k != "user_sessions"}
+
+
+def test_general_selection_does_not_append_previous_module_description(tmp_path):
+    bot = _help_bot(tmp_path)
+    replies = []
+    async def reply_text(text, **kwargs):
+        replies.append(text)
+    update = SimpleNamespace(effective_user=SimpleNamespace(id=42), effective_message=SimpleNamespace(reply_text=reply_text))
+    asyncio.run(bot.module(update, SimpleNamespace(args=["general"])))
+    assert replies == ["Module aktif untuk Malang Strudel diubah ke General. History berikutnya memakai konteks General yang terpisah."]
+    assert bot.database.get_active_module(42, "malang-strudel") is None
+
+
 def test_admin_short_code_create_update_validation_csrf_and_legacy_preservation(tmp_path):
     database, primary, _ = _database_with_ai_pair(tmp_path)
     settings = _test_settings(tmp_path, tmp_path / "users.json", tmp_path / "companies.json", database_path=database.path)

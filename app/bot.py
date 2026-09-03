@@ -284,9 +284,14 @@ class InternalBot:
                 "belum diberikan.\n\n" + self._module_list_text(user, membership)
             )
             return
-        await update.effective_message.reply_text(
+        confirmation = (
             f"Module aktif diubah ke {module.name}. Playbook dan history "
             "berikutnya memakai konteks module ini."
+        )
+        if module.description.strip():
+            confirmation += f"\n\n{module.description.strip()}"
+        await update.effective_message.reply_text(
+            confirmation, parse_mode=None, disable_web_page_preview=True
         )
 
     async def reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
