@@ -115,7 +115,7 @@ Jawaban ke user
 | Conversation Delivery Policy | Belum | Akan mengatur panjang, ritme, dan progressive disclosure |
 | Multi-company membership | Sudah | Tabel membership SQLite; JSON hanya bootstrap awal |
 | Company router dan active context | Sudah | Command `/company` dan session active company |
-| Migrasi Company ID oleh operator | v1.17 siap migrasi, 255 tes lulus | Startup-only, backup SQLite terverifikasi, transaksi atomik, seluruh relasi dan history dipertahankan; bukan field edit admin |
+| Migrasi Company ID oleh operator | v1.17 deployed; produksi memakai `amz` dan `ms`; 255 tes lulus | Startup-only, backup SQLite terverifikasi, transaksi atomik, seluruh relasi dan history dipertahankan; bukan field edit admin |
 | Module router dan active context | Sudah | Command `/module`, General context, default-deny module access, dan reset module saat company berubah |
 | Company-scoped instruction | Sudah | Draft dan versi publish tersimpan di SQLite; file company menjadi fallback transisi |
 | AI Module Playbook | Sudah | Registry per company, draft, preview, immutable publish, restore-to-draft, status, dan runtime prompt |
@@ -942,6 +942,7 @@ Paket form/backend/runtime/import telah diterapkan, diuji lokal, dan dideploy. C
 | ADR-065 | Registrasi Provider + API Key dan katalog model dari API resmi | Menghilangkan input nama/model, memisahkan koneksi dari model, serta menampilkan kapabilitas adapter secara jujur; v1.14 mengganti tes inferensi UI ADR-064 menjadi tes katalog read-only |
 | ADR-066 | Module memilih pasangan koneksi+model, dengan legacy fallback eksplisit | Satu key untuk banyak model; pemilihan server-validated, snapshot atomik/revision-aware, key rotation menginvalidasi katalog, dan pilihan lama tidak diubah diam-diam |
 | ADR-067 | Hanya blok naskah siap salin yang polos, penjelasan tetap safe HTML | Model menandai isi naskah berdasarkan tujuan, bukan nama module; renderer mengirim bagian terpisah dan membersihkan penanda sebelum history/limit/split. Tidak memutasi konten published atau history lama |
+| ADR-068 | Rename Company ID hanya sebagai maintenance startup, bukan edit form | Runtime lama harus berhenti; backup konsisten, FK deferred, pembandingan seluruh row, audit dan repeat-safe mencegah relasi hilang atau writer memakai ID lama |
 
 ### Migrasi Company ID saat maintenance
 
@@ -960,7 +961,11 @@ Restart dengan mapping yang sama menjadi no-op hanya jika target lengkap, sumber
 - DK menyetujui migrasi produksi `amazing-malang` → `amz` dan `malang-strudel` → `ms`, cadangan database, serta SSH key sementara yang wajib dicabut setelah selesai;
 - menambah jalur maintenance startup-only dengan backup, rollback atomik, verifikasi keseluruhan data, dan idempotensi berbasis audit; form admin tetap immutable;
 - 255 tes otomatis lulus, termasuk 22 kasus migrasi/startup: seluruh data dan backup identik kecuali ID, resolusi akses/history setelah rename, repeat tanpa mutasi, konflik mapping, referensi yatim, schema baru, FK rusak, kegagalan backup/audit/trigger, dan larangan runtime mulai sebelum migrasi;
-- pemeriksaan awal produksi menunjukkan 3 company, 5 user, 8 membership, 1 module, 16 pesan, integrity OK dan tanpa FK error; belum merupakan hasil migrasi. Status akhir dan bukti verifikasi dicatat setelah eksekusi.
+- commit implementasi `a02b215` deployed melalui GitHub → Railway. Migrasi produksi berhasil pada deployment `a67b5ff7-8182-4835-bf82-bccc0455e943`; kedua ID baru aktif, DK tetap pada company `ms` dan module `threads-generator`;
+- perbandingan dengan backup membuktikan semua row tetap sama kecuali Company ID: 3 company, 5 user, 8 membership, 1 module, 1 module access, 16 pesan, 1 session, 1 dokumen knowledge/versi, 1 instruction/versi, dan 2 versi playbook tetap utuh. Credential dan 124 entri katalog juga identik. Audit bertambah satu event dari 30 menjadi 31. Integrity OK dan FK errors 0;
+- cadangan preflight ada di volume produksi `/app/data/backups/preflight-company-id-20260903-31wa9qy3.db`; snapshot tepat sebelum transaksi ada di `/app/data/backups/before-company-id-deakoo5e.db`, keduanya terverifikasi. Backup tidak disalin ke Git atau dibagikan. Restore harus dilakukan offline dengan SQLite backup API;
+- health/login/admin, membership DK di `ms`, instruction, knowledge, dan Threads generator HTTP 200. Playbook tetap Published v2, primary `gpt-5.1`, backup `gpt-4o`. Pengujian resolver membaca database produksi; tidak mengirim pesan Telegram atau inferensi AI berbayar;
+- variable `COMPANY_ID_MIGRATION` sudah dihapus setelah verifikasi. SSH key sementara telah dicabut melalui Railway API; private/public key serta known-hosts sementara lokal dihapus. Nama/path file lama sengaja dipertahankan, sedangkan URL/command company memakai ID baru.
 
 ### 3 September 2026 — v1.16
 
