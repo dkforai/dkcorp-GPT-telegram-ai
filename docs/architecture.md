@@ -129,7 +129,7 @@ Jawaban ke user
 | Admin Panel | v1.23 deployed, 369 tes lokal lulus | Multi-admin berbasis database: super admin dan operator; session tujuh hari; Log Admin singkat dan read-only |
 | Modul bersama | v1.21 deployed bersama v1.22; HTTP admin terverifikasi | Registry global terpisah; independent tanpa konteks perusahaan atau company-context dengan membership aktif; published snapshot, kode global unik, private history |
 | Modul Learning | v1.23 deployed, 369 tes lokal lulus | AI utama/cadangan per buku, keterangan pembuka, custom instruction, persentase ekstraksi, readiness, PDF terindeks sekali, jadwal WIB, review sebelum publish |
-| Retrieval/RAG | v1.25, implementasi lokal menunggu verifikasi/deploy | Hybrid FTS5 + embedding multilingual lokal + cuplikan tetangga + struktur buku dan recent chat; hanya hasil terpilih dikirim ke AI |
+| Retrieval/RAG | v1.25 deployed; 373 tes lokal dan smoke produksi lulus | Hybrid FTS5 + embedding multilingual lokal + cuplikan tetangga + struktur buku dan recent chat; hanya hasil terpilih dikirim ke AI |
 | Timeout, progress, dan retry | v1.23 deployed, 369 tes lokal lulus | Budget total AI 300 detik, primary maksimal 180 detik dan backup memakai sisa; pesan proses lokal setelah 60 detik; retry manual artikel tetap tersedia |
 
 ### 4.1 Modul bersama dan Learning (v1.21)
@@ -1052,7 +1052,7 @@ Restart dengan mapping yang sama menjadi no-op hanya jika target lengkap, sumber
 - Menggabungkan kandidat lexical dan semantic beserta chunk tetangga sebelum batas konteks 16.000 karakter; seluruh buku tetap tidak dikirim ke AI.
 - Menambahkan fallback aman ke FTS dan warning metadata-only bila model lokal gagal, tanpa mengirim isi buku ke layanan embedding eksternal.
 - Menambah konfigurasi model/thread/enable, schema additive, dokumentasi biaya dan privasi, serta regresi parafrasa semantik.
-- Seluruh 373 tes lulus lokal dengan embedding dinonaktifkan untuk regresi deterministik; integrasi model nyata menunggu verifikasi image Python 3.12/deployment karena host lokal Python 3.14 gagal memasang dependensi akibat trust-store sertifikat dan Docker tidak tersedia.
+- Seluruh 373 tes lulus lokal dengan embedding dinonaktifkan untuk regresi deterministik. Commit `3fb490c` berhasil dideploy Railway pada deployment `5f605c4b-06be-43fb-971a-5a78b9070573`; dashboard menunjukkan **Deployment successful**, volume terpasang, aplikasi/admin/Telegram startup normal, dan `/health` merespons HTTP 200 `{"status":"ok"}`. Instalasi image Python 3.12/FastEmbed terbukti berhasil; unduhan model dan relevansi semantik dengan buku produksi baru berlangsung saat sumber pertama diindeks dan belum dipicu oleh smoke test agar tidak memakai data/history/token user.
 
 ### 1.24 — 5 September 2026
 
