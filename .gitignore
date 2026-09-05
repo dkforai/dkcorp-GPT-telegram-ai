@@ -4,5 +4,6 @@ __pycache__/
 *.py[cod]
 data/*.db*
 data/backups/
+data/fastembed-cache/
 .pytest_cache/
 work/

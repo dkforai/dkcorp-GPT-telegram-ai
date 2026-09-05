@@ -667,7 +667,11 @@ class InternalBot:
                 TELEGRAM_OUTPUT_CONTRACT,
             ])
         if book:
-            excerpts, matched = self.shared_store.retrieve(book["source_id"], user_text, history)
+            await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
+            excerpts, matched = await self._run_ai_with_progress(
+                update,
+                asyncio.to_thread(self.shared_store.retrieve, book["source_id"], user_text, history),
+            )
             if not excerpts:
                 await self._reply_menu(update, "Bagian buku yang sesuai belum ditemukan. Sebutkan topik, istilah, atau bab yang ingin dipelajari agar saya tidak menebak isi buku.")
                 return

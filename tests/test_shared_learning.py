@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 import sqlite3
+from array import array
 from io import BytesIO
 from types import SimpleNamespace
 
@@ -71,6 +72,28 @@ def test_retrieval_budget_prioritizes_match_over_earlier_neighbor(env):
     text, matched = store.retrieve(source_id, "zebraterang", [], budget=100)
     assert matched and "zebraterang" in text
     assert len(text) <= 100
+
+
+def test_hybrid_retrieval_finds_semantic_paraphrase_without_shared_words(env, monkeypatch):
+    _, store, _ = env
+
+    def vector(values):
+        return array("f", values).tobytes()
+
+    monkeypatch.setattr("app.shared_modules.embed_passages", lambda texts: [
+        vector([1.0, 0.0]) if "keputusan" in text else vector([0.0, 1.0])
+        for text in texts
+    ])
+    monkeypatch.setattr("app.shared_modules.embed_query", lambda text: vector([1.0, 0.0]))
+    source_id = store.save_source("semantik.pdf", b"%PDF-semantic", {
+        "pages": ["Cara mengambil keputusan rasional saat menghadapi ketidakpastian.", "Daftar bahan makanan dan resep."],
+        "report": {"pages": 2, "readable_pages": 2, "characters": 100, "empty_pages": []},
+    }, "admin")
+
+    excerpts, matched = store.retrieve(source_id, "Bagaimana supaya saya tidak gegabah memilih?", [])
+
+    assert matched
+    assert "keputusan rasional" in excerpts
 
 
 @pytest.mark.parametrize("question", [

@@ -5,7 +5,7 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 1.24 |
+| Versi | 1.25 |
 | Terakhir diperbarui | 5 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
@@ -129,7 +129,7 @@ Jawaban ke user
 | Admin Panel | v1.23 deployed, 369 tes lokal lulus | Multi-admin berbasis database: super admin dan operator; session tujuh hari; Log Admin singkat dan read-only |
 | Modul bersama | v1.21 deployed bersama v1.22; HTTP admin terverifikasi | Registry global terpisah; independent tanpa konteks perusahaan atau company-context dengan membership aktif; published snapshot, kode global unik, private history |
 | Modul Learning | v1.23 deployed, 369 tes lokal lulus | AI utama/cadangan per buku, keterangan pembuka, custom instruction, persentase ekstraksi, readiness, PDF terindeks sekali, jadwal WIB, review sebelum publish |
-| Retrieval/RAG | v1.24, 372 tes lokal lulus | FTS5 + cuplikan tetangga + recent chat; router lokal menormalisasi singkatan/variasi bahasa Indonesia untuk pertanyaan umum buku, tanpa embedding |
+| Retrieval/RAG | v1.25, implementasi lokal menunggu verifikasi/deploy | Hybrid FTS5 + embedding multilingual lokal + cuplikan tetangga + struktur buku dan recent chat; hanya hasil terpilih dikirim ke AI |
 | Timeout, progress, dan retry | v1.23 deployed, 369 tes lokal lulus | Budget total AI 300 detik, primary maksimal 180 detik dan backup memakai sisa; pesan proses lokal setelah 60 detik; retry manual artikel tetap tersedia |
 
 ### 4.1 Modul bersama dan Learning (v1.21)
@@ -148,7 +148,11 @@ Jadwal disimpan sebagai WIB dan UTC. Mulai inklusif, akhir eksklusif; default ke
 
 PDF asli disimpan privat sebagai BLOB di `learning_sources` bersama SHA-256, filename, pages JSON dan laporan ekstraksi. Ini khusus Learning, berbeda dari upload knowledge existing yang hanya menyimpan teks/metadata. Sumber identik diproses sekali/deduplicated; sumber baru tidak menimpa versi lama. Bukan endpoint download publik. Review hanya untuk admin login, escaped HTML, per halaman. PDF maksimal 20 MB, 1.000 halaman dan 2 juta karakter. Ekstraksi `pypdf` di subprocess dengan timeout 40 detik, CPU 30 detik, address space Linux 768 MiB, satu ekstraksi per admin process. Request multipart dibatasi sebelum spooling; CSRF dan audit berlaku. PDF encrypted/rusak/tanpa teks/terlalu besar ditolak, tanpa truncation. PDF scan memerlukan OCR di luar fitur ini. Laporan menampilkan halaman terbaca, halaman tanpa teks, persentase halaman terbaca, dan menegaskan seluruh karakter yang berhasil diekstrak disimpan; persentase bukan ukuran keutuhan tabel/gambar/urutan teks. Upload baru selalu draft, menghapus tanda reviewed; publish PDF baru tanpa review ditolak.
 
-DK menyetujui indeks lokal tanpa biaya embedding setelah risiko sinonim/parafrasa dijelaskan. `learning_chunks` per halaman maksimal 2.000 karakter dan SQLite FTS5 `learning_search` dipakai bersama, tanpa embedding atau ringkasan AI. Pencarian mempertimbangkan pesan/recent chat untuk pertanyaan lanjutan. Router lokal menormalisasi singkatan umum (`utk`, `dg`, `dgn`) serta bentuk seperti `manfaatnya`, `fungsinya`, `isinya`, dan `bukunya`; lalu mengenali daftar isi, susunan/isi bab, fungsi/manfaat, cakupan, gambaran atau penjelasan buku. Maksud umum memakai sampel tersebar tanpa panggilan AI tambahan. Pesan asli tetap dikirim ke provider dan disimpan di history, sehingga normalisasi tidak mengubah ucapan user. Tanpa kecocokan dan bukan maksud umum, bot meminta topik/bab. Variasi baru di luar router dan konteks lebih lama dari recent history tetap merupakan keterbatasan. Tidak ada OCR, ringkasan AI, cache respons lintas user, atau layanan embedding berbayar yang ditambahkan diam-diam.
+DK menyetujui hybrid retrieval lokal pada 5 September 2026 setelah perbandingan biaya dengan managed File Search. `learning_chunks` per halaman maksimal 2.000 karakter dan SQLite FTS5 `learning_search` dipakai bersama embedding multilingual lokal `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` melalui FastEmbed/ONNX. Vector float32 disimpan di `learning_embeddings` menurut sumber, ordinal, dan model. PDF yang sama tetap dideduplicated; chunk yang belum memiliki vector dibangun sekali saat upload atau di-backfill saat retrieval. Pergantian model menghapus vector lama sumber tersebut dan membuat ulang indeks. Buku dan pertanyaan tidak dikirim ke layanan embedding eksternal.
+
+Runtime menggabungkan lima kandidat lexical dan lima kandidat semantic secara bergantian, menambahkan tetangga tiga kandidat teratas, lalu menerapkan batas 16.000 karakter. Kandidat semantic di bawah cosine 0,35 ditolak untuk mengurangi false positive. FTS mempertahankan keunggulan istilah persis; semantic menangani sinonim dan parafrasa. Jika FastEmbed/model gagal dimuat, warning tanpa isi buku dicatat dan runtime turun aman ke FTS, bukan menghentikan Learning. Retrieval dijalankan di worker thread supaya unduhan/backfill model pertama tidak membekukan event loop Telegram; status proses 60 detik dan batas 300 detik existing ikut berlaku. `LEARNING_SEMANTIC_ENABLED`, `LEARNING_EMBEDDING_MODEL`, `LEARNING_EMBEDDING_THREADS`, dan `LEARNING_EMBEDDING_CACHE` mengontrol operasi; default aktif dengan dua thread dan cache model di volume `data/`.
+
+Pencarian tetap mempertimbangkan recent chat untuk pertanyaan lanjutan. Router lokal menormalisasi singkatan umum (`utk`, `dg`, `dgn`) serta bentuk seperti `manfaatnya`, `fungsinya`, `isinya`, dan `bukunya`; lalu mengenali daftar isi, susunan/isi bab, fungsi/manfaat, cakupan, gambaran atau penjelasan buku. Maksud umum memakai sampel tersebar tanpa panggilan AI tambahan. Pesan asli tetap dikirim ke provider dan disimpan di history. Tidak ada OCR, ringkasan AI, cache respons lintas user, atau layanan embedding berbayar.
 
 Batas input source 16.000 karakter dan recent history maksimum konfigurasi `HISTORY_LIMIT` dengan batas 24.000 karakter khusus flow baru. Ini bukan pengukuran token exact atau jaminan persentase penghematan. Biaya output/custom instruction tetap ada. PDF/indeks bersama tidak berarti history user dibagikan. Pengujian biaya/relevansi pada buku nyata belum dilakukan. Instruksi DK agar opsi penghematan mendatang dijelaskan metode/risikonya dan diputuskan DK dicatat juga di `AGENTS.md`.
 
@@ -1040,6 +1044,15 @@ Urutan startup adalah initialize schema, migrasi jika diminta, bootstrap, lalu a
 Restart dengan mapping yang sama menjadi no-op hanya jika target lengkap, sumber tidak tersisa, dan audit cocok. Setelah migrasi terverifikasi, hapus `COMPANY_ID_MIGRATION` dari environment. ID lama bukan alias dan URL admin lama perlu dibuka ulang dari menu. Backup berisi data privat dan ciphertext credential, bukan master encryption key; jangan commit atau membagikannya. Pemulihan harus dilakukan saat semua writer berhenti menggunakan SQLite backup API, bukan menimpa file database hidup atau mengabaikan WAL.
 
 ## 16. Changelog dokumen
+
+### 1.25 — 5 September 2026
+
+- Mengganti retrieval Learning dari lexical-only menjadi hybrid FTS5 dan embedding multilingual lokal melalui FastEmbed/ONNX.
+- Menyimpan vector per source/chunk/model di SQLite, membuat indeks sekali saat upload, dan melakukan backfill otomatis untuk PDF existing.
+- Menggabungkan kandidat lexical dan semantic beserta chunk tetangga sebelum batas konteks 16.000 karakter; seluruh buku tetap tidak dikirim ke AI.
+- Menambahkan fallback aman ke FTS dan warning metadata-only bila model lokal gagal, tanpa mengirim isi buku ke layanan embedding eksternal.
+- Menambah konfigurasi model/thread/enable, schema additive, dokumentasi biaya dan privasi, serta regresi parafrasa semantik.
+- Seluruh 373 tes lulus lokal dengan embedding dinonaktifkan untuk regresi deterministik; integrasi model nyata menunggu verifikasi image Python 3.12/deployment karena host lokal Python 3.14 gagal memasang dependensi akibat trust-store sertifikat dan Docker tidak tersedia.
 
 ### 1.24 — 5 September 2026
 

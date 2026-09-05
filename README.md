@@ -194,7 +194,7 @@ Profile masih berbasis file dan dibaca ulang pada setiap pertanyaan. Hanya conte
 
 Module dikelola melalui admin dengan alur **Draft → Preview → Publish** untuk playbook. Module baru tidak dapat dipilih bot sebelum playbook dipublikasikan dan aksesnya dicentang pada membership. Memilih `/company` mereset module ke `General`; mengganti module tidak menghapus history lama, tetapi memakai ruang history yang terpisah. Knowledge khusus module belum tersedia, sehingga module aktif masih memakai Knowledge company yang sama ditambah playbook module.
 
-Modul Learning tersedia lintas perusahaan melalui `/learning`. Setiap buku menyimpan PDF privat, hasil ekstraksi dan indeks lokal sekali, keterangan pembuka, custom instruction, jadwal WIB, serta AI utama/cadangan sendiri. Form menampilkan persentase halaman yang mempunyai teks; angka ini tidak menjamin tabel atau gambar terbaca. Sebelum publish, admin wajib meninjau ekstraksi. Pertanyaan umum seperti daftar isi, fungsi/manfaat buku, atau apa yang dapat dipelajari memakai sampel buku tersebar. Singkatan percakapan umum seperti `utk`, `dg`, dan `dgn` dinormalisasi lokal hanya untuk retrieval; pesan asli tetap masuk prompt/history. Pertanyaan spesifik memakai FTS5 dan recent chat. Pendekatan ini menghemat token karena seluruh buku tidak dikirim pada setiap pertanyaan, dengan risiko variasi bahasa baru yang belum dikenali pencarian leksikal.
+Modul Learning tersedia lintas perusahaan melalui `/learning`. Setiap buku menyimpan PDF privat, hasil ekstraksi dan indeks lokal sekali, keterangan pembuka, custom instruction, jadwal WIB, serta AI utama/cadangan sendiri. Form menampilkan persentase halaman yang mempunyai teks; angka ini tidak menjamin tabel atau gambar terbaca. Sebelum publish, admin wajib meninjau ekstraksi. Pertanyaan umum seperti daftar isi, fungsi/manfaat buku, atau apa yang dapat dipelajari memakai sampel buku tersebar. Singkatan percakapan umum seperti `utk`, `dg`, dan `dgn` dinormalisasi lokal hanya untuk retrieval; pesan asli tetap masuk prompt/history. Pertanyaan spesifik memakai hybrid FTS5 dan embedding multilingual lokal, ditambah recent chat. Seluruh buku tidak dikirim pada setiap pertanyaan; hanya cuplikan terpilih yang memakai token AI. Buku tidak dikirim ke layanan embedding eksternal.
 
 Setiap Module memilih **AI utama** dan **AI cadangan** dari **AI terdaftar**. AI utama wajib, cadangan opsional dan harus berbeda. Daftarkan AI melalui **Settings → AI → Tambah AI**, dengan nama, provider, ID model, dan API key. OpenAI/GPT, Anthropic/Claude, DeepSeek, dan Gemini didukung. Key baru disimpan terenkripsi di SQLite, bukan plaintext; credential environment lama tetap didukung. Pilihan AI langsung berlaku pada pesan berikutnya tanpa publish ulang playbook. Module lama mempertahankan pilihan AI-nya.
 
@@ -344,6 +344,10 @@ Company, user, membership, Company Instruction, Knowledge, Module, serta aksesny
 | `MAX_CONCURRENT_UPDATES` | Batas update Telegram yang diproses paralel | `4` |
 | `KNOWLEDGE_MAX_CHARS` | Batas karakter knowledge dalam prompt | `50000` |
 | `MAX_RESPONSE_CHARS` | Batas total jawaban AI | `12000` |
+| `LEARNING_SEMANTIC_ENABLED` | Aktifkan embedding multilingual lokal untuk hybrid retrieval Learning | `1` |
+| `LEARNING_EMBEDDING_MODEL` | Model FastEmbed lokal; mengganti nilai membangun ulang vector saat sumber digunakan | `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2` |
+| `LEARNING_EMBEDDING_THREADS` | Thread CPU ONNX untuk embedding Learning | `2` |
+| `LEARNING_EMBEDDING_CACHE` | Cache model embedding; arahkan ke volume persisten agar tidak diunduh ulang | `data/fastembed-cache` |
 | `LOG_LEVEL` | Level log | `INFO` |
 | `ADMIN_USERNAME` | Username login admin | kosong, admin nonaktif |
 | `ADMIN_PASSWORD` | Password admin minimal 12 karakter | kosong, admin nonaktif |

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import sqlite3
 import uuid
@@ -11,6 +12,9 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from app.database import AIModule, _validate_model_selection, _validate_distinct_model_choices, _write_audit
+from app.learning_retrieval import cosine, embed_passages, embed_query, model_name
+
+logger = logging.getLogger(__name__)
 
 WIB = ZoneInfo("Asia/Jakarta")
 RESERVED = {"start", "help", "whoami", "company", "module", "reset", "general", "none", "off", "learning", "shared", "ulang"}
@@ -39,6 +43,11 @@ def initialize_schema(c):
     );
     CREATE VIRTUAL TABLE IF NOT EXISTS learning_search USING fts5(
         text, source_id UNINDEXED, ordinal UNINDEXED, tokenize='unicode61'
+    );
+    CREATE TABLE IF NOT EXISTS learning_embeddings (
+        source_id TEXT NOT NULL REFERENCES learning_sources(id),
+        ordinal INTEGER NOT NULL, model TEXT NOT NULL, vector BLOB NOT NULL,
+        PRIMARY KEY(source_id,ordinal)
     );
     CREATE TABLE IF NOT EXISTS learning_books (
         id TEXT PRIMARY KEY, draft_json TEXT NOT NULL, live_json TEXT,
@@ -284,7 +293,34 @@ class SharedStore:
                         c.execute("INSERT INTO learning_search(text,source_id,ordinal) VALUES(?,?,?)", (text, source_id, ordinal))
                         ordinal += 1
                 _write_audit(c, actor, "learning.source_processed", "learning_source", source_id, extracted["report"])
+        self._ensure_semantic_index(source_id)
         return source_id
+
+    def _ensure_semantic_index(self, source_id):
+        """Embed missing chunks once. Retrieval remains available if the model fails."""
+        current_model = model_name()
+        with self.connect(True) as c:
+            c.execute("DELETE FROM learning_embeddings WHERE source_id=? AND model!=?", (source_id, current_model))
+            rows = c.execute("""SELECT chunk.ordinal,chunk.text FROM learning_chunks chunk
+                LEFT JOIN learning_embeddings embedding ON embedding.source_id=chunk.source_id
+                    AND embedding.ordinal=chunk.ordinal
+                WHERE chunk.source_id=? AND embedding.ordinal IS NULL ORDER BY chunk.ordinal""",
+                (source_id,)).fetchall()
+        if not rows:
+            return True
+        try:
+            vectors = embed_passages([row["text"] for row in rows])
+            if not vectors:
+                return False
+            if len(vectors) != len(rows):
+                raise RuntimeError("embedding count mismatch")
+            with self.connect(True) as c:
+                c.executemany("INSERT OR REPLACE INTO learning_embeddings VALUES(?,?,?,?)",
+                    [(source_id, row["ordinal"], current_model, vector) for row, vector in zip(rows, vectors)])
+            return True
+        except Exception as exc:
+            logger.warning("learning_semantic_index_failed source=%s error_type=%s", source_id, type(exc).__name__)
+            return False
 
     def save_book(self, book_id, values, actor, publish=False, expected_revision=None):
         data = {k: text_field(values, k, limit, required) for k, limit, required in (
@@ -370,7 +406,7 @@ class SharedStore:
             c.execute("DELETE FROM shared_messages WHERE telegram_id=? AND module_id=? AND company_id=? AND source_scope=?", (user_id, module_id, company_id, scope))
 
     def retrieve(self, source_id, question, history, budget=16000):
-        """Local lexical retrieval. Never pretend excerpts represent the entire book."""
+        """Hybrid FTS + local semantic retrieval with structural overview routing."""
         normalized_question = " ".join(question.casefold().split())
         # Telegram questions often contain Indonesian chat abbreviations and
         # suffixes. Normalize only retrieval text; preserve the user's original
@@ -403,12 +439,34 @@ class SharedStore:
             prior = " ".join(m["content"][-2500:] for m in history[-4:])
             tokens += [w for w in re.findall(r"[^\W_]+", prior.casefold()) if len(w) > 3 and w not in stop][:40]
         query = " OR ".join('"' + t + '"' for t in dict.fromkeys(tokens))
+        semantic_ordinals = []
+        try:
+            self._ensure_semantic_index(source_id)
+            query_vector = embed_query(normalized_question)
+            if query_vector:
+                with self.connect() as c:
+                    vectors = c.execute("SELECT ordinal,vector FROM learning_embeddings WHERE source_id=?", (source_id,)).fetchall()
+                semantic_ordinals = [ordinal for ordinal, score in sorted(
+                    ((int(row["ordinal"]), cosine(query_vector, row["vector"])) for row in vectors),
+                    key=lambda item: item[1], reverse=True,
+                )[:5] if score >= 0.35]
+        except Exception as exc:
+            logger.warning("learning_semantic_query_failed source=%s error_type=%s", source_id, type(exc).__name__)
         with self.connect() as c:
             hits = c.execute("SELECT ordinal FROM learning_search WHERE learning_search MATCH ? AND source_id=? ORDER BY rank LIMIT 5", (query, source_id)).fetchall() if query else []
-            # Budget the best matches first, not whichever page comes first.
-            ordinals = [int(hit[0]) for hit in hits]
+            # Reciprocal-rank fusion: interleave exact and semantic matches so
+            # neither retrieval mode can monopolize the context budget.
+            lexical_ordinals = [int(hit[0]) for hit in hits]
+            ordinals = []
+            for rank in range(max(len(lexical_ordinals), len(semantic_ordinals))):
+                if rank < len(lexical_ordinals):
+                    ordinals.append(lexical_ordinals[rank])
+                if rank < len(semantic_ordinals):
+                    ordinals.append(semantic_ordinals[rank])
             for hit in hits:
                 ordinals.extend((int(hit[0]) - 1, int(hit[0]) + 1))
+            for ordinal in semantic_ordinals[:3]:
+                ordinals.extend((ordinal - 1, ordinal + 1))
             if overview:
                 total = c.execute("SELECT count(*) FROM learning_chunks WHERE source_id=?", (source_id,)).fetchone()[0]
                 ordinals.extend(range(0, total, max(1, total // 6)))
@@ -427,4 +485,4 @@ class SharedStore:
                 continue
             parts[ordinal] = text
             count += len(text) + (2 if len(parts) > 1 else 0)
-        return "\n\n".join(parts[n] for n in sorted(parts)), bool(hits) or overview
+        return "\n\n".join(parts[n] for n in sorted(parts)), bool(hits) or bool(semantic_ordinals) or overview
