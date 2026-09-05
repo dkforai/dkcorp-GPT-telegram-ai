@@ -372,12 +372,31 @@ class SharedStore:
     def retrieve(self, source_id, question, history, budget=16000):
         """Local lexical retrieval. Never pretend excerpts represent the entire book."""
         normalized_question = " ".join(question.casefold().split())
+        # Telegram questions often contain Indonesian chat abbreviations and
+        # suffixes. Normalize only retrieval text; preserve the user's original
+        # message in history and in the provider request.
+        word_aliases = {
+            "utk": "untuk", "dgn": "dengan", "dg": "dengan",
+            "manfaatnya": "manfaat", "fungsinya": "fungsi",
+            "isinya": "isi", "bukunya": "buku",
+        }
+        normalized_question = re.sub(
+            r"[^\W_]+",
+            lambda match: word_aliases.get(match.group(0), match.group(0)),
+            normalized_question,
+        )
+        question_words = set(re.findall(r"[^\W_]+", normalized_question))
         overview = any(phrase in normalized_question for phrase in (
             "ringkas", "seluruh buku", "keseluruhan buku", "summary", "overview",
             "isi buku", "inti buku", "jelaskan buku", "buku ini tentang apa",
             "tentang apa buku", "fungsi buku", "manfaat buku", "belajar apa",
             "apa yang bisa dipelajari", "apa yang dapat dipelajari",
-        ))
+            "daftar isi", "susunan bab", "isi bab", "bahas apa",
+            "cakupan buku",
+        )) or (
+            "buku" in question_words
+            and bool(question_words & {"manfaat", "fungsi"})
+        )
         stop = {"yang", "dan", "atau", "untuk", "dari", "dengan", "saya", "apa", "ini", "itu", "the", "and", "of", "to", "lanjut", "lanjutkan", "belum", "jelaskan", "bagaimana", "buku", "mulai", "halo", "hai", "siap", "belajar", "yuk", "oke", "baik", "mau", "ingin"}
         tokens = [] if overview else [w for w in re.findall(r"[^\W_]+", normalized_question) if len(w) > 2 and w not in stop][:24]
         if len(tokens) < 2:

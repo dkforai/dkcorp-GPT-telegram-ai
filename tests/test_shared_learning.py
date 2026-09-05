@@ -77,6 +77,9 @@ def test_retrieval_budget_prioritizes_match_over_earlier_neighbor(env):
     "Apa fungsi buku ini untuk saya?",
     "Kita bisa belajar apa dari buku ini?",
     "Jelaskan buku ini",
+    "apa daftar isi",
+    "apa manfaatnya utk saya dg baca buku ini",
+    "Apa fungsinya buat saya membaca bukunya?",
 ])
 def test_general_book_questions_use_overview_without_ai_router(env, question):
     _, store, _ = env

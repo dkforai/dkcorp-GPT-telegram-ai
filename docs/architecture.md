@@ -5,7 +5,7 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 1.23 |
+| Versi | 1.24 |
 | Terakhir diperbarui | 5 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
@@ -129,7 +129,7 @@ Jawaban ke user
 | Admin Panel | v1.23 deployed, 369 tes lokal lulus | Multi-admin berbasis database: super admin dan operator; session tujuh hari; Log Admin singkat dan read-only |
 | Modul bersama | v1.21 deployed bersama v1.22; HTTP admin terverifikasi | Registry global terpisah; independent tanpa konteks perusahaan atau company-context dengan membership aktif; published snapshot, kode global unik, private history |
 | Modul Learning | v1.23 deployed, 369 tes lokal lulus | AI utama/cadangan per buku, keterangan pembuka, custom instruction, persentase ekstraksi, readiness, PDF terindeks sekali, jadwal WIB, review sebelum publish |
-| Retrieval/RAG | Learning saja, indeks lokal disetujui DK | FTS5 + cuplikan tetangga + recent chat serta router lokal untuk pertanyaan umum buku; maksimum 16.000 karakter sumber, tanpa embedding |
+| Retrieval/RAG | v1.24, 372 tes lokal lulus | FTS5 + cuplikan tetangga + recent chat; router lokal menormalisasi singkatan/variasi bahasa Indonesia untuk pertanyaan umum buku, tanpa embedding |
 | Timeout, progress, dan retry | v1.23 deployed, 369 tes lokal lulus | Budget total AI 300 detik, primary maksimal 180 detik dan backup memakai sisa; pesan proses lokal setelah 60 detik; retry manual artikel tetap tersedia |
 
 ### 4.1 Modul bersama dan Learning (v1.21)
@@ -148,7 +148,7 @@ Jadwal disimpan sebagai WIB dan UTC. Mulai inklusif, akhir eksklusif; default ke
 
 PDF asli disimpan privat sebagai BLOB di `learning_sources` bersama SHA-256, filename, pages JSON dan laporan ekstraksi. Ini khusus Learning, berbeda dari upload knowledge existing yang hanya menyimpan teks/metadata. Sumber identik diproses sekali/deduplicated; sumber baru tidak menimpa versi lama. Bukan endpoint download publik. Review hanya untuk admin login, escaped HTML, per halaman. PDF maksimal 20 MB, 1.000 halaman dan 2 juta karakter. Ekstraksi `pypdf` di subprocess dengan timeout 40 detik, CPU 30 detik, address space Linux 768 MiB, satu ekstraksi per admin process. Request multipart dibatasi sebelum spooling; CSRF dan audit berlaku. PDF encrypted/rusak/tanpa teks/terlalu besar ditolak, tanpa truncation. PDF scan memerlukan OCR di luar fitur ini. Laporan menampilkan halaman terbaca, halaman tanpa teks, persentase halaman terbaca, dan menegaskan seluruh karakter yang berhasil diekstrak disimpan; persentase bukan ukuran keutuhan tabel/gambar/urutan teks. Upload baru selalu draft, menghapus tanda reviewed; publish PDF baru tanpa review ditolak.
 
-DK menyetujui indeks lokal tanpa biaya embedding setelah risiko sinonim/parafrasa dijelaskan. `learning_chunks` per halaman maksimal 2.000 karakter dan SQLite FTS5 `learning_search` dipakai bersama, tanpa embedding atau ringkasan AI. Pencarian mempertimbangkan pesan/recent chat untuk pertanyaan lanjutan. Router frasa lokal mengenali maksud umum seperti fungsi/manfaat buku, apa yang dapat dipelajari, gambaran atau penjelasan buku, lalu memakai sampel tersebar tanpa panggilan AI tambahan. Tanpa kecocokan dan bukan maksud umum, bot meminta topik/bab. Sinonim baru di luar router, parafrasa lain, dan konteks lebih lama dari recent history tetap merupakan keterbatasan. Tidak ada OCR, ringkasan AI, cache respons lintas user, atau layanan embedding berbayar yang ditambahkan diam-diam.
+DK menyetujui indeks lokal tanpa biaya embedding setelah risiko sinonim/parafrasa dijelaskan. `learning_chunks` per halaman maksimal 2.000 karakter dan SQLite FTS5 `learning_search` dipakai bersama, tanpa embedding atau ringkasan AI. Pencarian mempertimbangkan pesan/recent chat untuk pertanyaan lanjutan. Router lokal menormalisasi singkatan umum (`utk`, `dg`, `dgn`) serta bentuk seperti `manfaatnya`, `fungsinya`, `isinya`, dan `bukunya`; lalu mengenali daftar isi, susunan/isi bab, fungsi/manfaat, cakupan, gambaran atau penjelasan buku. Maksud umum memakai sampel tersebar tanpa panggilan AI tambahan. Pesan asli tetap dikirim ke provider dan disimpan di history, sehingga normalisasi tidak mengubah ucapan user. Tanpa kecocokan dan bukan maksud umum, bot meminta topik/bab. Variasi baru di luar router dan konteks lebih lama dari recent history tetap merupakan keterbatasan. Tidak ada OCR, ringkasan AI, cache respons lintas user, atau layanan embedding berbayar yang ditambahkan diam-diam.
 
 Batas input source 16.000 karakter dan recent history maksimum konfigurasi `HISTORY_LIMIT` dengan batas 24.000 karakter khusus flow baru. Ini bukan pengukuran token exact atau jaminan persentase penghematan. Biaya output/custom instruction tetap ada. PDF/indeks bersama tidak berarti history user dibagikan. Pengujian biaya/relevansi pada buku nyata belum dilakukan. Instruksi DK agar opsi penghematan mendatang dijelaskan metode/risikonya dan diputuskan DK dicatat juga di `AGENTS.md`.
 
@@ -1040,6 +1040,12 @@ Urutan startup adalah initialize schema, migrasi jika diminta, bootstrap, lalu a
 Restart dengan mapping yang sama menjadi no-op hanya jika target lengkap, sumber tidak tersisa, dan audit cocok. Setelah migrasi terverifikasi, hapus `COMPANY_ID_MIGRATION` dari environment. ID lama bukan alias dan URL admin lama perlu dibuka ulang dari menu. Backup berisi data privat dan ciphertext credential, bukan master encryption key; jangan commit atau membagikannya. Pemulihan harus dilakukan saat semua writer berhenti menggunakan SQLite backup API, bukan menimpa file database hidup atau mengabaikan WAL.
 
 ## 16. Changelog dokumen
+
+### 1.24 — 5 September 2026
+
+- Memperbaiki router Learning untuk pertanyaan percakapan seperti `apa daftar isi` dan `apa manfaatnya utk saya dg baca buku ini`.
+- Menambah normalisasi lokal singkatan/bentuk kata tanpa panggilan AI tambahan dan tanpa mengubah pesan asli pada prompt/history.
+- Menambah tiga regresi bahasa percakapan; seluruh 372 tes lulus lokal dengan satu warning deprecation Starlette/httpx existing.
 
 ### 1.23 — 5 September 2026
 
