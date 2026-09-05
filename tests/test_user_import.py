@@ -214,7 +214,7 @@ def test_id_precision_and_admin_defaults_validation(database):
     with pytest.raises(UserImportValidationError, match="Import dibatalkan"):
         run_import(database, [row(telegram_id=9007199254740990)])
     assert run_import(database, [row(telegram_id="9007199254740990")]).created_users == 1
-    for role, profile in [("owner", "staff"), ("staff", "unknown")]:
+    for role, profile in [("unknown", "staff"), ("staff", "unknown")]:
         with pytest.raises(ValueError, match="tidak valid"):
             database.import_new_users([row()], role_level=role, communication_profile=profile, active=False, actor="admin")
     assert database.get_user_admin(123456789) is None

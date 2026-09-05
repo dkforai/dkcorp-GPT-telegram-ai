@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import time
 from contextvars import ContextVar
 from abc import ABC, abstractmethod
 from collections.abc import Callable
@@ -20,8 +21,10 @@ if TYPE_CHECKING:
     from app.database import AIRuntimeProfile
 
 logger = logging.getLogger(__name__)
-MODULE_AI_TIMEOUT_SECONDS = 30.0
-ARTICLE_WEB_TIMEOUT_SECONDS = 120.0
+MODULE_AI_TIMEOUT_SECONDS = 300.0
+PRIMARY_AI_TIMEOUT_SECONDS = 180.0
+AI_PROBE_TIMEOUT_SECONDS = 30.0
+ARTICLE_WEB_TIMEOUT_SECONDS = MODULE_AI_TIMEOUT_SECONDS
 _request_timeout: ContextVar[float | None] = ContextVar("module_request_timeout", default=None)
 
 
@@ -242,23 +245,28 @@ class ModuleProviderResolver:
         user_text: str,
         *, timeout_seconds: float | None = None,
     ) -> str:
-        if timeout_seconds is not None and timeout_seconds not in {30.0, 120.0}:
+        total_timeout = MODULE_AI_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
+        if total_timeout <= 0 or total_timeout > MODULE_AI_TIMEOUT_SECONDS:
             raise ValueError("Unsupported module timeout")
-        token = _request_timeout.set(timeout_seconds)
-        try:
-            return await self._generate(primary, backup_loader, system_prompt, history, user_text)
-        finally:
-            _request_timeout.reset(token)
+        return await self._generate(
+            primary, backup_loader, system_prompt, history, user_text,
+            total_timeout=total_timeout,
+        )
 
     async def _generate(
         self, primary: AIRuntimeProfile | None,
         backup_loader: Callable[[], AIRuntimeProfile | None],
         system_prompt: str, history: list[dict[str, str]], user_text: str,
+        *, total_timeout: float,
     ) -> str:
+        deadline = time.monotonic() + total_timeout
         # Missing/disabled primary credentials must not trigger failover.
         provider = self.resolve(primary)
+        # Reserve part of the total budget for one optional backup attempt.
+        primary_timeout = min(PRIMARY_AI_TIMEOUT_SECONDS, total_timeout * 0.60)
+        token = _request_timeout.set(primary_timeout)
         try:
-            async with asyncio.timeout(effective_timeout()):
+            async with asyncio.timeout(primary_timeout):
                 return await provider.generate(system_prompt, history, user_text)
         except Exception as exc:
             status = exc.status_code if isinstance(exc, (APIStatusError, ProviderRequestError)) else None
@@ -268,6 +276,8 @@ class ModuleProviderResolver:
             )
             if not _can_use_backup(exc):
                 raise ModuleGenerationError("AI utama gagal memproses pesan") from None
+        finally:
+            _request_timeout.reset(token)
 
         # Resolve only after failure so a newly disabled backup is never used.
         backup = backup_loader()
@@ -280,8 +290,12 @@ class ModuleProviderResolver:
             "module_ai_failover primary=%s backup=%s",
             primary.profile_id, backup.profile_id,
         )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ModuleGenerationError("Batas waktu total AI telah habis")
+        token = _request_timeout.set(remaining)
         try:
-            async with asyncio.timeout(effective_timeout()):
+            async with asyncio.timeout(remaining):
                 return await backup_provider.generate(system_prompt, history, user_text)
         except Exception as exc:
             status = exc.status_code if isinstance(exc, (APIStatusError, ProviderRequestError)) else None
@@ -290,6 +304,8 @@ class ModuleProviderResolver:
                 backup.profile_id, type(exc).__name__, status, effective_timeout(),
             )
             raise ModuleGenerationError("AI utama dan AI cadangan tidak tersedia") from None
+        finally:
+            _request_timeout.reset(token)
 
 
 def runtime_profile_is_configured(profile: AIRuntimeProfile) -> bool:
@@ -320,7 +336,7 @@ async def test_ai_connection(profile: AIRuntimeProfile) -> str:
         provider = _create_module_provider(
             profile.provider, resolve_api_key(profile), profile.model, profile.base_url or None
         )
-        async with asyncio.timeout(MODULE_AI_TIMEOUT_SECONDS):
+        async with asyncio.timeout(AI_PROBE_TIMEOUT_SECONDS):
             await provider.probe()
         return "success"
     except (CredentialStorageError, RuntimeCredentialError):

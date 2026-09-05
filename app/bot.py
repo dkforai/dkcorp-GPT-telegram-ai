@@ -4,6 +4,7 @@ import asyncio
 import logging
 import hashlib
 import json
+import random
 import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -22,12 +23,22 @@ from app.providers import (
     AIProvider, ModuleGenerationError, ModuleProviderResolver, RuntimeCredentialError,
     ARTICLE_WEB_TIMEOUT_SECONDS,
 )
-from app.role_profiles import load_role_profiles, resolve_communication_profile, profile_id_for_role
+from app.role_profiles import (
+    load_role_profiles, role_profiles_from_rows, resolve_communication_profile,
+    profile_id_for_role,
+)
 from app.telegram_renderer import markdown_to_telegram_html, prepare_response_parts
 from app.shared_modules import SharedStore
 
 logger = logging.getLogger(__name__)
 MODULE_SHORTCUT = re.compile(r"\A\s*/([A-Za-z][A-Za-z0-9]{1,2})(?:@([A-Za-z0-9_]+))?\s*\Z")
+AI_PROGRESS_MESSAGES = (
+    "Permintaan ini membutuhkan waktu lebih lama. Datanya masih diproses, tunggu sebentar.",
+    "AI masih menyusun hasilnya. Proses tetap berjalan dan jawaban akan dikirim setelah selesai.",
+    "Prosesnya belum selesai, tetapi masih berjalan. Mohon tunggu sebentar.",
+    "Datanya cukup panjang dan masih dianalisis. Hasil akan dikirim otomatis setelah siap.",
+)
+AI_PROGRESS_NOTICE_SECONDS = 60.0
 
 
 class InternalBot:
@@ -90,7 +101,12 @@ class InternalBot:
             yield user
 
     def _communication_profile(self, user: User, membership: Membership):
-        profiles = load_role_profiles(self.settings.role_profiles_file)
+        rows = self.database.list_communication_styles()
+        profiles = (
+            role_profiles_from_rows(rows)
+            if rows
+            else load_role_profiles(self.settings.role_profiles_file)
+        )
         return resolve_communication_profile(
             profile_id_for_role(membership.role_level),
             "",
@@ -155,6 +171,21 @@ class InternalBot:
             await update.effective_message.reply_text(
                 chunk, parse_mode=None, disable_web_page_preview=True
             )
+
+    async def _run_ai_with_progress(self, update: Update, operation):
+        task = asyncio.create_task(operation)
+        deadline = asyncio.get_running_loop().time() + 300
+        try:
+            done, _ = await asyncio.wait({task}, timeout=AI_PROGRESS_NOTICE_SECONDS)
+            if not done:
+                await self._reply_menu(update, random.choice(AI_PROGRESS_MESSAGES))
+            async with asyncio.timeout(max(0.001, deadline - asyncio.get_running_loop().time())):
+                return await task
+        except BaseException:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            raise
 
     def _module_list_text(self, user: User, membership: Membership) -> str:
         modules = self.database.list_accessible_modules(
@@ -457,17 +488,17 @@ class InternalBot:
         try:
             if active_module:
                 runtime_profile = self.database.get_module_ai_profile(active_module)
-                answer = await self.module_provider_resolver.generate(
+                answer = await self._run_ai_with_progress(update, self.module_provider_resolver.generate(
                     runtime_profile,
                     lambda: (
                         self.database.get_module_ai_profile(active_module, backup=True)
                     ),
                     system_prompt, history, user_text,
-                    **({"timeout_seconds": ARTICLE_WEB_TIMEOUT_SECONDS} if article else {}),
-                )
+                    timeout_seconds=ARTICLE_WEB_TIMEOUT_SECONDS,
+                ))
             else:
-                answer = await self.provider.generate(
-                    system_prompt, history, user_text
+                answer = await self._run_ai_with_progress(
+                    update, self.provider.generate(system_prompt, history, user_text)
                 )
             # Only marked copy-ready content is normalized; explanations retain
             # their Markdown. Never put the delivery markers in user history.
@@ -598,6 +629,9 @@ class InternalBot:
         module = self.shared_store.runtime_module(selected, user.telegram_id)
         message = update.effective_message
         if not module:
+            if selected == "learning":
+                await self._reply_menu(update, "Materi Learning sudah berakhir atau belum ada materi aktif. Tidak ada jawaban dari buku lama.")
+                return
             await self._reply_menu(update, "Modul aktif tidak tersedia lagi. Pilih modul lain melalui /module.")
             return
         company_id, scope, book = self._shared_scope(user, module)
@@ -641,10 +675,10 @@ class InternalBot:
             system += "\nBerikut cuplikan hasil pencarian, bukan keseluruhan buku. Jangan mengklaim sudah mencakup semua bab. Jika bukti kurang, minta topik/bab lebih spesifik. Tidak wajib menampilkan nomor halaman atau label analisis AI.\n<book_excerpts>\n" + excerpts + "\n</book_excerpts>"
         try:
             await context.bot.send_chat_action(update.effective_chat.id, ChatAction.TYPING)
-            answer = await self.module_provider_resolver.generate(
+            answer = await self._run_ai_with_progress(update, self.module_provider_resolver.generate(
                 self.database.get_module_ai_profile(ai_module),
                 lambda: self.database.get_module_ai_profile(ai_module, backup=True), system, history, user_text,
-            )
+            ))
             # Do not deliver a now-expired book or revoked context after a slow request.
             current = self.shared_store.runtime_module(selected, user.telegram_id)
             if not current or self.shared_store.selected(user.telegram_id) != selected or self._shared_scope(user, current)[:2] != (company_id, scope):

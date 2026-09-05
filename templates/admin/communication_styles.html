@@ -1,0 +1,21 @@
+{% extends "admin/base.html" %}
+{% block title %}Communication Styles · DK Corp AI Admin{% endblock %}
+{% block page_title %}Settings · Communication{% endblock %}
+{% block content %}
+  <div class="page-lead"><div><h2>Gaya komunikasi berdasarkan Role level</h2><p>Membership menentukan level. Aturan di bawah berlaku global untuk seluruh perusahaan.</p></div><a class="secondary-button" href="/admin/settings/admins">Akun Admin</a></div>
+  {% if notice %}<div class="notice success" role="status">{{ notice }}</div>{% endif %}
+  {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+  {% for style in styles %}
+  <form class="panel form-panel" method="post" action="/admin/settings/communication/{{ style.profile_id }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <h3>{{ style.label }}</h3><p class="muted-text">Role ID: <code>{{ style.profile_id }}</code></p>
+    <label class="full-field">Kedalaman jawaban<input name="response_level" maxlength="500" value="{{ style.response_level }}" required></label>
+    <div class="form-grid">
+      <label>Fokus<textarea name="focus" rows="6">{{ style.focus }}</textarea><small>Satu aturan per baris.</small></label>
+      <label>Struktur jawaban<textarea name="structure" rows="6">{{ style.structure }}</textarea><small>Satu bagian per baris.</small></label>
+    </div>
+    <label class="full-field">Hindari<textarea name="avoid" rows="5">{{ style.avoid }}</textarea><small>Satu larangan per baris.</small></label>
+    <div class="form-actions"><span>Perubahan berlaku pada pesan berikutnya.</span><button class="primary-button" type="submit">Simpan gaya</button></div>
+  </form>
+  {% endfor %}
+{% endblock %}

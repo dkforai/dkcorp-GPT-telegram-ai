@@ -37,8 +37,10 @@ def source(store, text="Kebiasaan baik dimulai dengan langkah kecil. Ulangi kebi
 
 
 def book_values(store, **overrides):
+    profile = store.db.list_ai_runtime_profiles()[0].profile_id
     values = dict(title="Buku Kebiasaan", description="Selamat belajar!\n\nPilih tujuanmu.", instruction="Ajukan pertanyaan bertahap sesuai buku.",
-                  starts_at="2026-09-01T00:00", ends_at="2026-10-01T00:00", source_id=source(store), reviewed="1", active="1")
+                  starts_at="2026-09-01T00:00", ends_at="2026-10-01T00:00", source_id=source(store), reviewed="1", active="1",
+                  ai_selection=profile, backup_ai_selection="")
     return {**values, **overrides}
 
 
@@ -69,6 +71,32 @@ def test_retrieval_budget_prioritizes_match_over_earlier_neighbor(env):
     text, matched = store.retrieve(source_id, "zebraterang", [], budget=100)
     assert matched and "zebraterang" in text
     assert len(text) <= 100
+
+
+@pytest.mark.parametrize("question", [
+    "Apa fungsi buku ini untuk saya?",
+    "Kita bisa belajar apa dari buku ini?",
+    "Jelaskan buku ini",
+])
+def test_general_book_questions_use_overview_without_ai_router(env, question):
+    _, store, _ = env
+    source_id = source(store, "Isi utama buku untuk pengambilan keputusan.")
+    excerpts, matched = store.retrieve(source_id, question, [])
+    assert matched and "pengambilan keputusan" in excerpts
+
+
+def test_learning_book_owns_published_ai_selection(env, monkeypatch):
+    bot, store, values = env
+    save(store, {**values, "short_code": "learning", "name": "Learning"}, "learning")
+    profile = bot.database.create_ai_runtime_profile(
+        "book-ai", "Book AI", "openai", "BOOK_AI_KEY", "book-model", "",
+        "admin",
+    )
+    monkeypatch.setenv("BOOK_AI_KEY", "secret")
+    publish_book(store, book_values(store, ai_selection=profile.profile_id))
+    monkeypatch.setattr("app.shared_modules.now", lambda: "2026-09-03T00:00:00+00:00")
+    runtime = store.runtime_module("learning", 42)
+    assert runtime["ai_selection"] == profile.profile_id
 
 
 def test_shared_draft_publish_snapshot_and_stale_edit(env):
@@ -310,6 +338,9 @@ def test_admin_forms_auth_csrf_upload_review_publish(env):
         result = client.post("/admin/shared-modules/new", data={**values, "action": "publish", "csrf_token": csrf})
         assert result.status_code == 200 and "Published v1" in result.text
         assert client.get("/admin/learning").status_code == 200
+        legacy_editor = client.get("/admin/shared-modules/learning", follow_redirects=False)
+        assert legacy_editor.status_code == 303
+        assert legacy_editor.headers["location"] == "/admin/learning"
         data = {**book_values(store), "source_id": "", "reviewed": "1", "action": "draft", "csrf_token": csrf}
         result = client.post("/admin/learning/books/new", data=data, files={"file": ("real.pdf", pdf_bytes(), "application/pdf")})
         assert result.status_code == 200, result.text

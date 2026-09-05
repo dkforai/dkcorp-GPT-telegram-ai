@@ -23,7 +23,7 @@ from starlette.datastructures import UploadFile
 
 from app.config import Settings, load_settings
 from app.credentials import PROVIDERS, encryption_is_ready
-from app.database import AIRuntimeProfile, Database, Membership, User
+from app.database import AIRuntimeProfile, AdminUser, Database, Membership, User
 from app.document_ingestion import MAX_UPLOAD_BYTES, extract_uploaded_document
 from app.providers import runtime_profile_is_configured
 from app.model_catalog import CATALOG_MESSAGES, discover_models
@@ -33,7 +33,7 @@ from app.user_import import MAX_USER_IMPORT_BYTES, UserImportValidationError, re
 
 logger = logging.getLogger(__name__)
 SESSION_COOKIE = "dk_admin_session"
-SESSION_MAX_AGE = 8 * 60 * 60
+SESSION_MAX_AGE = 7 * 24 * 60 * 60
 
 
 class LoginLimiter:
@@ -65,12 +65,26 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
     # to admin-only uvicorn startup, which does not pass through app.main.
     for name in ("openai", "httpx", "httpcore"):
         logging.getLogger(name).setLevel(logging.WARNING)
+    database.ensure_primary_admin(settings.admin_username, settings.admin_password)
     root = settings.project_root.resolve()
-    templates = Jinja2Templates(directory=str(root / "templates"))
+
+    def admin_template_context(request: Request) -> dict[str, object]:
+        identity = _admin_identity(request, settings)
+        return {
+            "current_admin_name": identity.display_name if identity else "",
+            "current_admin_role": identity.role if identity else "",
+            "is_super_admin": bool(identity and identity.role == "super_admin"),
+        }
+
+    templates = Jinja2Templates(
+        directory=str(root / "templates"),
+        context_processors=[admin_template_context],
+    )
     limiter = LoginLimiter()
     ai_test_limiter = LoginLimiter(max_attempts=3, window_seconds=60)
     ai_tests_running: set[str] = set()
     role_profiles = load_role_profiles(settings.role_profiles_file)
+    database.ensure_communication_styles(role_profiles)
     profile_options = [
         {"id": profile.profile_id, "label": profile.label}
         for profile in role_profiles.by_id.values()
@@ -81,6 +95,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
         redoc_url=None,
         openapi_url=None,
     )
+    app.state.database = database
     app.mount(
         "/admin/static",
         StaticFiles(directory=str(root / "static" / "admin")),
@@ -89,7 +104,19 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
-        response = await call_next(request)
+        identity = _admin_identity(request, settings)
+        super_only = (
+            request.url.path.startswith("/admin/runtime-profiles")
+            or request.url.path.startswith("/admin/settings/ai")
+            or request.url.path.startswith("/admin/settings/admins")
+            or request.url.path.startswith("/admin/settings/communication")
+        )
+        if identity and super_only and identity.role != "super_admin":
+            response = HTMLResponse(
+                "Halaman ini hanya dapat diakses Super Admin.", status_code=403
+            )
+        else:
+            response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -138,9 +165,8 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
         form = await request.form()
         username = str(form.get("username", ""))
         password = str(form.get("password", ""))
-        username_ok = hmac.compare_digest(username, settings.admin_username)
-        password_ok = hmac.compare_digest(password, settings.admin_password)
-        if not (username_ok and password_ok):
+        admin = database.authenticate_admin(username, password)
+        if admin is None:
             limiter.failure(client_id)
             return templates.TemplateResponse(
                 request=request,
@@ -153,17 +179,25 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
         response = RedirectResponse("/admin", status_code=303)
         response.set_cookie(
             SESSION_COOKIE,
-            _create_session_token(settings),
+            _create_session_token(settings, admin.username),
             max_age=SESSION_MAX_AGE,
             httponly=True,
             secure=settings.admin_cookie_secure,
             samesite="lax",
             path="/admin",
         )
+        database.write_admin_event(
+            admin.display_name, "admin.login", "admin_user", admin.username
+        )
         return response
 
     @app.get("/admin/logout")
-    async def logout() -> RedirectResponse:
+    async def logout(request: Request) -> RedirectResponse:
+        identity = _admin_identity(request, settings)
+        if identity:
+            database.write_admin_event(
+                identity.display_name, "admin.logout", "admin_user", identity.username
+            )
         response = RedirectResponse("/admin/login", status_code=303)
         response.delete_cookie(SESSION_COOKIE, path="/admin")
         return response
@@ -249,7 +283,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
         active = form.get("active") == "1"
         try:
             database.create_company(
-                "", name, actor=settings.admin_username, active=active
+                "", name, actor=_admin_actor(request, settings), active=active
             )
         except ValueError as exc:
             return templates.TemplateResponse(
@@ -306,7 +340,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
         name = str(form.get("name", ""))
         try:
             updated = database.update_company(
-                company_id, name, actor=settings.admin_username
+                company_id, name, actor=_admin_actor(request, settings)
             )
         except ValueError as exc:
             return templates.TemplateResponse(
@@ -341,7 +375,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             return _companies_redirect(error="Status company tidak valid")
         try:
             company = database.set_company_active(
-                company_id, target == "1", actor=settings.admin_username
+                company_id, target == "1", actor=_admin_actor(request, settings)
             )
         except ValueError as exc:
             return _companies_redirect(error=str(exc))
@@ -416,7 +450,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                     database.import_new_users, rows,
                     role_level=values["role_level"],
                     communication_profile=values["communication_profile"],
-                    active=values["active"] == "1", actor=settings.admin_username,
+                    active=values["active"] == "1", actor=_admin_actor(request, settings),
                     source_filename=upload.filename,
                     source_sha256=hashlib.sha256(data).hexdigest(),
                 )
@@ -462,7 +496,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 values["role_level"],
                 values["communication_profile"],
                 values["custom_instruction"],
-                actor=settings.admin_username,
+                actor=_admin_actor(request, settings),
                 active=values["active"] == "1",
             )
         except ValueError as exc:
@@ -518,7 +552,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             return HTMLResponse("User tidak ditemukan.", status_code=404)
         try:
             updated = database.update_user(
-                telegram_id, str(form.get("name", "")), actor=settings.admin_username
+                telegram_id, str(form.get("name", "")), actor=_admin_actor(request, settings)
             )
         except ValueError as exc:
             return templates.TemplateResponse(
@@ -553,7 +587,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             return _users_redirect(error="Status user tidak valid")
         try:
             user = database.set_user_active(
-                telegram_id, target == "1", actor=settings.admin_username
+                telegram_id, target == "1", actor=_admin_actor(request, settings)
             )
         except ValueError as exc:
             return _users_redirect(error=str(exc))
@@ -605,7 +639,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 values["communication_profile"],
                 values["custom_instruction"],
                 is_default=values["is_default"] == "1",
-                actor=settings.admin_username,
+                actor=_admin_actor(request, settings),
             )
         except ValueError as exc:
             return templates.TemplateResponse(
@@ -686,7 +720,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 values["communication_profile"],
                 values["custom_instruction"],
                 is_default=values["is_default"] == "1",
-                actor=settings.admin_username,
+                actor=_admin_actor(request, settings),
                 preserve_legacy_context=True,
             )
         except ValueError as exc:
@@ -733,7 +767,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 telegram_id,
                 company_id,
                 target == "1",
-                actor=settings.admin_username,
+                actor=_admin_actor(request, settings),
             )
         except ValueError as exc:
             return _user_detail_redirect(telegram_id, error=str(exc))
@@ -760,7 +794,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 telegram_id,
                 company_id,
                 list(form.getlist("module_ids")),
-                actor=settings.admin_username,
+                actor=_admin_actor(request, settings),
             )
         except ValueError as exc:
             return _membership_edit_redirect(
@@ -858,7 +892,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             database.save_company_instruction_draft(
                 company_id,
                 form.get("content", ""),
-                actor=settings.admin_username,
+                actor=_admin_actor(request, settings),
             )
         except ValueError as exc:
             return _instruction_redirect(company_id, error=str(exc))
@@ -908,7 +942,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
         try:
             version = database.publish_company_instruction(
-                company_id, actor=settings.admin_username
+                company_id, actor=_admin_actor(request, settings)
             )
         except ValueError as exc:
             return _instruction_redirect(company_id, error=str(exc))
@@ -930,7 +964,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
         try:
             database.restore_company_instruction_version_to_draft(
-                company_id, version_id, actor=settings.admin_username
+                company_id, version_id, actor=_admin_actor(request, settings)
             )
         except ValueError as exc:
             return _instruction_redirect(company_id, error=str(exc))
@@ -1053,7 +1087,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 "",
                 values["title"],
                 values["content"],
-                actor=settings.admin_username,
+                actor=_admin_actor(request, settings),
                 **source_metadata,
             )
         except ValueError as exc:
@@ -1134,7 +1168,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 document_key,
                 form.get("title", ""),
                 form.get("content", ""),
-                actor=settings.admin_username,
+                actor=_admin_actor(request, settings),
             )
         except ValueError as exc:
             return _knowledge_document_redirect(
@@ -1161,7 +1195,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
         try:
             version = database.publish_knowledge_document(
-                company_id, document_key, actor=settings.admin_username
+                company_id, document_key, actor=_admin_actor(request, settings)
             )
         except ValueError as exc:
             return _knowledge_document_redirect(
@@ -1193,7 +1227,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 company_id,
                 document_key,
                 target == "1",
-                actor=settings.admin_username,
+                actor=_admin_actor(request, settings),
             )
         except ValueError as exc:
             return _knowledge_company_redirect(company_id, error=str(exc))
@@ -1222,7 +1256,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 company_id,
                 document_key,
                 version_id,
-                actor=settings.admin_username,
+                actor=_admin_actor(request, settings),
             )
         except ValueError as exc:
             return _knowledge_document_redirect(
@@ -1295,7 +1329,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
         values = _runtime_profile_form_values(form)
         try:
             profile = database.create_ai_connection(
-                values["provider"], str(form.get("api_key", "")), settings.admin_username,
+                values["provider"], str(form.get("api_key", "")), _admin_actor(request, settings),
             )
         except ValueError as exc:
             return templates.TemplateResponse(
@@ -1366,7 +1400,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 current_profile.api_key_env,
                 current_profile.model,
                 "" if str(form.get("api_key", "")).strip() else current_profile.base_url,
-                actor=settings.admin_username,
+                actor=_admin_actor(request, settings),
                 api_key=str(form.get("api_key", "")) or None,
             )
         except ValueError as exc:
@@ -1399,7 +1433,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             return _ai_settings_redirect(error="Status credential profile tidak valid")
         try:
             profile = database.set_ai_runtime_profile_active(
-                profile_id, target == "1", actor=settings.admin_username
+                profile_id, target == "1", actor=_admin_actor(request, settings)
             )
         except ValueError as exc:
             return _ai_settings_redirect(error=str(exc))
@@ -1433,7 +1467,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
         try:
             result = await discover_models(profile)
             status = result.status
-            recorded = database.record_model_catalog(profile, result, settings.admin_username)
+            recorded = database.record_model_catalog(profile, result, _admin_actor(request, settings))
         finally:
             ai_tests_running.discard(profile_id)
         if not recorded:
@@ -1477,7 +1511,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 "",
                 values["name"],
                 values["description"],
-                actor=settings.admin_username,
+                actor=_admin_actor(request, settings),
                 ai_runtime_profile_id=values["ai_runtime_profile_id"],
                 backup_ai_runtime_profile_id=values["backup_ai_runtime_profile_id"],
                 ai_model=values["ai_model"],
@@ -1545,7 +1579,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 module_id,
                 form.get("name", ""),
                 form.get("description", ""),
-                actor=settings.admin_username,
+                actor=_admin_actor(request, settings),
                 ai_runtime_profile_id=values["ai_runtime_profile_id"],
                 backup_ai_runtime_profile_id=(values["backup_ai_runtime_profile_id"]
                     if "backup_ai_selection" in form or "backup_ai_runtime_profile_id" in form else None),
@@ -1574,7 +1608,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 company_id,
                 module_id,
                 form.get("content", ""),
-                actor=settings.admin_username,
+                actor=_admin_actor(request, settings),
             )
         except ValueError as exc:
             return _module_redirect(company_id, module_id, error=str(exc))
@@ -1627,7 +1661,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
             return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
         try:
             version = database.publish_module_playbook(
-                company_id, module_id, actor=settings.admin_username
+                company_id, module_id, actor=_admin_actor(request, settings)
             )
         except ValueError as exc:
             return _module_redirect(company_id, module_id, error=str(exc))
@@ -1655,7 +1689,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 company_id,
                 module_id,
                 target == "1",
-                actor=settings.admin_username,
+                actor=_admin_actor(request, settings),
             )
         except ValueError as exc:
             return _modules_redirect(error=str(exc))
@@ -1682,7 +1716,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 company_id,
                 module_id,
                 version_id,
-                actor=settings.admin_username,
+                actor=_admin_actor(request, settings),
             )
         except ValueError as exc:
             return _module_redirect(company_id, module_id, error=str(exc))
@@ -1700,6 +1734,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
         category = str(request.query_params.get("category", "all")).strip()
         categories = {
             "all": "Semua",
+            "admin": "Login & Admin",
             "company": "Company",
             "user": "User",
             "membership": "Membership",
@@ -1727,6 +1762,114 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 "selected_category": category,
                 "events": events,
             },
+        )
+
+    @app.get("/admin/settings/admins", response_class=HTMLResponse)
+    async def admin_users(request: Request):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/admin_users.html",
+            context={
+                "active_page": "settings",
+                "admins": database.list_admin_users(),
+                "csrf_token": _csrf_token(request, settings),
+                "notice": request.query_params.get("notice", ""),
+                "error": request.query_params.get("error", ""),
+            },
+        )
+
+    @app.post("/admin/settings/admins")
+    async def create_admin_user(request: Request):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            raise HTTPException(403, "Permintaan tidak valid. Muat ulang halaman.")
+        try:
+            database.create_admin_user(
+                str(form.get("username", "")),
+                str(form.get("display_name", "")),
+                str(form.get("password", "")),
+                str(form.get("role", "admin_operator")),
+                _admin_actor(request, settings),
+            )
+        except ValueError as exc:
+            return RedirectResponse(
+                "/admin/settings/admins?" + urlencode({"error": str(exc)}), 303
+            )
+        return RedirectResponse(
+            "/admin/settings/admins?notice=Akun+admin+berhasil+dibuat", 303
+        )
+
+    @app.post("/admin/settings/admins/{username}/status")
+    async def admin_user_status(request: Request, username: str):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            raise HTTPException(403, "Permintaan tidak valid. Muat ulang halaman.")
+        target = str(form.get("active", "")) == "1"
+        try:
+            database.set_admin_user_active(
+                username, target, _admin_actor(request, settings)
+            )
+        except ValueError as exc:
+            return RedirectResponse(
+                "/admin/settings/admins?" + urlencode({"error": str(exc)}), 303
+            )
+        return RedirectResponse(
+            "/admin/settings/admins?notice=Status+admin+berhasil+diubah", 303
+        )
+
+    @app.get("/admin/settings/communication", response_class=HTMLResponse)
+    async def communication_styles(request: Request):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        styles = []
+        for row in database.list_communication_styles():
+            styles.append({
+                **row,
+                "focus": "\n".join(json.loads(str(row["focus_json"]))),
+                "structure": "\n".join(json.loads(str(row["structure_json"]))),
+                "avoid": "\n".join(json.loads(str(row["avoid_json"]))),
+            })
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/communication_styles.html",
+            context={
+                "active_page": "settings", "styles": styles,
+                "csrf_token": _csrf_token(request, settings),
+                "notice": request.query_params.get("notice", ""),
+                "error": request.query_params.get("error", ""),
+            },
+        )
+
+    @app.post("/admin/settings/communication/{profile_id}")
+    async def update_communication_style(request: Request, profile_id: str):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        form = await request.form()
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            raise HTTPException(403, "Permintaan tidak valid. Muat ulang halaman.")
+        try:
+            database.update_communication_style(
+                profile_id, str(form.get("response_level", "")),
+                str(form.get("focus", "")), str(form.get("structure", "")),
+                str(form.get("avoid", "")), _admin_actor(request, settings),
+            )
+        except ValueError as exc:
+            return RedirectResponse(
+                "/admin/settings/communication?" + urlencode({"error": str(exc)}), 303
+            )
+        return RedirectResponse(
+            "/admin/settings/communication?notice=Gaya+komunikasi+berhasil+disimpan", 303
         )
 
     from app.shared_admin import register_shared_routes
@@ -1801,9 +1944,9 @@ def create_admin_app_from_env() -> FastAPI:
     return create_admin_app(settings, database)
 
 
-def _create_session_token(settings: Settings) -> str:
+def _create_session_token(settings: Settings, username: str | None = None) -> str:
     issued_at = str(int(time.time()))
-    payload = f"{settings.admin_username}:{issued_at}"
+    payload = f"{username or settings.admin_username}:{issued_at}"
     signature = hmac.new(
         settings.admin_session_secret.encode(),
         payload.encode(),
@@ -1813,28 +1956,44 @@ def _create_session_token(settings: Settings) -> str:
     return base64.urlsafe_b64encode(raw).decode()
 
 
-def _is_authenticated(request: Request, settings: Settings) -> bool:
+def _session_username(request: Request, settings: Settings) -> str:
     token = request.cookies.get(SESSION_COOKIE, "")
     if not token:
-        return False
+        return ""
     try:
         raw = base64.urlsafe_b64decode(token.encode()).decode()
         username, issued_at_text, signature = raw.split(":", 2)
         issued_at = int(issued_at_text)
     except (ValueError, UnicodeDecodeError, binascii.Error):
-        return False
-    if username != settings.admin_username:
-        return False
+        return ""
     age = int(time.time()) - issued_at
     if age < 0 or age > SESSION_MAX_AGE:
-        return False
+        return ""
     payload = f"{username}:{issued_at_text}"
     expected = hmac.new(
         settings.admin_session_secret.encode(),
         payload.encode(),
         hashlib.sha256,
     ).hexdigest()
-    return hmac.compare_digest(signature, expected)
+    return username if hmac.compare_digest(signature, expected) else ""
+
+
+def _admin_identity(request: Request, settings: Settings) -> AdminUser | None:
+    username = _session_username(request, settings)
+    if not username:
+        return None
+    database = getattr(request.app.state, "database", None)
+    identity = database.get_admin_user(username) if database else None
+    return identity if identity and identity.active else None
+
+
+def _admin_actor(request: Request, settings: Settings) -> str:
+    identity = _admin_identity(request, settings)
+    return identity.display_name if identity else settings.admin_username
+
+
+def _is_authenticated(request: Request, settings: Settings) -> bool:
+    return _admin_identity(request, settings) is not None
 
 
 def _login_redirect(request: Request, settings: Settings) -> RedirectResponse | None:
@@ -2253,6 +2412,17 @@ def _module_redirect(
 
 
 _ACTIVITY_ACTION_LABELS = {
+    "admin.login": "login",
+    "admin.logout": "logout",
+    "admin_user.created": "membuat akun admin",
+    "admin_user.activated": "mengaktifkan akun admin",
+    "admin_user.deactivated": "menonaktifkan akun admin",
+    "communication_style.updated": "memperbarui gaya komunikasi",
+    "shared_module.saved": "menyimpan draft modul bersama",
+    "shared_module.published": "menerbitkan modul bersama",
+    "learning.source_processed": "memproses PDF Learning",
+    "learning.saved": "menyimpan draft buku Learning",
+    "learning.published": "menerbitkan buku Learning",
     "ai_models.refreshed": "Katalog model AI diperiksa",
     "ai_runtime_profile.tested": "Koneksi AI diuji",
     "users.imported": "Import user baru",
@@ -2346,6 +2516,8 @@ def _activity_event_view(row: dict[str, object]) -> dict[str, object]:
     action = str(row.get("action", ""))
     entity_type = str(row.get("entity_type", ""))
     category = {
+        "admin": "admin",
+        "admin_user": "admin",
         "company": "company",
         "user": "user",
         "membership": "membership",
@@ -2354,6 +2526,10 @@ def _activity_event_view(row: dict[str, object]) -> dict[str, object]:
         "module": "module",
         "module_playbook": "module",
         "module_access": "module",
+        "shared_module": "module",
+        "learning_book": "module",
+        "learning_source": "module",
+        "communication_style": "admin",
         "ai_runtime_profile": "credential",
     }.get(entity_type, "all")
     try:
@@ -2379,7 +2555,18 @@ def _activity_event_view(row: dict[str, object]) -> dict[str, object]:
         "entity_id": str(row.get("entity_id", "")),
         "actor": str(row.get("actor", "")),
         "created_at": _format_activity_time(row.get("created_at", "")),
-        "details": details,
+        "details": [],
+        "summary": (
+            _ACTIVITY_ACTION_LABELS.get(
+                action, action.replace("_", " ").replace(".", " · ").title()
+            )
+            + (
+                f" · {str(row.get('entity_id', ''))}"
+                if action not in {"admin.login", "admin.logout"}
+                and str(row.get("entity_id", ""))
+                else ""
+            )
+        ),
     }
 
 
@@ -2561,9 +2748,11 @@ async def _bounded_import_request(request: Request) -> Request:
 
 def _role_options() -> list[dict[str, str]]:
     return [
-        {"id": "gm", "label": "GM / Executive"},
-        {"id": "manager", "label": "Manager"},
-        {"id": "staff", "label": "Staff"},
+        {"id": "owner", "label": "Owner / Board"},
+        {"id": "gm", "label": "Executive / GM"},
+        {"id": "manager", "label": "Manager / Head"},
+        {"id": "supervisor", "label": "Supervisor / Coordinator"},
+        {"id": "staff", "label": "Staff / Operational"},
     ]
 
 

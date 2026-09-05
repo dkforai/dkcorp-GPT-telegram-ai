@@ -1,6 +1,6 @@
 # Internal Telegram AI Bot
 
-MVP bot Telegram internal multi-company dengan whitelist user, membership per perusahaan, communication profile otomatis dari Role level, custom instruction, knowledge dari file Markdown, history sederhana di SQLite, dan AI provider yang bisa diganti antara OpenAI dan DeepSeek.
+MVP bot Telegram internal multi-company dengan whitelist user, membership per perusahaan, communication profile otomatis dari Role level, custom instruction, knowledge terkelola, history SQLite, serta AI GPT, Claude, DeepSeek, dan Gemini melalui registry provider.
 
 Dokumen arsitektur dan konsep aplikasi dipelihara di `docs/architecture.md`. Dokumen Markdown tersebut adalah source of truth selama pengembangan dan akan dibuat menjadi PDF setelah konsep stabil.
 
@@ -26,7 +26,7 @@ Pemrosesan update memakai controlled concurrency. User berbeda dapat diproses pa
 - Master perusahaan dan membership user per perusahaan
 - Perusahaan aktif dapat dilihat atau diganti melalui `/company`
 - Jabatan, Role level, dan custom instruction per membership; profile otomatis mengikuti role
-- Communication profile `executive`, `manager`, `staff`, atau `default`
+- Lima communication profile otomatis: Owner/Board, Executive/GM, Manager/Head, Supervisor/Coordinator, dan Staff/Operational; `default` menjadi fallback
 - Company profile, instruction, dan knowledge dari path yang dikonfigurasi per perusahaan
 - History chat dipisahkan per user, perusahaan, dan module aktif di SQLite
 - Pending Telegram update dipertahankan saat bot restart
@@ -167,12 +167,14 @@ Aturan terpusat berada di `config/role_profiles.json`:
 
 | Profile | Bentuk jawaban |
 |---|---|
+| `owner` | Governance, nilai perusahaan, arah, alokasi modal, dan risiko besar |
 | `executive` | Strategis, opsi, trade-off, risiko, dan keputusan |
 | `manager` | Taktis, action plan, resource, timeline, dan KPI |
+| `supervisor` | Koordinasi tim, pembagian kerja, kontrol mutu, hambatan, dan eskalasi |
 | `staff` | Operasional, langkah, checklist, contoh, dan standar selesai |
 | `default` | Seimbang ketika profile tidak dikenali |
 
-Profile selalu mengikuti `role_level` membership aktif: `gm` → `executive`, `manager` → `manager`, `staff` → `staff`. Role lama yang kosong/tidak dikenal memakai `default`, bukan menebak dari jabatan. Override `communication_profile` lama tidak digunakan bot. Nilai divisi/profile lama tetap disimpan untuk kompatibilitas, tetapi divisi tidak lagi dimasukkan ke prompt atau `/whoami`. Custom instruction membership hanya berlaku pada perusahaan tersebut.
+Profile selalu mengikuti `role_level` membership aktif: `owner` → `owner`, `gm` → `executive`, `manager` → `manager`, `supervisor` → `supervisor`, dan `staff` → `staff`. Super admin dapat mengubah isi setiap gaya melalui **Settings → Communication**. Role lama yang kosong/tidak dikenal memakai `default`, bukan menebak dari jabatan. Override `communication_profile` lama tidak digunakan bot. Nilai divisi/profile lama tetap disimpan untuk kompatibilitas, tetapi divisi tidak lagi dimasukkan ke prompt atau `/whoami`. Custom instruction membership hanya berlaku pada perusahaan tersebut.
 
 ## Company instruction dan knowledge
 
@@ -192,9 +194,11 @@ Profile masih berbasis file dan dibaca ulang pada setiap pertanyaan. Hanya conte
 
 Module dikelola melalui admin dengan alur **Draft → Preview → Publish** untuk playbook. Module baru tidak dapat dipilih bot sebelum playbook dipublikasikan dan aksesnya dicentang pada membership. Memilih `/company` mereset module ke `General`; mengganti module tidak menghapus history lama, tetapi memakai ruang history yang terpisah. Knowledge khusus module belum tersedia, sehingga module aktif masih memakai Knowledge company yang sama ditambah playbook module.
 
+Modul Learning tersedia lintas perusahaan melalui `/learning`. Setiap buku menyimpan PDF privat, hasil ekstraksi dan indeks lokal sekali, keterangan pembuka, custom instruction, jadwal WIB, serta AI utama/cadangan sendiri. Form menampilkan persentase halaman yang mempunyai teks; angka ini tidak menjamin tabel atau gambar terbaca. Sebelum publish, admin wajib meninjau ekstraksi. Pertanyaan umum seperti fungsi/manfaat buku atau apa yang dapat dipelajari memakai sampel buku tersebar; pertanyaan spesifik memakai FTS5 dan recent chat. Pendekatan ini menghemat token karena seluruh buku tidak dikirim pada setiap pertanyaan, dengan risiko sinonim/parafrasa yang tidak dikenali pencarian leksikal.
+
 Setiap Module memilih **AI utama** dan **AI cadangan** dari **AI terdaftar**. AI utama wajib, cadangan opsional dan harus berbeda. Daftarkan AI melalui **Settings → AI → Tambah AI**, dengan nama, provider, ID model, dan API key. OpenAI/GPT, Anthropic/Claude, DeepSeek, dan Gemini didukung. Key baru disimpan terenkripsi di SQLite, bukan plaintext; credential environment lama tetap didukung. Pilihan AI langsung berlaku pada pesan berikutnya tanpa publish ulang playbook. Module lama mempertahankan pilihan AI-nya.
 
-AI utama dicoba terlebih dahulu. Cadangan dicoba sekali saat terjadi masalah koneksi, timeout, HTTP 408/429 atau 5xx, menggunakan konteks dan history yang sama. Tiap percobaan maksimal 30 detik, tanpa retry SDK berulang. Key salah/kosong, AI nonaktif, error request/izin akses, atau refusal tidak memicu cadangan. History ditulis sekali setelah jawaban sukses. Mode `/module general` tetap memakai `AI_PROVIDER`, `AI_API_KEY`, `AI_MODEL`, dan `AI_BASE_URL` global; tidak digunakan sebagai cadangan kegagalan request Module.
+AI utama dicoba terlebih dahulu. Satu pesan mendapat budget total maksimal 5 menit: primary maksimal 3 menit, lalu cadangan memakai sisa waktu bila terjadi masalah koneksi, timeout, HTTP 408/429 atau 5xx. Setelah satu menit bot mengirim satu pesan bahwa proses masih berjalan; variasinya berasal dari teks lokal sehingga tidak memakai token AI atau masuk history. SDK tidak melakukan retry tersembunyi. Key salah/kosong, AI nonaktif, error request/izin akses, atau refusal tidak memicu cadangan. History ditulis sekali setelah jawaban sukses. Mode `/module general` tetap memakai `AI_PROVIDER`, `AI_API_KEY`, `AI_MODEL`, dan `AI_BASE_URL` global; tidak digunakan sebagai cadangan kegagalan request Module.
 
 Memilih cadangan mengizinkan konteks dikirim ke provider tersebut. Kedua provider dapat mengenakan biaya jika utama timeout setelah request diproses. Perpindahan tercatat di log server tanpa key atau isi percakapan. Dua profile berbeda dengan account/provider sama bisa tetap terkena limit atau gangguan yang sama.
 
@@ -267,12 +271,16 @@ Halaman yang tersedia:
 - `/admin/modules` untuk registry module semua company;
 - `/admin/settings/ai` untuk registry AI, status, dan tes koneksi;
 - `/admin/runtime-profiles/new` untuk mendaftarkan AI dengan API key terenkripsi;
+- `/admin/settings/admins` untuk akun super admin/operator; hanya super admin;
+- `/admin/settings/communication` untuk mengubah lima gaya komunikasi; hanya super admin;
 - `/admin/modules/new` untuk membuat module dengan Module ID otomatis;
 - `/admin/modules/<company-id>/<module-id>` untuk identitas, playbook, preview, publish, status, dan riwayat versi;
-- `/admin/activity` untuk audit administratif read-only termasuk perubahan module dan akses;
+- `/admin/activity` untuk Log Admin singkat: siapa login dan melakukan apa;
 - `/health` untuk health check Railway.
 
 Company, user whitelist, membership, Company Instruction, Knowledge, Module, dan akses Module sudah dapat dikelola melalui admin. Company ID, document key, dan Module ID dibuat otomatis oleh server lalu dikunci. Telegram ID berasal dari Telegram dan dikunci setelah user dibuat. Versi instruction, knowledge, atau playbook lama dapat dipulihkan ke draft, lalu harus dipreview dan dipublikasikan kembali.
+
+Akun `ADMIN_USERNAME` dari environment menjadi super admin pertama. Password tidak disimpan plaintext dan perubahan `ADMIN_PASSWORD` akan menjadi password akun utama setelah service direstart, sehingga dapat dipakai sebagai jalur pemulihan. Session login berlaku tujuh hari. Operator dapat mengelola data operasional, tetapi tidak dapat membuka Settings AI, akun admin, atau Communication.
 
 ### Import user dari Excel
 
@@ -369,12 +377,12 @@ Conversation Delivery Policy seperti batas kata, satu pesan satu tujuan, dan pro
 ## Batas MVP yang disengaja
 
 - Text-only, belum mendukung dokumen, gambar, voice note, atau tool calling
-- Satu konfigurasi AI provider untuk seluruh bot
+- General memakai satu konfigurasi global; tiap Module dan tiap buku Learning dapat memilih AI utama/cadangan dari registry
 - SQLite cocok untuk satu instance bot; jangan menjalankan beberapa replica
 - Controlled concurrency dibatasi maksimal 16 dan default 4
 - Knowledge sudah dipisahkan per company, tetapi belum per module/division/clearance
 - Upload knowledge belum mendukung OCR, PDF scan, dan Word `.doc` lama
-- Admin writable untuk Company, user, membership, Company Instruction, Knowledge, Module, serta module access; Activity menampilkan audit administratif read-only
+- Admin writable untuk Company, user, membership, Company Instruction, Knowledge, Module, Learning, serta module access; Log Admin menampilkan ringkasan tindakan read-only
 - History dibatasi untuk konteks dan dipangkas menjadi 100 pesan per user-company-module
 
 ## Struktur

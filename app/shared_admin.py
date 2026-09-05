@@ -17,7 +17,10 @@ from app.shared_modules import SharedStore, WIB, now, display_time
 
 
 def register_shared_routes(app, settings, database, templates):
-    from app.admin import _login_redirect, _csrf_token, _valid_csrf, _module_model_options
+    from app.admin import (
+        _admin_actor, _login_redirect, _csrf_token, _valid_csrf,
+        _module_model_options,
+    )
     store = SharedStore(database)
     processing = asyncio.Semaphore(1)
 
@@ -76,6 +79,8 @@ def register_shared_routes(app, settings, database, templates):
         row = store.module(module_id)
         if not row:
             raise HTTPException(404)
+        if row["kind"] == "learning":
+            return RedirectResponse("/admin/learning", 303)
         return module_editor(request, row)
 
     @app.post("/admin/shared-modules/{module_id}")
@@ -89,9 +94,11 @@ def register_shared_routes(app, settings, database, templates):
             row = store.module(module_id) if module_id != "new" else None
             if module_id != "new" and not row:
                 raise HTTPException(404)
+            if row and row["kind"] == "learning":
+                return RedirectResponse("/admin/learning", 303)
             if values.get("action") not in {"draft", "publish"}:
                 raise ValueError("Pilih simpan draft atau publish")
-            saved = store.save_module(None if module_id == "new" else module_id, values, settings.admin_username,
+            saved = store.save_module(None if module_id == "new" else module_id, values, _admin_actor(request, settings),
                                       publish=values["action"] == "publish", expected_revision=values.get("revision"))
             return RedirectResponse(f"/admin/shared-modules/{saved}?notice=Berhasil+disimpan", 303)
         except ValueError as exc:
@@ -104,6 +111,14 @@ def register_shared_routes(app, settings, database, templates):
         if redirect := _login_redirect(request, settings):
             return redirect
         rows = []
+        model_labels = {
+            option["value"]: option["label"]
+            for option in _module_model_options(database)
+        }
+        learning_module = store.module("learning")
+        legacy_ai = json.loads(
+            learning_module["live_json"] or learning_module["draft_json"]
+        )
         for row in store.books():
             draft = json.loads(row["draft_json"])
             live = json.loads(row["live_json"]) if row["live_json"] else None
@@ -111,20 +126,42 @@ def register_shared_routes(app, settings, database, templates):
             if live and row["active"]:
                 state = "Terjadwal" if now() < live["start_utc"] else "Berakhir" if now() >= live["end_utc"] else "Aktif"
             shown = live or draft
-            rows.append({**row, **draft, "state": state, "start_label": display_time(shown["start_utc"]), "end_label": display_time(shown["end_utc"])})
+            ai_selection = shown.get("ai_selection") or legacy_ai.get("ai_selection", "")
+            ai_label = model_labels.get(ai_selection)
+            if not ai_label:
+                ai_label = "Belum dipilih" if not ai_selection else "AI tidak aktif"
+            ready, readiness = store.learning_ready(row)
+            rows.append({**row, **draft, "state": state, "ready": ready,
+                         "readiness": readiness,
+                         "ai_label": ai_label,
+                         "start_label": display_time(shown["start_utc"]),
+                         "end_label": display_time(shown["end_utc"])})
         return page(request, "learning", "learning", books=rows, module=store.module("learning"))
 
     def book_editor(request, row=None, values=None, error="", status_code=200):
         today = datetime.now(WIB).date()
+        learning_module = store.module("learning")
+        legacy_ai = json.loads(
+            learning_module["live_json"] or learning_module["draft_json"]
+        )
         defaults = {"title": "", "description": "", "instruction": "", "source_id": "", "reviewed": False,
-                    "starts_at": f"{today}T00:00", "ends_at": f"{today + timedelta(days=7)}T00:00", "active": "1"}
+                    "starts_at": f"{today}T00:00", "ends_at": f"{today + timedelta(days=7)}T00:00", "active": "1",
+                    "ai_selection": legacy_ai.get("ai_selection", ""),
+                    "backup_ai_selection": legacy_ai.get("backup_ai_selection", "")}
         if row:
             defaults.update(json.loads(row["draft_json"]))
             defaults["active"] = "1" if row["active"] else "0"
         defaults.update(values or {})
         source = store.source(defaults["source_id"]) if defaults["source_id"] else None
         report = json.loads(source["report_json"]) if source else None
-        return page(request, "learning_book", "learning", row=row, values=defaults, source=source, report=report, error=error, status_code=status_code)
+        if report:
+            report["readable_percent"] = round(
+                report["readable_pages"] * 100 / report["pages"]
+            ) if report["pages"] else 0
+        return page(request, "learning_book", "learning", row=row, values=defaults,
+                    source=source, report=report,
+                    runtime_profiles=_module_model_options(database),
+                    error=error, status_code=status_code)
 
     @app.get("/admin/learning/books/new")
     async def new_book(request: Request):
@@ -170,12 +207,12 @@ def register_shared_routes(app, settings, database, templates):
                     existing = store.source(source_id)
                     if not existing:
                         extracted = await run_in_threadpool(extract_book, pdf)
-                        source_id = await run_in_threadpool(store.save_source, PurePath(file.filename).name, pdf, extracted, settings.admin_username)
+                        source_id = await run_in_threadpool(store.save_source, PurePath(file.filename).name, pdf, extracted, _admin_actor(request, settings))
                     values["source_id"] = source_id
                     values["reviewed"] = "0"
                     if not values.get("title", "").strip():
                         values["title"] = PurePath(file.filename).stem[:150]
-            saved = store.save_book(None if book_id == "new" else book_id, values, settings.admin_username,
+            saved = store.save_book(None if book_id == "new" else book_id, values, _admin_actor(request, settings),
                                    publish=values["action"] == "publish", expected_revision=values.get("revision"))
             return RedirectResponse(f"/admin/learning/books/{saved}?notice=Materi+berhasil+disimpan", 303)
         except ValueError as exc:

@@ -57,7 +57,7 @@
           <label>
             Role level
             <select name="role_level" required>{% for option in role_options %}<option value="{{ option.id }}" {% if values.role_level == option.id %}selected{% endif %}>{{ option.label }}</option>{% endfor %}</select>
-            <small>Gaya jawaban otomatis: GM strategis, Manager taktis, Staff operasional.</small>
+            <small>Gaya bot mengikuti salah satu dari lima level komunikasi global.</small>
           </label>
         </div>
         <label class="full-field">

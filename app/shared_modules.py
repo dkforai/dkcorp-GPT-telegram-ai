@@ -175,15 +175,50 @@ class SharedStore:
         if not self.db.get_user(user_id):
             return None
         row = self.module(module_id)
-        if not row or not row["active"] or not row["live_json"]:
+        if not row or not row["active"]:
             return None
-        data = json.loads(row["live_json"])
+        if row["kind"] == "learning":
+            book = self.active_book()
+            if not book:
+                return None
+            data = self.learning_ai_data(book)
+        else:
+            if not row["live_json"]:
+                return None
+            data = json.loads(row["live_json"])
         if data["context_mode"] == "company" and not self.db.get_active_membership(user_id):
             return None
         module = self.as_ai_module(row, data)
         if self.db.get_module_ai_profile(module) is None:
             return None
         return {**row, **data}
+
+    def learning_ai_data(self, book):
+        row = self.module("learning")
+        base = json.loads(row["live_json"] or row["draft_json"])
+        return {
+            **base,
+            "ai_selection": book.get("ai_selection") or base.get("ai_selection", ""),
+            "backup_ai_selection": (
+                book.get("backup_ai_selection")
+                if "backup_ai_selection" in book
+                else base.get("backup_ai_selection", "")
+            ),
+        }
+
+    def learning_ready(self, book) -> tuple[bool, str]:
+        row = self.module("learning")
+        if not row or not row["active"]:
+            return False, "Modul Learning nonaktif"
+        if not book.get("live_json"):
+            return False, "Buku masih draft"
+        if not book.get("active"):
+            return False, "Buku nonaktif"
+        data = self.learning_ai_data(book)
+        module = self.as_ai_module(row, data)
+        if self.db.get_module_ai_profile(module) is None:
+            return False, "AI utama tidak siap"
+        return True, "Siap digunakan sesuai jadwal"
 
     @staticmethod
     def as_ai_module(row, data=None):
@@ -260,6 +295,10 @@ class SharedStore:
         if data["end_utc"] <= data["start_utc"]:
             raise ValueError("Waktu berakhir harus setelah waktu mulai")
         data["reviewed"] = values.get("reviewed") == "1"
+        data["ai_selection"] = text_field(values, "ai_selection", 300, publish)
+        data["backup_ai_selection"] = text_field(
+            values, "backup_ai_selection", 300, False
+        )
         with self.connect(True) as c:
             old = c.execute("SELECT * FROM learning_books WHERE id=?", (book_id,)).fetchone() if book_id else None
             if book_id and not old:
@@ -273,6 +312,7 @@ class SharedStore:
             if publish:
                 if not data["reviewed"]:
                     raise ValueError("Tinjau hasil ekstraksi dan centang konfirmasi sebelum publish")
+                self._ai(c, data)
                 if active:
                     self._check_overlap(c, book_id, data)
             elif active and old and old["live_json"]:
@@ -331,8 +371,15 @@ class SharedStore:
 
     def retrieve(self, source_id, question, history, budget=16000):
         """Local lexical retrieval. Never pretend excerpts represent the entire book."""
+        normalized_question = " ".join(question.casefold().split())
+        overview = any(phrase in normalized_question for phrase in (
+            "ringkas", "seluruh buku", "keseluruhan buku", "summary", "overview",
+            "isi buku", "inti buku", "jelaskan buku", "buku ini tentang apa",
+            "tentang apa buku", "fungsi buku", "manfaat buku", "belajar apa",
+            "apa yang bisa dipelajari", "apa yang dapat dipelajari",
+        ))
         stop = {"yang", "dan", "atau", "untuk", "dari", "dengan", "saya", "apa", "ini", "itu", "the", "and", "of", "to", "lanjut", "lanjutkan", "belum", "jelaskan", "bagaimana", "buku", "mulai", "halo", "hai", "siap", "belajar", "yuk", "oke", "baik", "mau", "ingin"}
-        tokens = [w for w in re.findall(r"[^\W_]+", question.casefold()) if len(w) > 2 and w not in stop][:24]
+        tokens = [] if overview else [w for w in re.findall(r"[^\W_]+", normalized_question) if len(w) > 2 and w not in stop][:24]
         if len(tokens) < 2:
             prior = " ".join(m["content"][-2500:] for m in history[-4:])
             tokens += [w for w in re.findall(r"[^\W_]+", prior.casefold()) if len(w) > 3 and w not in stop][:40]
@@ -343,7 +390,6 @@ class SharedStore:
             ordinals = [int(hit[0]) for hit in hits]
             for hit in hits:
                 ordinals.extend((int(hit[0]) - 1, int(hit[0]) + 1))
-            overview = any(w in question.casefold() for w in ("ringkas", "seluruh", "keseluruhan", "summary", "overview", "isi buku", "inti buku"))
             if overview:
                 total = c.execute("SELECT count(*) FROM learning_chunks WHERE source_id=?", (source_id,)).fetchone()[0]
                 ordinals.extend(range(0, total, max(1, total // 6)))
@@ -362,4 +408,4 @@ class SharedStore:
                 continue
             parts[ordinal] = text
             count += len(text) + (2 if len(parts) > 1 else 0)
-        return "\n\n".join(parts[n] for n in sorted(parts)), bool(hits)
+        return "\n\n".join(parts[n] for n in sorted(parts)), bool(hits) or overview

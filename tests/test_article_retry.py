@@ -43,12 +43,12 @@ def test_retry_retains_exact_input_and_commits_pair_once(article, method, text):
     calls = fail_provider(article)
     details = 'Chef Linda: "Snow Strudel inovasi baru". Ada 3 foto.'
     assert "tetap tersimpan" in call(article, "chat", details)[0][0]
-    assert calls == [(details, [], {"timeout_seconds": 120.0})]
+    assert calls == [(details, [], {"timeout_seconds": 300.0})]
     assert db.get_history(42, 12, "ms", MODULE) == []
     assert db.get_pending_request(42, "ms", MODULE)["content"] == details
     async def success(primary, backup, system, history, user_text, **kwargs):
         assert user_text == details and not history
-        assert kwargs["timeout_seconds"] == 120
+        assert kwargs["timeout_seconds"] == 300
         return "Artikel selesai"
     article.module_provider_resolver.generate = success
     assert "Artikel selesai" in call(article, method, text)[0][0]
@@ -68,9 +68,9 @@ def test_retry_isolated_reset_new_input_and_context_changes(article):
     db.set_active_module(42, "threads-generator")
     call(article, "retry", "/ulang")
     assert len(calls) == 1
-    # An ordinary module retains its original timeout and normal error response.
+    # Every AI module uses the same five-minute total budget.
     assert "sedang tidak tersedia" in call(article, "chat", "other question")[0][0]
-    assert calls[-1][2] == {}
+    assert calls[-1][2] == {"timeout_seconds": 300.0}
     db.set_active_module(42, MODULE)
     call(article, "chat", "detail baru")
     assert db.get_pending_request(42, "ms", MODULE)["content"] == "detail baru"
@@ -145,8 +145,8 @@ def test_article_http_timeout_reaches_actual_transport(monkeypatch, kind):
             await adapter.close()
     asyncio.run(exercise())
     assert len(seen) == 2
-    assert set(seen[0].values()) == {120}
-    assert set(seen[1].values()) == {30}
+    assert set(seen[0].values()) == {72}
+    assert set(seen[1].values()) == {180}
 
 
 def test_timeout_context_isolated_across_concurrent_calls_backup_and_cancellation(monkeypatch):
@@ -178,7 +178,7 @@ def test_timeout_context_isolated_across_concurrent_calls_backup_and_cancellatio
         assert results == ["OK", "OK"]
         with pytest.raises(asyncio.CancelledError):
             await resolver.generate(primary, lambda: pytest.fail("no fallback"), "", [], "cancel", timeout_seconds=120)
-        assert providers.effective_timeout() == 30
+        assert providers.effective_timeout() == 300
     asyncio.run(exercise())
-    assert all(value == (30 if text == "normal" else 120) for text, _, value in seen)
-    assert sorted(guards) == [30, 30, 120, 120, 120]
+    assert all(0 < value <= (300 if text == "normal" else 120) for text, _, value in seen)
+    assert min(guards) > 0 and max(guards) <= 300

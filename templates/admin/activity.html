@@ -1,11 +1,11 @@
 {% extends "admin/base.html" %}
-{% block title %}Activity · DK Corp AI Admin{% endblock %}
-{% block page_title %}Activity{% endblock %}
+{% block title %}Log Admin · DK Corp AI Admin{% endblock %}
+{% block page_title %}Log Admin{% endblock %}
 {% block content %}
   <div class="page-lead">
     <div>
-      <h2>Audit aktivitas</h2>
-      <p>Jejak perubahan administratif terbaru. Data ini bersifat read-only.</p>
+      <h2>Aktivitas singkat</h2>
+      <p>Siapa yang login dan melakukan perubahan di sistem.</p>
     </div>
     <span class="mode-badge">100 aktivitas terbaru</span>
   </div>
@@ -28,17 +28,7 @@
             </div>
             <time>{{ event.created_at }}</time>
           </div>
-          <div class="activity-meta">
-            <span><strong>Target</strong><code>{{ event.entity_id }}</code></span>
-            <span><strong>Admin</strong>{{ event.actor }}</span>
-          </div>
-          {% if event.details %}
-            <dl class="activity-details">
-              {% for detail in event.details %}
-                <div><dt>{{ detail.label }}</dt><dd>{{ detail.value }}</dd></div>
-              {% endfor %}
-            </dl>
-          {% endif %}
+          <div class="activity-meta"><span><strong>{{ event.actor }}</strong> {{ event.summary }}</span></div>
         </div>
       </article>
     {% else %}

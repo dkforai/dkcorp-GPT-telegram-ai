@@ -5,6 +5,7 @@ import json
 import math
 import os
 import re
+import secrets
 import sqlite3
 import tempfile
 import unicodedata
@@ -25,8 +26,10 @@ from app.user_import import (
 COMPANY_ID_PATTERN = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 ENVIRONMENT_NAME_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
 SUPPORTED_AI_PROVIDERS = set(PROVIDERS)
-ROLE_LEVELS = {"gm", "manager", "staff"}
-COMMUNICATION_PROFILES = {"executive", "manager", "staff", "default"}
+ROLE_LEVELS = {"owner", "gm", "manager", "supervisor", "staff"}
+COMMUNICATION_PROFILES = {
+    "owner", "executive", "manager", "supervisor", "staff", "default"
+}
 MAX_TELEGRAM_ID = 9_007_199_254_740_991
 MAX_COMPANY_INSTRUCTION_CHARS = 50_000
 MAX_KNOWLEDGE_DOCUMENT_CHARS = 100_000
@@ -97,6 +100,16 @@ class AIModule:
     ai_model: str = ""
     backup_ai_model: str = ""
     short_code: str = ""
+
+
+@dataclass(frozen=True)
+class AdminUser:
+    username: str
+    display_name: str
+    role: str
+    active: bool
+    created_at: str
+    updated_at: str
 
 
 class Database:
@@ -180,6 +193,26 @@ class Database:
                     entity_id TEXT NOT NULL,
                     details_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS admin_users (
+                    username TEXT PRIMARY KEY COLLATE NOCASE,
+                    display_name TEXT NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('super_admin', 'admin_operator')),
+                    active INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS communication_styles (
+                    profile_id TEXT PRIMARY KEY,
+                    label TEXT NOT NULL,
+                    response_level TEXT NOT NULL,
+                    focus_json TEXT NOT NULL,
+                    structure_json TEXT NOT NULL,
+                    avoid_json TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS module_pending_requests (
@@ -452,6 +485,183 @@ class Database:
             )
             from app.shared_modules import initialize_schema
             initialize_schema(connection)
+
+    def ensure_primary_admin(self, username: str, password: str) -> None:
+        """Bootstrap the environment admin and keep its env password authoritative."""
+        normalized = _validate_admin_username(username)
+        with self._connect() as connection:
+            existing = connection.execute(
+                "SELECT password_hash FROM admin_users WHERE username = ? COLLATE NOCASE",
+                (normalized,),
+            ).fetchone()
+            if existing:
+                if not _verify_admin_password(password, existing["password_hash"]):
+                    connection.execute(
+                        "UPDATE admin_users SET password_hash=?, updated_at=? WHERE username=? COLLATE NOCASE",
+                        (_hash_admin_password(password), _now(), normalized),
+                    )
+                return
+            timestamp = _now()
+            connection.execute(
+                """INSERT INTO admin_users(
+                    username, display_name, password_hash, role, active,
+                    created_at, updated_at
+                ) VALUES(?,?,?,?,1,?,?)""",
+                (
+                    normalized,
+                    normalized,
+                    _hash_admin_password(password),
+                    "super_admin",
+                    timestamp,
+                    timestamp,
+                ),
+            )
+
+    def ensure_communication_styles(self, profiles) -> None:
+        with self._connect() as connection:
+            for profile in profiles.by_id.values():
+                connection.execute(
+                    """INSERT OR IGNORE INTO communication_styles(
+                        profile_id, label, response_level, focus_json,
+                        structure_json, avoid_json, updated_at
+                    ) VALUES(?,?,?,?,?,?,?)""",
+                    (
+                        profile.profile_id, profile.label, profile.response_level,
+                        json.dumps(profile.focus, ensure_ascii=False),
+                        json.dumps(profile.default_structure, ensure_ascii=False),
+                        json.dumps(profile.avoid, ensure_ascii=False), _now(),
+                    ),
+                )
+
+    def list_communication_styles(self) -> list[dict[str, object]]:
+        order = ("owner", "executive", "manager", "supervisor", "staff", "default")
+        with self._connect() as connection:
+            rows = [dict(row) for row in connection.execute(
+                "SELECT * FROM communication_styles"
+            ).fetchall()]
+        rank = {profile_id: index for index, profile_id in enumerate(order)}
+        return sorted(rows, key=lambda row: rank.get(str(row["profile_id"]), 99))
+
+    def update_communication_style(
+        self, profile_id: str, response_level: str, focus: str,
+        structure: str, avoid: str, actor: str,
+    ) -> None:
+        profile_id = str(profile_id).strip().casefold()
+        if profile_id not in {"owner", "executive", "manager", "supervisor", "staff", "default"}:
+            raise ValueError("Communication style tidak valid")
+        level = str(response_level).strip()
+        if not level or len(level) > 500:
+            raise ValueError("Kedalaman jawaban wajib diisi dan maksimal 500 karakter")
+
+        def lines(value: str) -> list[str]:
+            result = [item.strip() for item in str(value).splitlines() if item.strip()]
+            if len(result) > 20 or any(len(item) > 300 for item in result):
+                raise ValueError("Setiap daftar maksimal 20 baris dan 300 karakter per baris")
+            return result
+
+        with self._connect() as connection:
+            if not connection.execute(
+                "SELECT 1 FROM communication_styles WHERE profile_id=?", (profile_id,)
+            ).fetchone():
+                raise ValueError("Communication style tidak ditemukan")
+            connection.execute(
+                """UPDATE communication_styles SET response_level=?, focus_json=?,
+                    structure_json=?, avoid_json=?, updated_at=? WHERE profile_id=?""",
+                (
+                    level, json.dumps(lines(focus), ensure_ascii=False),
+                    json.dumps(lines(structure), ensure_ascii=False),
+                    json.dumps(lines(avoid), ensure_ascii=False), _now(), profile_id,
+                ),
+            )
+            _write_audit(
+                connection, actor, "communication_style.updated",
+                "communication_style", profile_id, {},
+            )
+
+    def authenticate_admin(self, username: str, password: str) -> AdminUser | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM admin_users WHERE username = ? COLLATE NOCASE AND active = 1",
+                (str(username).strip(),),
+            ).fetchone()
+        if row is None or not _verify_admin_password(password, row["password_hash"]):
+            return None
+        return _admin_user_from_row(row)
+
+    def get_admin_user(self, username: str) -> AdminUser | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM admin_users WHERE username = ? COLLATE NOCASE",
+                (str(username).strip(),),
+            ).fetchone()
+        return _admin_user_from_row(row) if row else None
+
+    def list_admin_users(self) -> list[AdminUser]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM admin_users ORDER BY role DESC, display_name COLLATE NOCASE"
+            ).fetchall()
+        return [_admin_user_from_row(row) for row in rows]
+
+    def create_admin_user(
+        self, username: str, display_name: str, password: str, role: str, actor: str
+    ) -> AdminUser:
+        normalized = _validate_admin_username(username)
+        name = str(display_name).strip()
+        if not name or len(name) > 100:
+            raise ValueError("Nama admin wajib diisi dan maksimal 100 karakter")
+        if len(password) < 12:
+            raise ValueError("Password minimal 12 karakter")
+        if role not in {"super_admin", "admin_operator"}:
+            raise ValueError("Role admin tidak valid")
+        timestamp = _now()
+        try:
+            with self._connect() as connection:
+                connection.execute(
+                    """INSERT INTO admin_users(
+                        username, display_name, password_hash, role, active,
+                        created_at, updated_at
+                    ) VALUES(?,?,?,?,1,?,?)""",
+                    (
+                        normalized, name, _hash_admin_password(password), role,
+                        timestamp, timestamp,
+                    ),
+                )
+                _write_audit(
+                    connection, actor, "admin_user.created", "admin_user",
+                    normalized, {"display_name": name, "role": role},
+                )
+        except sqlite3.IntegrityError:
+            raise ValueError("Username admin sudah digunakan") from None
+        return self.get_admin_user(normalized)
+
+    def set_admin_user_active(
+        self, username: str, active: bool, actor: str
+    ) -> AdminUser:
+        normalized = _validate_admin_username(username)
+        with self._connect() as connection:
+            current = connection.execute(
+                "SELECT * FROM admin_users WHERE username = ? COLLATE NOCASE",
+                (normalized,),
+            ).fetchone()
+            if current is None:
+                raise ValueError("Akun admin tidak ditemukan")
+            if current["role"] == "super_admin" and not active:
+                count = connection.execute(
+                    "SELECT COUNT(*) FROM admin_users WHERE role='super_admin' AND active=1"
+                ).fetchone()[0]
+                if count <= 1:
+                    raise ValueError("Super Admin aktif terakhir tidak dapat dinonaktifkan")
+            connection.execute(
+                "UPDATE admin_users SET active=?, updated_at=? WHERE username=? COLLATE NOCASE",
+                (int(active), _now(), normalized),
+            )
+            _write_audit(
+                connection, actor,
+                "admin_user.activated" if active else "admin_user.deactivated",
+                "admin_user", normalized, {},
+            )
+        return self.get_admin_user(normalized)
 
     def bootstrap_companies(self, companies_file: Path) -> int:
         """Import JSON only when the company registry is still empty."""
@@ -2965,6 +3175,12 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def write_admin_event(
+        self, actor: str, action: str, entity_type: str = "admin", entity_id: str = ""
+    ) -> None:
+        with self._connect() as connection:
+            _write_audit(connection, actor, action, entity_type, entity_id, {})
+
     def list_memberships(self, telegram_id: int) -> list[Membership]:
         with self._connect() as connection:
             rows = connection.execute(
@@ -3846,7 +4062,7 @@ def _validate_membership_fields(
 ) -> dict[str, str]:
     normalized_role = str(role_level or "").strip().casefold()
     if normalized_role not in ROLE_LEVELS:
-        raise ValueError("Role level harus gm, manager, atau staff")
+        raise ValueError("Role level harus owner, gm, manager, supervisor, atau staff")
     normalized_profile = str(communication_profile or "").strip().casefold()
     if normalized_profile not in COMMUNICATION_PROFILES:
         raise ValueError("Communication profile tidak valid")
@@ -3965,6 +4181,46 @@ def _write_audit(
             json.dumps(details, ensure_ascii=False, sort_keys=True),
             _now(),
         ),
+    )
+
+
+def _validate_admin_username(value: object) -> str:
+    username = str(value).strip().casefold()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{2,49}", username):
+        raise ValueError(
+            "Username admin harus 3–50 karakter berupa huruf, angka, titik, garis bawah, atau tanda hubung"
+        )
+    return username
+
+
+def _hash_admin_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    rounds = 310_000
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, rounds)
+    return f"pbkdf2_sha256${rounds}${salt.hex()}${digest.hex()}"
+
+
+def _verify_admin_password(password: str, encoded: str) -> bool:
+    try:
+        algorithm, rounds_text, salt_hex, expected_hex = encoded.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        actual = hashlib.pbkdf2_hmac(
+            "sha256", password.encode(), bytes.fromhex(salt_hex), int(rounds_text)
+        )
+        return secrets.compare_digest(actual.hex(), expected_hex)
+    except (ValueError, TypeError):
+        return False
+
+
+def _admin_user_from_row(row: sqlite3.Row) -> AdminUser:
+    return AdminUser(
+        username=row["username"],
+        display_name=row["display_name"],
+        role=row["role"],
+        active=bool(row["active"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )
 
 

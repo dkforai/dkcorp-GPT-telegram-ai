@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
-from app.admin import create_admin_app
+from app.admin import SESSION_MAX_AGE, create_admin_app
 from app.bot import InternalBot, _split_message
 from app.company_context import CompanyContent, load_company_content
 from app.config import Settings
@@ -275,7 +275,7 @@ def test_explicit_profile_overrides_role_alias():
     assert profile.profile_id == "manager"
 
 
-@pytest.mark.parametrize("role, expected", [("gm", "executive"), ("manager", "manager"), ("staff", "staff"), ("", "default"), ("unknown", "default")])
+@pytest.mark.parametrize("role, expected", [("owner", "owner"), ("gm", "executive"), ("manager", "manager"), ("supervisor", "supervisor"), ("staff", "staff"), ("", "default"), ("unknown", "default")])
 def test_bot_profile_is_derived_only_from_membership_role(tmp_path, role, expected):
     db = Database(tmp_path / "role.db")
     db.initialize()
@@ -291,7 +291,7 @@ def test_bot_profile_is_derived_only_from_membership_role(tmp_path, role, expect
     assert profile.as_prompt() in prompt
 
 
-@pytest.mark.parametrize("role, expected", [("gm", "executive"), ("manager", "manager"), ("staff", "staff")])
+@pytest.mark.parametrize("role, expected", [("owner", "owner"), ("gm", "executive"), ("manager", "manager"), ("supervisor", "supervisor"), ("staff", "staff")])
 def test_simplified_user_and_membership_forms_preserve_legacy_data(tmp_path, role, expected):
     db = Database(tmp_path / "simple-admin.db")
     db.initialize()
@@ -1500,6 +1500,7 @@ def test_admin_company_management_and_csrf(tmp_path):
         "company.deactivated",
         "company.updated",
         "company.created",
+        "admin.login",
     ]
 
     companies_file.write_text(
@@ -1576,7 +1577,7 @@ def test_admin_activity_is_read_only_filterable_and_content_safe(tmp_path):
         ).status_code == 303
         response = client.get("/admin/activity")
         assert response.status_code == 200
-        assert "Audit aktivitas" in response.text
+        assert "Aktivitas singkat" in response.text
         assert "Knowledge dipublikasikan" in response.text
         assert "company-a:private-plan" in response.text
         assert "RAHASIA-ISI-DOKUMEN" not in response.text
@@ -1586,6 +1587,126 @@ def test_admin_activity_is_read_only_filterable_and_content_safe(tmp_path):
         assert company_only.status_code == 200
         assert "Company dibuat" in company_only.text
         assert "Knowledge dipublikasikan" not in company_only.text
+
+
+def test_multi_admin_seven_day_session_permissions_and_actor(tmp_path):
+    companies_file = tmp_path / "companies.json"
+    users_file = tmp_path / "users.json"
+    companies_file.write_text("[]", encoding="utf-8")
+    users_file.write_text("[]", encoding="utf-8")
+    database = Database(tmp_path / "admins.db")
+    database.initialize()
+    settings = _test_settings(
+        tmp_path, users_file, companies_file, database_path=database.path
+    )
+    assert SESSION_MAX_AGE == 7 * 24 * 60 * 60
+
+    with TestClient(create_admin_app(settings, database)) as client:
+        login = client.post(
+            "/admin/login",
+            data={"username": "admin", "password": "strong-password"},
+            follow_redirects=False,
+        )
+        assert "Max-Age=604800" in login.headers["set-cookie"]
+        page = client.get("/admin/settings/admins")
+        csrf = re.search(r'name="csrf_token" value="([a-f0-9]+)"', page.text)[1]
+        created = client.post(
+            "/admin/settings/admins",
+            data={
+                "csrf_token": csrf, "display_name": "Ajeng",
+                "username": "ajeng", "password": "password-ajeng-aman",
+                "role": "admin_operator",
+            },
+            follow_redirects=False,
+        )
+        assert created.status_code == 303
+        client.get("/admin/logout")
+        assert client.post(
+            "/admin/login",
+            data={"username": "ajeng", "password": "password-ajeng-aman"},
+            follow_redirects=False,
+        ).status_code == 303
+        assert client.get("/admin/settings/ai").status_code == 403
+        assert client.get("/admin/settings/admins").status_code == 403
+        company_page = client.get("/admin/companies/new")
+        csrf = re.search(r'name="csrf_token" value="([a-f0-9]+)"', company_page.text)[1]
+        assert client.post(
+            "/admin/companies",
+            data={"csrf_token": csrf, "name": "Company by Ajeng", "active": "1"},
+            follow_redirects=False,
+        ).status_code == 303
+
+        database.set_admin_user_active("ajeng", False, "Admin")
+        assert client.get("/admin", follow_redirects=False).status_code == 303
+
+    events = database.list_admin_audit_events(20)
+    assert any(row["action"] == "admin.login" and row["actor"] == "Ajeng" for row in events)
+    assert any(row["action"] == "company.created" and row["actor"] == "Ajeng" for row in events)
+    with sqlite3.connect(database.path) as connection:
+        password_hash = connection.execute(
+            "SELECT password_hash FROM admin_users WHERE username='ajeng'"
+        ).fetchone()[0]
+    assert password_hash != "password-ajeng-aman"
+
+
+def test_environment_admin_password_is_recovery_source_after_restart(tmp_path):
+    database = Database(tmp_path / "admin-recovery.db")
+    database.initialize()
+    database.ensure_primary_admin("admin", "password-awal-yang-aman")
+    assert database.authenticate_admin("admin", "password-awal-yang-aman")
+
+    database.ensure_primary_admin("admin", "password-baru-yang-aman")
+
+    assert database.authenticate_admin("admin", "password-baru-yang-aman")
+    assert database.authenticate_admin("admin", "password-awal-yang-aman") is None
+
+
+def test_slow_ai_gets_one_static_progress_message(tmp_path, monkeypatch):
+    bot = _help_bot(tmp_path)
+    replies = []
+    async def reply(text, **kwargs):
+        replies.append(text)
+    update = SimpleNamespace(
+        effective_message=SimpleNamespace(reply_text=reply)
+    )
+    async def slow():
+        await asyncio.sleep(0.02)
+        return "selesai"
+    monkeypatch.setattr("app.bot.AI_PROGRESS_NOTICE_SECONDS", 0.001)
+    monkeypatch.setattr("app.bot.random.choice", lambda values: values[0])
+    result = asyncio.run(bot._run_ai_with_progress(update, slow()))
+    assert result == "selesai"
+    assert replies == ["Permintaan ini membutuhkan waktu lebih lama. Datanya masih diproses, tunggu sebentar."]
+
+
+def test_communication_styles_can_be_managed_by_super_admin(tmp_path):
+    companies_file = tmp_path / "companies.json"
+    users_file = tmp_path / "users.json"
+    companies_file.write_text("[]", encoding="utf-8")
+    users_file.write_text("[]", encoding="utf-8")
+    database = Database(tmp_path / "communication.db")
+    database.initialize()
+    settings = _test_settings(
+        tmp_path, users_file, companies_file, database_path=database.path
+    )
+    with TestClient(create_admin_app(settings, database)) as client:
+        client.post("/admin/login", data={"username": "admin", "password": "strong-password"})
+        page = client.get("/admin/settings/communication")
+        assert page.status_code == 200 and "Owner / Board" in page.text
+        csrf = re.search(r'name="csrf_token" value="([a-f0-9]+)"', page.text)[1]
+        assert client.post(
+            "/admin/settings/communication/owner",
+            data={
+                "csrf_token": csrf,
+                "response_level": "Jawaban keputusan pemilik",
+                "focus": "risiko\nreturn",
+                "structure": "ringkasan\nkeputusan",
+                "avoid": "detail rutin",
+            },
+            follow_redirects=False,
+        ).status_code == 303
+    owner = next(row for row in database.list_communication_styles() if row["profile_id"] == "owner")
+    assert owner["response_level"] == "Jawaban keputusan pemilik"
 
 
 def test_admin_user_and_membership_management(tmp_path):
@@ -2817,7 +2938,7 @@ def test_module_sdk_has_single_attempt_without_changing_general(monkeypatch):
     module_provider = ModuleProviderResolver().resolve(primary)
     global_provider = create_provider("openai", "fake-key", "test", None)
     assert module_provider.client.max_retries == 0
-    assert module_provider.client.timeout == 30.0
+    assert module_provider.client.timeout == 300.0
     assert global_provider.client.max_retries == 2
 
     async def close():

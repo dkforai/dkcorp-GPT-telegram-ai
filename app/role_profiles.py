@@ -5,7 +5,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-ROLE_PROFILE_IDS = {"gm": "executive", "manager": "manager", "staff": "staff"}
+ROLE_PROFILE_IDS = {
+    "owner": "owner",
+    "gm": "executive",
+    "executive": "executive",
+    "manager": "manager",
+    "supervisor": "supervisor",
+    "staff": "staff",
+}
 
 
 def profile_id_for_role(role_level: object) -> str:
@@ -76,6 +83,23 @@ def load_role_profiles(path: Path) -> RoleProfiles:
     if default_id not in by_id:
         raise ValueError(f"Default profile '{default_id}' tidak ditemukan di {path}")
     return RoleProfiles(default=by_id[default_id], by_id=by_id, aliases=aliases)
+
+
+def role_profiles_from_rows(rows: list[dict[str, object]]) -> RoleProfiles:
+    by_id = {
+        str(row["profile_id"]): CommunicationProfile(
+            profile_id=str(row["profile_id"]),
+            label=str(row["label"]),
+            response_level=str(row["response_level"]),
+            focus=tuple(json.loads(str(row["focus_json"]))),
+            default_structure=tuple(json.loads(str(row["structure_json"]))),
+            avoid=tuple(json.loads(str(row["avoid_json"]))),
+        )
+        for row in rows
+    }
+    if "default" not in by_id:
+        raise ValueError("Communication profile default tidak tersedia")
+    return RoleProfiles(default=by_id["default"], by_id=by_id, aliases={})
 
 
 def resolve_communication_profile(

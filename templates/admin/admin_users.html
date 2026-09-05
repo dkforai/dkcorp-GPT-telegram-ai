@@ -1,0 +1,33 @@
+{% extends "admin/base.html" %}
+{% block title %}Akun Admin · DK Corp AI Admin{% endblock %}
+{% block page_title %}Settings · Akun Admin{% endblock %}
+{% block content %}
+  <div class="page-lead">
+    <div><h2>Admin sistem</h2><p>Super Admin mengelola akun yang dapat masuk ke control panel.</p></div>
+    <a class="secondary-button" href="/admin/settings/ai">Settings AI</a>
+  </div>
+  {% if notice %}<div class="notice success" role="status">{{ notice }}</div>{% endif %}
+  {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+
+  <form class="panel form-panel" method="post" action="/admin/settings/admins">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <h3>Tambah admin</h3>
+    <div class="form-grid">
+      <label>Nama<input name="display_name" maxlength="100" required placeholder="Contoh: Ajeng"></label>
+      <label>Username<input name="username" minlength="3" maxlength="50" required autocomplete="off"></label>
+      <label>Password sementara<input name="password" type="password" minlength="12" required autocomplete="new-password"><small>Minimal 12 karakter. Sampaikan langsung kepada pemilik akun.</small></label>
+      <label>Role<select name="role"><option value="admin_operator">Admin Operator</option><option value="super_admin">Super Admin</option></select><small>Admin Operator tidak dapat membuka API key, akun admin, atau pengaturan komunikasi.</small></label>
+    </div>
+    <div class="form-actions"><span></span><button class="primary-button" type="submit">Buat akun</button></div>
+  </form>
+
+  <div class="panel table-panel"><div class="table-wrap"><table>
+    <thead><tr><th>Admin</th><th>Username</th><th>Role</th><th>Status</th><th>Action</th></tr></thead>
+    <tbody>{% for admin in admins %}<tr>
+      <td><strong>{{ admin.display_name }}</strong></td><td><code>{{ admin.username }}</code></td>
+      <td>{{ 'Super Admin' if admin.role == 'super_admin' else 'Admin Operator' }}</td>
+      <td><span class="status-badge {% if admin.active %}active{% endif %}">{{ 'Active' if admin.active else 'Inactive' }}</span></td>
+      <td><form method="post" action="/admin/settings/admins/{{ admin.username }}/status"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="active" value="{{ '0' if admin.active else '1' }}"><button class="text-button {% if admin.active %}danger{% endif %}" type="submit">{{ 'Nonaktifkan' if admin.active else 'Aktifkan' }}</button></form></td>
+    </tr>{% endfor %}</tbody>
+  </table></div></div>
+{% endblock %}

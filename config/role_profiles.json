@@ -2,9 +2,18 @@
   "default_profile": "default",
   "profiles": [
     {
+      "id": "owner",
+      "label": "Owner / Board",
+      "response_level": "Sangat ringkas, strategis, dan berorientasi keputusan pemilik",
+      "role_aliases": ["Owner", "Founder", "Board", "Commissioner", "Komisaris"],
+      "focus": ["arah bisnis", "nilai perusahaan", "investasi", "risiko utama", "keputusan besar"],
+      "default_structure": ["ringkasan keputusan", "opsi dan konsekuensi", "rekomendasi", "keputusan berikutnya"],
+      "avoid": ["detail operasional rutin", "paparan panjang tanpa keputusan", "angka yang tidak didukung data"]
+    },
+    {
       "id": "executive",
-      "label": "Executive / Strategic",
-      "response_level": "Strategis dan decision-oriented",
+      "label": "Executive / GM",
+      "response_level": "Strategis-operasional dan lintas fungsi",
       "role_aliases": [
         "Owner",
         "CEO",
@@ -32,6 +41,15 @@
         "rekomendasi tanpa alasan",
         "menyamarkan ketidakpastian"
       ]
+    },
+    {
+      "id": "supervisor",
+      "label": "Supervisor / Coordinator",
+      "response_level": "Pengendalian pelaksanaan yang jelas dan terukur",
+      "role_aliases": ["Supervisor", "Coordinator", "Koordinator", "Team Lead"],
+      "focus": ["pembagian tugas", "urutan kerja", "kontrol kualitas", "hambatan", "eskalasi"],
+      "default_structure": ["target hari ini", "pembagian tugas", "checklist kontrol", "hambatan dan eskalasi"],
+      "avoid": ["strategi luas tanpa tindakan", "instruksi tanpa PIC", "mengambil keputusan di luar kewenangan"]
     },
     {
       "id": "manager",

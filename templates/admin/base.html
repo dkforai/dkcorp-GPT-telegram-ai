@@ -43,12 +43,16 @@
         <a class="nav-item {% if active_page == 'shared' %}active{% endif %}" href="/admin/shared-modules"><span class="nav-icon">07</span> Modul bersama</a>
         <a class="nav-item {% if active_page == 'learning' %}active{% endif %}" href="/admin/learning"><span class="nav-icon">08</span> Modul Learning</a>
         <a class="nav-item {% if active_page == 'activity' %}active{% endif %}" href="/admin/activity">
-          <span class="nav-icon">09</span> Activity
+          <span class="nav-icon">09</span> Log Admin
         </a>
+        {% if is_super_admin %}
         <p class="nav-label nav-section">Administration</p>
         <a class="nav-item {% if active_page == 'settings' %}active{% endif %}" href="/admin/settings/ai">
           <span class="nav-icon">10</span> Settings
         </a>
+        <a class="nav-item" href="/admin/settings/admins"><span class="nav-icon">11</span> Akun Admin</a>
+        <a class="nav-item" href="/admin/settings/communication"><span class="nav-icon">12</span> Communication</a>
+        {% endif %}
       </nav>
 
       <div class="sidebar-footer">
@@ -64,8 +68,8 @@
           <h1>{% block page_title %}Dashboard{% endblock %}</h1>
         </div>
         <div class="admin-account">
-          <span class="avatar">{{ admin_username[:1] | upper }}</span>
-          <span class="admin-name">{{ admin_username }}</span>
+          <span class="avatar">{{ current_admin_name[:1] | upper }}</span>
+          <span class="admin-name">{{ current_admin_name }}</span>
           <a href="/admin/logout">Keluar</a>
         </div>
       </header>

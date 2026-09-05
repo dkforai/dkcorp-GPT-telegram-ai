@@ -26,7 +26,7 @@
           {% endif %}
         </label>
         <label>Jabatan<input name="job_title" type="text" value="{{ values.job_title }}" minlength="2" maxlength="100" required></label>
-        <label>Role level<select name="role_level" required>{% for option in role_options %}<option value="{{ option.id }}" {% if values.role_level == option.id %}selected{% endif %}>{{ option.label }}</option>{% endfor %}</select><small>Gaya jawaban otomatis: GM strategis, Manager taktis, Staff operasional. Tidak ditentukan dari teks jabatan.</small></label>
+        <label>Role level<select name="role_level" required>{% for option in role_options %}<option value="{{ option.id }}" {% if values.role_level == option.id %}selected{% endif %}>{{ option.label }}</option>{% endfor %}</select><small>Menentukan gaya komunikasi bot. Atur detail global melalui Settings → Communication.</small></label>
       </div>
       <label class="full-field">Custom instruction membership <span class="optional">Opsional</span><textarea name="custom_instruction" maxlength="5000" rows="6">{{ values.custom_instruction }}</textarea></label>
       <label class="checkbox-row">

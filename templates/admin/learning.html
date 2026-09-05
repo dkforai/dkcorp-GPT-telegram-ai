@@ -2,9 +2,9 @@
 {% block page_title %}Modul Learning{% endblock %}
 {% block content %}
 <div class="page-lead"><div><h2>Materi buku</h2><p>/learning tersedia lintas perusahaan bagi semua user whitelist aktif. Satu materi aktif pada satu waktu.</p></div><a class="primary-button" href="/admin/learning/books/new">Tambah buku</a></div>
-<div class="panel"><h3>Pengaturan Learning</h3><p>{{ 'AI sudah dipublikasikan' if module.live_json else 'Pilih dan publish AI utama sebelum Learning dapat dipakai' }} · {{ 'Aktif' if module.active else 'Nonaktif' }}</p><a class="secondary-button" href="/admin/shared-modules/learning">Atur AI utama / cadangan</a></div>
+<div class="panel"><h3>Status Learning</h3><p>AI utama dan cadangan diatur pada setiap buku. User hanya dapat memakai buku yang aktif, published, berada dalam jadwal, dan AI-nya siap.</p></div>
 <p>Semua jadwal dalam WIB. Mulai termasuk, berakhir tidak termasuk. Berakhir tanggal 14 pukul 00.00 berarti terakhir tersedia tanggal 13.</p>
-<div class="panel table-panel"><table><thead><tr><th>Buku</th><th>Mulai live</th><th>Berakhir live</th><th>Status</th><th>Aksi</th></tr></thead><tbody>
-{% for book in books %}<tr><td>{{ book.title }}<small>Versi {{ book.revision }}</small></td><td>{{ book.start_label }}</td><td>{{ book.end_label }}</td><td>{{ book.state }}</td><td><a href="/admin/learning/books/{{ book.id }}">Kelola</a></td></tr>{% else %}<tr><td colspan="5">Belum ada buku. Unggah PDF dan isi pengalaman belajar melalui custom instruction.</td></tr>{% endfor %}
+<div class="panel table-panel"><table><thead><tr><th>Buku</th><th>AI utama</th><th>Mulai live</th><th>Berakhir live</th><th>Jadwal</th><th>Kesiapan</th><th>Aksi</th></tr></thead><tbody>
+{% for book in books %}<tr><td>{{ book.title }}<small>Versi {{ book.revision }}</small></td><td>{{ book.ai_label }}</td><td>{{ book.start_label }}</td><td>{{ book.end_label }}</td><td>{{ book.state }}</td><td><span class="status-badge {% if book.ready %}active{% endif %}">{{ book.readiness }}</span></td><td><a href="/admin/learning/books/{{ book.id }}">Kelola</a></td></tr>{% else %}<tr><td colspan="7">Belum ada buku. Unggah PDF dan isi pengalaman belajar melalui custom instruction.</td></tr>{% endfor %}
 </tbody></table></div>
 {% endblock %}
