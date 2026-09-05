@@ -104,7 +104,7 @@ Jawaban ke user
 | Authentication | Sudah | Whitelist Telegram ID |
 | User Context | Sudah | Identity global dan membership per perusahaan |
 | Import user Excel | Sudah | `.xls`/`.xlsx`, lima kolom, insert-only untuk ID baru, validasi atomik dan skip total ID lama melalui `/admin/users/import` |
-| Communication Profile | v1.23, 369 tes lokal lulus | Lima level komunikasi otomatis dari Role level; isi gaya dapat diubah super admin melalui Settings → Communication dan disimpan di SQLite |
+| Communication Profile | v1.23 deployed, 369 tes lokal lulus | Lima level komunikasi otomatis dari Role level; isi gaya dapat diubah super admin melalui Settings → Communication dan disimpan di SQLite |
 | Penyederhanaan form user/membership | v1.15 deployed, form produksi terverifikasi | Divisi/profile tidak lagi diinput, runtime berbasis Role level, import empat kolom dengan kompatibilitas lima kolom lama. Data legacy dipertahankan; 198 tes lokal lulus |
 | Custom Instruction | Sudah | Field global user dan field per membership |
 | Knowledge Loader | Sudah | Published document aktif dari SQLite; folder Markdown menjadi fallback sampai publish pertama |
@@ -126,11 +126,11 @@ Jawaban ke user
 | AI Module Playbook | Sudah | Registry per company, draft, preview, immutable publish, restore-to-draft, status, dan runtime prompt |
 | Authorization per knowledge | Sebagian | Sudah company-scoped; knowledge khusus module, division, dan clearance belum |
 | Response Validator | Sebagian | Pemisahan blok siap salin, normalisasi selektif, pemeriksaan jawaban kosong, batas panjang, dan split; belum ada policy classifier |
-| Admin Panel | v1.23, 369 tes lokal lulus | Multi-admin berbasis database: super admin dan operator; session tujuh hari; Log Admin singkat dan read-only |
+| Admin Panel | v1.23 deployed, 369 tes lokal lulus | Multi-admin berbasis database: super admin dan operator; session tujuh hari; Log Admin singkat dan read-only |
 | Modul bersama | v1.21 deployed bersama v1.22; HTTP admin terverifikasi | Registry global terpisah; independent tanpa konteks perusahaan atau company-context dengan membership aktif; published snapshot, kode global unik, private history |
-| Modul Learning | v1.23, 369 tes lokal lulus | AI utama/cadangan per buku, keterangan pembuka, custom instruction, persentase ekstraksi, readiness, PDF terindeks sekali, jadwal WIB, review sebelum publish |
+| Modul Learning | v1.23 deployed, 369 tes lokal lulus | AI utama/cadangan per buku, keterangan pembuka, custom instruction, persentase ekstraksi, readiness, PDF terindeks sekali, jadwal WIB, review sebelum publish |
 | Retrieval/RAG | Learning saja, indeks lokal disetujui DK | FTS5 + cuplikan tetangga + recent chat serta router lokal untuk pertanyaan umum buku; maksimum 16.000 karakter sumber, tanpa embedding |
-| Timeout, progress, dan retry | v1.23, 369 tes lokal lulus | Budget total AI 300 detik, primary maksimal 180 detik dan backup memakai sisa; pesan proses lokal setelah 60 detik; retry manual artikel tetap tersedia |
+| Timeout, progress, dan retry | v1.23 deployed, 369 tes lokal lulus | Budget total AI 300 detik, primary maksimal 180 detik dan backup memakai sisa; pesan proses lokal setelah 60 detik; retry manual artikel tetap tersedia |
 
 ### 4.1 Modul bersama dan Learning (v1.21)
 
@@ -1049,7 +1049,8 @@ Restart dengan mapping yang sama menjadi no-op hanya jika target lengkap, sumber
 - Menambah persentase halaman PDF terbaca dan penjelasan bahwa 100% karakter hasil ekstraksi disimpan, tanpa mengklaim tabel/gambar ikut terbaca.
 - Memperbaiki retrieval pertanyaan umum seperti fungsi/manfaat/apa yang dapat dipelajari dari buku memakai routing frasa dan sampel tersebar lokal tanpa panggilan AI tambahan.
 - Menaikkan budget total inferensi menjadi 300 detik: primary maksimal 180 detik dan backup memakai sisa. Setelah 60 detik bot mengirim satu pesan proses acak dari phrase bank lokal tanpa token/history.
-- Seluruh 369 tes lulus lokal; satu warning deprecation Starlette/httpx existing. Deployment produksi belum termasuk dalam catatan ini.
+- Seluruh 369 tes lulus lokal; satu warning deprecation Starlette/httpx existing.
+- Commit implementasi `6939beb` berhasil dideploy Railway pada deployment `870630a0-6de0-4e09-a1a2-6f1664443cee`. Dashboard menunjukkan **Deployment successful**; `/health` merespons HTTP 200 `{"status":"ok"}` dan `/admin` mengarahkan user anonim ke `/admin/login` dengan HTTP 200. Tidak ada data bisnis yang dimutasi saat verifikasi.
 
 ### 1.22 — 3 September 2026
 
