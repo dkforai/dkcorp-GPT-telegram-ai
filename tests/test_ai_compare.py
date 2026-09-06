@@ -276,6 +276,65 @@ def test_ai_compare_renders_judge_recommendation(client, db, monkeypatch):
     assert "Cost penilai Rp 58" in response.text
 
 
+def test_ai_compare_custom_prompt_ignores_module_context(client, db, monkeypatch):
+    first = _ai(db, "GPT", "openai", "gpt-5.1")
+    second = _ai(db, "DeepSeek", "deepseek", "deepseek-chat")
+    _module(db, first)
+
+    async def fake_run(resolver, profiles, system_prompt, user_prompt):
+        assert "Jawab singkat." not in system_prompt
+        assert "Tidak ada konteks module" in system_prompt
+        assert user_prompt == "Bandingkan dua ide ini."
+        return [
+            {
+                "label": profiles[0].label,
+                "model": profiles[0].model,
+                "status": "Sukses",
+                "duration_seconds": 1.0,
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "usage_is_estimated": False,
+                "cost_usd": 0.001,
+                "cost_idr": 18,
+                "pricing_note": "Estimasi harga publik per 1M token",
+                "content": "Jawaban custom 1",
+                "error": "",
+            },
+            {
+                "label": profiles[1].label,
+                "model": profiles[1].model,
+                "status": "Sukses",
+                "duration_seconds": 1.1,
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "usage_is_estimated": False,
+                "cost_usd": 0.001,
+                "cost_idr": 18,
+                "pricing_note": "Estimasi harga publik per 1M token",
+                "content": "Jawaban custom 2",
+                "error": "",
+            },
+        ]
+
+    monkeypatch.setattr(admin_module, "run_ai_compare", fake_run)
+    csrf = login(client)
+    response = client.post(
+        "/admin/ai-compare",
+        data={
+            "csrf_token": csrf,
+            "mode": "custom",
+            "prompt": "Bandingkan dua ide ini.",
+            "use_instruction": "1",
+            "use_knowledge": "1",
+            "ai_selection_1": first,
+            "ai_selection_2": second,
+        },
+    )
+    assert response.status_code == 200
+    assert "Prompt sendiri" in response.text
+    assert "Jawaban custom 1" in response.text
+
+
 def test_ai_compare_can_use_shared_module(client, db, monkeypatch):
     first = _ai(db, "GPT", "openai", "gpt-5.1")
     second = _ai(db, "DeepSeek", "deepseek", "deepseek-chat")

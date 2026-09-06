@@ -107,7 +107,7 @@ Jawaban ke user
 | Authentication | Sudah | Whitelist Telegram ID |
 | User Context | Sudah | Identity global dan membership per perusahaan |
 | Import user Excel | Sudah | `.xls`/`.xlsx`, lima kolom, insert-only untuk ID baru, validasi atomik dan skip total ID lama melalui `/admin/users/import` |
-| Communication Profile | v1.23 deployed, 377 tes lokal lulus | Lima level komunikasi otomatis dari Role level; isi gaya dapat diubah super admin melalui Settings → Communication dan disimpan di SQLite |
+| Communication Profile | v1.23 deployed, 378 tes lokal lulus | Lima level komunikasi otomatis dari Role level; isi gaya dapat diubah super admin melalui Settings → Communication dan disimpan di SQLite |
 | Penyederhanaan form user/membership | v1.15 deployed, form produksi terverifikasi | Divisi/profile tidak lagi diinput, runtime berbasis Role level, import empat kolom dengan kompatibilitas lima kolom lama. Data legacy dipertahankan; 198 tes lokal lulus |
 | Custom Instruction | Sudah | Field global user dan field per membership |
 | Knowledge Loader | Sudah | Published document aktif dari SQLite; folder Markdown menjadi fallback sampai publish pertama |
@@ -129,18 +129,18 @@ Jawaban ke user
 | AI Module Playbook | Sudah | Registry per company, draft, preview, immutable publish, restore-to-draft, status, dan runtime prompt |
 | Authorization per knowledge | Sebagian | Sudah company-scoped; knowledge khusus module, division, dan clearance belum |
 | Response Validator | Sebagian | Pemisahan blok siap salin, normalisasi selektif, pemeriksaan jawaban kosong, batas panjang, dan split; belum ada policy classifier |
-| Admin Panel | v1.23 deployed, 377 tes lokal lulus | Multi-admin berbasis database: super admin dan operator; session tujuh hari; Log Admin singkat dan read-only |
+| Admin Panel | v1.23 deployed, 378 tes lokal lulus | Multi-admin berbasis database: super admin dan operator; session tujuh hari; Log Admin singkat dan read-only |
 | Modul bersama | v1.21 deployed bersama v1.22; HTTP admin terverifikasi | Registry global terpisah; independent tanpa konteks perusahaan atau company-context dengan membership aktif; published snapshot, kode global unik, private history |
-| Modul Learning | v1.23 deployed, 377 tes lokal lulus | AI utama/cadangan per buku, keterangan pembuka, custom instruction, persentase ekstraksi, readiness, PDF terindeks sekali, jadwal WIB, review sebelum publish |
-| Retrieval/RAG | v1.25 deployed; 377 tes lokal dan smoke produksi lulus | Hybrid FTS5 + embedding multilingual lokal + cuplikan tetangga + struktur buku dan recent chat; hanya hasil terpilih dikirim ke AI |
-| Timeout, progress, dan retry | v1.23 deployed, 377 tes lokal lulus | Budget total AI 300 detik, primary maksimal 180 detik dan backup memakai sisa; pesan proses lokal setelah 60 detik; retry manual artikel tetap tersedia |
-| AI Compare | v1.26 lokal lulus test | Admin memilih satu module perusahaan atau modul bersama, mode Dari module atau Prompt custom, 2-4 model AI, lalu melihat status, durasi, token, estimasi cost Rupiah, preview, jawaban penuh berdampingan, dan rekomendasi opsional dari AI penilai |
+| Modul Learning | v1.23 deployed, 378 tes lokal lulus | AI utama/cadangan per buku, keterangan pembuka, custom instruction, persentase ekstraksi, readiness, PDF terindeks sekali, jadwal WIB, review sebelum publish |
+| Retrieval/RAG | v1.25 deployed; 378 tes lokal dan smoke produksi lulus | Hybrid FTS5 + embedding multilingual lokal + cuplikan tetangga + struktur buku dan recent chat; hanya hasil terpilih dikirim ke AI |
+| Timeout, progress, dan retry | v1.23 deployed, 378 tes lokal lulus | Budget total AI 300 detik, primary maksimal 180 detik dan backup memakai sisa; pesan proses lokal setelah 60 detik; retry manual artikel tetap tersedia |
+| AI Compare | v1.26 lokal lulus test | Admin memilih mode Pilih modul atau Prompt sendiri, 2-4 model AI, lalu melihat status, durasi, token, estimasi cost Rupiah, preview, jawaban penuh berdampingan, dan rekomendasi opsional dari AI penilai |
 
 ### 4.1 AI Compare (v1.26)
 
-AI Compare adalah halaman admin `/admin/ai-compare` untuk menguji kualitas beberapa model terhadap satu prompt dan satu konteks module perusahaan atau modul bersama. Tujuannya membantu admin memilih AI utama/cadangan berdasarkan jawaban nyata, bukan tebakan dari nama model.
+AI Compare adalah halaman admin `/admin/ai-compare` untuk menguji kualitas beberapa model terhadap satu prompt. Tujuannya membantu admin memilih AI utama/cadangan berdasarkan jawaban nyata, bukan tebakan dari nama model.
 
-Mode **Dari module** memakai published playbook module. Untuk module perusahaan, company instruction dan company knowledge ikut dipakai seperti runtime Telegram, tetapi tanpa history chat. Untuk modul bersama independen, konteks perusahaan tidak dipakai. Mode **Prompt custom** tetap wajib memilih module referensi, lalu admin dapat mematikan instruction/playbook atau knowledge untuk mengetes sebagian konteks. Prompt test dibatasi 10.000 karakter. Minimal dua dan maksimal empat pasangan provider+model dapat dipilih; pilihan duplikat ditolak.
+Mode **Pilih modul** memakai published playbook module perusahaan atau modul bersama. Untuk module perusahaan, company instruction dan company knowledge ikut dipakai seperti runtime Telegram, tetapi tanpa history chat. Untuk modul bersama independen, konteks perusahaan tidak dipakai. Mode **Prompt sendiri** tidak memakai module, company instruction, company knowledge, maupun history; isi textbox menjadi satu-satunya input user yang diuji. Karena itu, pilihan module serta checkbox instruction/knowledge diabaikan saat mode Prompt sendiri. Prompt test dibatasi 10.000 karakter. Minimal dua dan maksimal empat pasangan provider+model dapat dipilih; pilihan duplikat ditolak.
 
 Eksekusi memakai pola hybrid paralel: semua model terpilih dipanggil bersamaan dengan budget maksimal 300 detik per model. Hasil parsial tetap ditampilkan bila salah satu AI gagal atau timeout. Tidak ada failover antar model compare karena tujuan fitur adalah perbandingan langsung, bukan menyembunyikan kegagalan. Setelah hasil pembanding selesai, admin dapat memilih satu AI penilai opsional. AI penilai membaca ringkasan hasil, durasi, token, dan biaya, lalu memberi rekomendasi dua paragraf tentang model terbaik berdasarkan biaya terkecil dan hasil maksimal. Compare tidak menulis history Telegram, tidak mengubah active module user, tidak mengubah pilihan AI module, dan tidak menyimpan jawaban permanen. Log Admin hanya mencatat actor, module, mode, jumlah model, dan apakah AI penilai dipakai.
 
@@ -148,7 +148,7 @@ Learning tidak dimasukkan ke AI Compare generik v1.26 karena kualitas jawaban bu
 
 Tabel hasil menggunakan model sebagai kolom dan metrik sebagai baris: status, durasi, token, cost, dan hasil. Jawaban panjang ditampilkan penuh di panel read-only di bawah tabel. Token memakai usage resmi provider bila tersedia; jika provider tidak mengembalikan usage, aplikasi memakai estimasi lokal dari panjang teks dan memberi label estimasi. Cost dihitung dengan tabel harga internal per keluarga model dan kurs tetap `1 USD = Rp 17.500`; angka ini estimasi aplikasi, bukan invoice resmi provider. Harga provider berubah dari waktu ke waktu, sehingga billing final tetap harus diperiksa di dashboard provider.
 
-Penghematan token: compare default tanpa history chat, konteks mengikuti module saja, mode custom dapat mematikan knowledge saat admin hanya ingin mengetes gaya jawaban, dan AI penilai hanya membaca ringkasan hasil yang dipotong aman, bukan seluruh konteks awal. Risiko: hasil tanpa history tidak selalu identik dengan percakapan user panjang; rekomendasi AI penilai bukan audit mutlak; cost estimasi bisa berbeda dari tagihan provider karena tokenisasi, cached input, reasoning token, diskon, dan harga aktual akun.
+Penghematan token: compare default tanpa history chat, mode Prompt sendiri tidak memuat module/instruction/knowledge, dan AI penilai hanya membaca ringkasan hasil yang dipotong aman, bukan seluruh konteks awal. Risiko: mode Prompt sendiri tidak mewakili perilaku module Telegram asli; rekomendasi AI penilai bukan audit mutlak; cost estimasi bisa berbeda dari tagihan provider karena tokenisasi, cached input, reasoning token, diskon, dan harga aktual akun.
 
 ### 4.2 Modul bersama dan Learning (v1.21)
 
@@ -1070,12 +1070,12 @@ Restart dengan mapping yang sama menjadi no-op hanya jika target lengkap, sumber
 
 ### 1.26 — 6 September 2026
 
-- Menambahkan halaman admin `/admin/ai-compare` untuk membandingkan 2-4 model AI pada satu module perusahaan atau modul bersama dengan mode Dari module atau Prompt custom.
+- Menambahkan halaman admin `/admin/ai-compare` untuk membandingkan 2-4 model AI dengan mode Pilih modul atau Prompt sendiri.
 - Hasil compare ditampilkan berdampingan sebagai status, durasi, token, estimasi cost USD/Rupiah dengan kurs Rp 17.500, preview, dan jawaban penuh.
 - Menambahkan AI penilai opsional yang memberi rekomendasi 2 paragraf berdasarkan kualitas hasil, durasi, token, dan biaya.
 - Compare berjalan paralel dengan hasil parsial, tidak memakai history chat, tidak melakukan failover antar model, tidak mengubah pilihan AI module, dan tidak menyimpan jawaban permanen.
 - Menambahkan pengukuran usage provider bila tersedia, estimasi token lokal bila usage tidak tersedia, tabel estimasi harga model, audit metadata ringkas, serta regresi lokal untuk form, modul bersama, hasil compare, dan rekomendasi AI penilai.
-- Seluruh 377 tes lulus lokal; satu warning deprecation Starlette/httpx existing.
+- Seluruh 378 tes lulus lokal; satu warning deprecation Starlette/httpx existing.
 
 ### 1.25.1 — 6 September 2026
 

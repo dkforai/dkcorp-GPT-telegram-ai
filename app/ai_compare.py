@@ -84,6 +84,15 @@ def build_compare_prompt(
     use_knowledge: bool,
     communication_profile: CommunicationProfile | None,
 ) -> tuple[AIModule, str, str]:
+    prompt = " ".join(user_prompt.split())
+    if not prompt:
+        raise ValueError("Pertanyaan test wajib diisi")
+    if len(prompt) > MAX_COMPARE_PROMPT_CHARS:
+        raise ValueError(f"Pertanyaan test maksimal {MAX_COMPARE_PROMPT_CHARS:,} karakter")
+    if mode == "custom":
+        return _build_custom_compare_prompt(prompt)
+    if mode != "module":
+        raise ValueError("Mode test tidak valid")
     scope, _, identifier = module_value.partition("|")
     if not scope or not identifier:
         raise ValueError("Pilih module yang akan diuji")
@@ -94,19 +103,12 @@ def build_compare_prompt(
     module = database.get_module_admin(company_id, module_id)
     if module is None or not module.active:
         raise ValueError("Module tidak ditemukan atau sedang nonaktif")
-    prompt = " ".join(user_prompt.split())
-    if not prompt:
-        raise ValueError("Pertanyaan test wajib diisi")
-    if len(prompt) > MAX_COMPARE_PROMPT_CHARS:
-        raise ValueError(f"Pertanyaan test maksimal {MAX_COMPARE_PROMPT_CHARS:,} karakter")
     company = database.get_company(company_id)
     if company is None:
         raise ValueError("Company module sedang nonaktif")
     playbook = database.get_published_module_playbook(company_id, module_id) or ""
     if mode == "module" and not playbook:
         raise ValueError("Module belum punya playbook published")
-    if mode not in {"module", "custom"}:
-        raise ValueError("Mode test tidak valid")
     content = _company_content(database, company, project_root, knowledge_max_chars, use_instruction, use_knowledge)
     system = build_system_prompt(
         _compare_user(),
@@ -117,11 +119,28 @@ def build_compare_prompt(
         module,
         playbook if use_instruction else "",
     )
-    if mode == "custom":
-        system += (
-            "\n\nMode AI Compare: admin sedang menguji prompt custom. "
-            "Jawab prompt user secara langsung dengan konteks yang diaktifkan pada form."
-        )
+    return module, system, prompt
+
+
+def _build_custom_compare_prompt(prompt: str) -> tuple[AIModule, str, str]:
+    module = AIModule(
+        company_id="",
+        company_name="",
+        module_id="custom-prompt",
+        name="Prompt sendiri",
+        description="AI Compare tanpa module, instruction, knowledge, atau history.",
+        ai_runtime_profile_id="",
+        active=True,
+        backup_ai_runtime_profile_id="",
+        ai_model="",
+        backup_ai_model="",
+        short_code="",
+    )
+    system = "\n\n".join([
+        "Anda adalah asisten AI yang sedang diuji oleh admin. Jawab prompt user secara langsung, akurat, dan ringkas dalam bahasa pengguna.",
+        "Tidak ada konteks module, company instruction, company knowledge, atau history chat yang boleh diasumsikan. Jika data belum cukup, sebutkan data yang kurang.",
+        TELEGRAM_OUTPUT_CONTRACT,
+    ])
     return module, system, prompt
 
 

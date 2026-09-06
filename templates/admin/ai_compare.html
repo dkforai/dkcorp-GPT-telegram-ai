@@ -18,14 +18,14 @@
     {% else %}
       <div class="form-grid">
         <label>Mode test
-          <select name="mode" required>
-            <option value="module" {% if values.mode == 'module' %}selected{% endif %}>Dari module</option>
-            <option value="custom" {% if values.mode == 'custom' %}selected{% endif %}>Prompt custom</option>
+          <select name="mode" required data-compare-mode>
+            <option value="module" {% if values.mode == 'module' %}selected{% endif %}>Pilih modul</option>
+            <option value="custom" {% if values.mode == 'custom' %}selected{% endif %}>Prompt sendiri</option>
           </select>
-          <small>Dari module memakai playbook dan knowledge. Prompt custom tetap memakai module sebagai referensi.</small>
+          <small>Pilih salah satu: test memakai konteks modul, atau test prompt kosong tanpa modul.</small>
         </label>
-        <label>Module
-          <select name="module_value" required>
+        <label data-module-field>Module
+          <select name="module_value">
             <option value="" disabled {% if not values.module_value %}selected{% endif %}>Pilih module</option>
             {% for module in modules %}
               <option value="{{ module.value }}" {% if values.module_value == module.value %}selected{% endif %}>{{ module.label }}</option>
@@ -35,14 +35,14 @@
         </label>
       </div>
 
-      <div class="compare-options">
-        <label class="checkbox-row compact"><input type="checkbox" name="use_instruction" value="1" {% if values.use_instruction == '1' %}checked{% endif %}><span><strong>Gunakan instruction dan playbook module</strong><small>Aktif otomatis saat mode Dari module.</small></span></label>
+      <div class="compare-options" data-module-options>
+        <label class="checkbox-row compact"><input type="checkbox" name="use_instruction" value="1" {% if values.use_instruction == '1' %}checked{% endif %}><span><strong>Gunakan instruction dan playbook module</strong><small>Aktif otomatis saat mode Pilih modul.</small></span></label>
         <label class="checkbox-row compact"><input type="checkbox" name="use_knowledge" value="1" {% if values.use_knowledge == '1' %}checked{% endif %}><span><strong>Gunakan knowledge company</strong><small>Matikan untuk test gaya jawaban tanpa data perusahaan.</small></span></label>
       </div>
 
       <label class="full-field">Pertanyaan test
         <textarea name="prompt" maxlength="10000" rows="5" required placeholder="Contoh: Buatkan 3 ide threads untuk produk baru ini...">{{ values.prompt }}</textarea>
-        <small>Maksimal 10.000 karakter. History chat tidak ikut dipakai agar hasil antar AI adil dan biaya lebih terkendali.</small>
+        <small>Maksimal 10.000 karakter. History chat tidak ikut dipakai. Jika memilih Prompt sendiri, module, instruction, dan knowledge perusahaan diabaikan.</small>
       </label>
 
       <div class="form-section-title separated"><h3>AI pembanding</h3><p>Pilih minimal 2 dan maksimal 4 model AI.</p></div>
@@ -76,7 +76,7 @@
   </form>
 
   {% if results %}
-    <div class="subsection-lead"><h2>Hasil perbandingan</h2><p>{% if tested_module %}{{ tested_module.company_name }} · {{ tested_module.name }}{% endif %}</p></div>
+    <div class="subsection-lead"><h2>Hasil perbandingan</h2><p>{% if tested_module %}{% if tested_module.company_name %}{{ tested_module.company_name }} · {% endif %}{{ tested_module.name }}{% endif %}</p></div>
     <div class="panel table-panel compare-panel">
       <div class="table-wrap"><table class="compare-table">
         <thead>
@@ -129,4 +129,22 @@
       {% endfor %}
     </div>
   {% endif %}
+  <script>
+    (() => {
+      const mode = document.querySelector("[data-compare-mode]");
+      const moduleField = document.querySelector("[data-module-field]");
+      const moduleOptions = document.querySelector("[data-module-options]");
+      const moduleSelect = moduleField ? moduleField.querySelector("select") : null;
+      const sync = () => {
+        const custom = mode && mode.value === "custom";
+        if (moduleField) moduleField.hidden = custom;
+        if (moduleOptions) moduleOptions.hidden = custom;
+        if (moduleSelect) moduleSelect.required = !custom;
+      };
+      if (mode) {
+        mode.addEventListener("change", sync);
+        sync();
+      }
+    })();
+  </script>
 {% endblock %}
