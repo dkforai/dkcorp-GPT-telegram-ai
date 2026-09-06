@@ -30,6 +30,7 @@ from app.ai_compare import (
     compare_profile_from_selection,
     compare_totals,
     run_ai_compare,
+    run_ai_compare_judge,
 )
 from app.database import AIModule, AIRuntimeProfile, AdminUser, Database, Membership, User
 from app.document_ingestion import MAX_UPLOAD_BYTES, extract_uploaded_document
@@ -1333,6 +1334,11 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 compare_profile_from_selection(database, selection)
                 for selection in selected_ai
             ]
+            judge_profile = (
+                compare_profile_from_selection(database, str(values["judge_selection"]))
+                if values["judge_selection"]
+                else None
+            )
             module, system_prompt, user_prompt = build_compare_prompt(
                 database,
                 settings.project_root,
@@ -1351,6 +1357,15 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 system_prompt,
                 user_prompt,
             )
+            judge_result = None
+            if judge_profile is not None:
+                judge_result = await run_ai_compare_judge(
+                    ModuleProviderResolver(),
+                    judge_profile,
+                    module_name=module.name,
+                    user_prompt=user_prompt,
+                    results=results,
+                )
             database.write_admin_event(
                 _admin_actor(request, settings),
                 "ai_compare.ran",
@@ -1359,6 +1374,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 {
                     "module": module.module_id,
                     "model_count": len(profiles),
+                    "judge": bool(judge_profile),
                     "mode": values["mode"],
                 },
             )
@@ -1372,6 +1388,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                     values=values,
                     results=results,
                     totals=compare_totals(results),
+                    judge_result=judge_result,
                     tested_module=module,
                     notice="AI Compare selesai. Hasil tidak disimpan permanen.",
                 ),
@@ -2440,6 +2457,7 @@ def _ai_compare_form_values(form) -> dict[str, object]:
             str(form.get(f"ai_selection_{index}", "")).strip()
             for index in range(1, 5)
         ],
+        "judge_selection": str(form.get("judge_selection", "")).strip(),
     }
 
 
@@ -2464,6 +2482,7 @@ def _ai_compare_context(
     values: dict[str, object] | None = None,
     results: list[dict[str, object]] | None = None,
     totals: dict[str, object] | None = None,
+    judge_result: dict[str, object] | None = None,
     tested_module: AIModule | None = None,
     notice: str = "",
     error: str = "",
@@ -2475,6 +2494,7 @@ def _ai_compare_context(
         "use_instruction": "1",
         "use_knowledge": "1",
         "ai_selections": ["", "", "", ""],
+        "judge_selection": "",
     }
     if values:
         defaults.update(values)
@@ -2487,6 +2507,7 @@ def _ai_compare_context(
         "values": defaults,
         "results": results or [],
         "totals": totals or {},
+        "judge_result": judge_result,
         "tested_module": tested_module,
         "notice": notice or request.query_params.get("notice", ""),
         "error": error or request.query_params.get("error", ""),

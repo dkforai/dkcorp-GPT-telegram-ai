@@ -23,6 +23,7 @@ from app.telegram_renderer import TELEGRAM_OUTPUT_CONTRACT
 MAX_COMPARE_AIS = 4
 MIN_COMPARE_AIS = 2
 MAX_COMPARE_PROMPT_CHARS = 10_000
+MAX_JUDGE_RESULT_CHARS = 2_500
 COMPARE_TIMEOUT_SECONDS = 300.0
 
 
@@ -175,6 +176,24 @@ async def run_ai_compare(
     return await asyncio.gather(*tasks)
 
 
+async def run_ai_compare_judge(
+    resolver: ModuleProviderResolver,
+    profile: AIRuntimeProfile,
+    *,
+    module_name: str,
+    user_prompt: str,
+    results: list[dict[str, object]],
+) -> dict[str, object]:
+    judge_prompt = _build_judge_prompt(module_name, user_prompt, results)
+    system_prompt = (
+        "Anda adalah evaluator netral untuk membandingkan hasil beberapa model AI. "
+        "Nilai kualitas jawaban, relevansi terhadap prompt, kejelasan, risiko halusinasi, durasi, token, dan biaya. "
+        "Berikan rekomendasi terbaik dengan mempertimbangkan biaya terkecil dan hasil maksimal. "
+        "Jawab tepat 2 paragraf dalam bahasa Indonesia. Jangan memakai bullet, tabel, atau heading."
+    )
+    return await _run_one_compare(resolver, profile, system_prompt, judge_prompt)
+
+
 async def _run_one_compare(
     resolver: ModuleProviderResolver,
     profile: AIRuntimeProfile,
@@ -218,6 +237,37 @@ def compare_totals(results: list[dict[str, object]]) -> dict[str, object]:
         "known_cost_idr": sum(known_costs),
         "has_unknown_cost": len(known_costs) != len(results),
     }
+
+
+def _build_judge_prompt(module_name: str, user_prompt: str, results: list[dict[str, object]]) -> str:
+    lines = [
+        f"Module yang diuji: {module_name}",
+        f"Prompt user: {user_prompt}",
+        "",
+        "Hasil model:",
+    ]
+    for index, row in enumerate(results, start=1):
+        cost = f"Rp {row['cost_idr']}" if isinstance(row.get("cost_idr"), int) else "cost tidak tersedia"
+        token = (
+            f"input {row['input_tokens']}, output {row['output_tokens']}"
+            if row.get("input_tokens") is not None
+            else "token tidak tersedia"
+        )
+        content = str(row.get("content") or "Tidak ada jawaban")
+        if len(content) > MAX_JUDGE_RESULT_CHARS:
+            content = content[:MAX_JUDGE_RESULT_CHARS].rstrip() + "\n...[dipotong untuk hemat token]"
+        lines.extend([
+            f"Model {index}: {row.get('label')} / {row.get('model')}",
+            f"Status: {row.get('status')}",
+            f"Durasi: {float(row.get('duration_seconds') or 0):.1f} detik",
+            f"Token: {token}",
+            f"Cost: {cost}",
+            "Jawaban:",
+            content,
+            "",
+        ])
+    lines.append("Tentukan model terbaik untuk dipakai admin, dengan trade-off biaya dan kualitas. Jawab tepat 2 paragraf.")
+    return "\n".join(lines)
 
 
 def _failed_result(profile: AIRuntimeProfile, started: float, error_type: str) -> dict[str, object]:

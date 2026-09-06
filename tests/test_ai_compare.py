@@ -197,6 +197,85 @@ def test_ai_compare_renders_parallel_results(client, db, monkeypatch):
     assert "Rp 57" in response.text
 
 
+def test_ai_compare_renders_judge_recommendation(client, db, monkeypatch):
+    first = _ai(db, "GPT", "openai", "gpt-5.1")
+    second = _ai(db, "DeepSeek", "deepseek", "deepseek-chat")
+    judge = _ai(db, "Claude", "anthropic", "claude-sonnet-4-5")
+    module = _module(db, first)
+
+    async def fake_run(resolver, profiles, system_prompt, user_prompt):
+        return [
+            {
+                "label": profiles[0].label,
+                "model": profiles[0].model,
+                "status": "Sukses",
+                "duration_seconds": 1.2,
+                "input_tokens": 1000,
+                "output_tokens": 200,
+                "usage_is_estimated": False,
+                "cost_usd": 0.00325,
+                "cost_idr": 57,
+                "pricing_note": "Estimasi harga publik per 1M token",
+                "content": "Jawaban GPT lengkap",
+                "error": "",
+            },
+            {
+                "label": profiles[1].label,
+                "model": profiles[1].model,
+                "status": "Sukses",
+                "duration_seconds": 2.0,
+                "input_tokens": 800,
+                "output_tokens": 180,
+                "usage_is_estimated": False,
+                "cost_usd": 0.0005,
+                "cost_idr": 9,
+                "pricing_note": "Estimasi harga publik per 1M token",
+                "content": "Jawaban DeepSeek lengkap",
+                "error": "",
+            },
+        ]
+
+    async def fake_judge(resolver, profile, *, module_name, user_prompt, results):
+        assert profile.label == "Claude"
+        assert module_name == "Threads Generator"
+        assert user_prompt == "Buat 1 contoh."
+        assert len(results) == 2
+        return {
+            "label": profile.label,
+            "model": profile.model,
+            "status": "Sukses",
+            "duration_seconds": 3.0,
+            "input_tokens": 500,
+            "output_tokens": 120,
+            "usage_is_estimated": False,
+            "cost_usd": 0.0033,
+            "cost_idr": 58,
+            "pricing_note": "Estimasi harga publik per 1M token",
+            "content": "Rekomendasi terbaik adalah DeepSeek karena biaya lebih kecil dan kualitas cukup.",
+            "error": "",
+        }
+
+    monkeypatch.setattr(admin_module, "run_ai_compare", fake_run)
+    monkeypatch.setattr(admin_module, "run_ai_compare_judge", fake_judge)
+    csrf = login(client)
+    response = client.post(
+        "/admin/ai-compare",
+        data={
+            "csrf_token": csrf,
+            "mode": "module",
+            "module_value": f"{module.company_id}|{module.module_id}",
+            "prompt": "Buat 1 contoh.",
+            "ai_selection_1": first,
+            "ai_selection_2": second,
+            "judge_selection": judge,
+        },
+    )
+    assert response.status_code == 200
+    assert "Rekomendasi AI penilai" in response.text
+    assert "Rekomendasi terbaik adalah DeepSeek" in response.text
+    assert "Cost penilai Rp 58" in response.text
+
+
 def test_ai_compare_can_use_shared_module(client, db, monkeypatch):
     first = _ai(db, "GPT", "openai", "gpt-5.1")
     second = _ai(db, "DeepSeek", "deepseek", "deepseek-chat")

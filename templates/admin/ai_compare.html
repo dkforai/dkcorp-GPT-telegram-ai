@@ -59,6 +59,17 @@
         {% endfor %}
       </div>
 
+      <div class="form-section-title separated"><h3>AI penilai</h3><p>Opsional. AI ini membaca hasil di atas lalu merekomendasikan pilihan terbaik dalam 2 paragraf.</p></div>
+      <label>Model AI penilai <span class="optional">Opsional</span>
+        <select name="judge_selection">
+          <option value="" {% if not values.judge_selection %}selected{% endif %}>Tidak memakai AI penilai</option>
+          {% for option in runtime_profiles %}
+            <option value="{{ option.value }}" {% if values.judge_selection == option.value %}selected{% endif %} {% if option.disabled %}disabled{% endif %}>{{ option.label }} · {{ option.model }} · {{ option.profile_id }}{% if option.reason %} · {{ option.reason }}{% endif %}</option>
+          {% endfor %}
+        </select>
+        <small>Untuk hemat token, AI penilai hanya membaca ringkasan hasil compare, bukan seluruh konteks awal.</small>
+      </label>
+
       <p class="muted-text">Cost memakai kurs tetap 1 USD = Rp 17.500. Jika provider tidak mengirim token resmi, token dan cost diberi label estimasi.</p>
     {% endif %}
     <div class="form-actions"><button class="primary-button" type="submit" {% if not modules or not runtime_profiles %}disabled{% endif %}>Jalankan perbandingan</button></div>
@@ -86,6 +97,24 @@
       </table></div>
       <div class="compare-total">Total cost yang bisa dihitung: <strong>Rp {{ totals.known_cost_idr }}</strong>{% if totals.has_unknown_cost %}<span> · Ada model yang cost-nya belum bisa dihitung.</span>{% endif %}</div>
     </div>
+
+    {% if judge_result %}
+      <section class="panel compare-judge">
+        <div class="section-heading-row">
+          <div>
+            <h3>Rekomendasi AI penilai</h3>
+            <p>{{ judge_result.label }} · {{ judge_result.model }}</p>
+          </div>
+          <span class="status-badge {% if judge_result.status == 'Sukses' %}active{% else %}danger{% endif %}">{{ judge_result.status }}</span>
+        </div>
+        {% if judge_result.content %}
+          <div class="compare-judge-content">{{ judge_result.content }}</div>
+          <p class="muted-text">Durasi {{ "%.1f"|format(judge_result.duration_seconds) }} detik · {% if judge_result.input_tokens is not none %}Token input {{ judge_result.input_tokens }}, output {{ judge_result.output_tokens }}{% if judge_result.usage_is_estimated %} estimasi{% endif %}{% else %}Token tidak tersedia{% endif %} · {% if judge_result.cost_idr is not none %}Cost penilai Rp {{ judge_result.cost_idr }}{% else %}Cost penilai tidak tersedia{% endif %}</p>
+        {% else %}
+          <p class="muted-text">AI penilai belum memberi rekomendasi. {% if judge_result.error %}Error: {{ judge_result.error }}{% endif %}</p>
+        {% endif %}
+      </section>
+    {% endif %}
 
     <div class="compare-answer-grid">
       {% for result in results %}
