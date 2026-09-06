@@ -6,6 +6,7 @@ from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
 from app import admin as admin_module
+from app.ai_compare import _looks_like_prompt_echo
 from app.config import Settings
 from app.credentials import ENCRYPTION_KEY_ENV
 from app.database import Database
@@ -333,6 +334,68 @@ def test_ai_compare_custom_prompt_ignores_module_context(client, db, monkeypatch
     assert response.status_code == 200
     assert "Prompt sendiri" in response.text
     assert "Jawaban custom 1" in response.text
+
+
+def test_ai_compare_result_uses_output_block_not_textarea(client, db, monkeypatch):
+    first = _ai(db, "GPT", "openai", "gpt-5.1")
+    second = _ai(db, "DeepSeek", "deepseek", "deepseek-chat")
+    module = _module(db, first)
+
+    async def fake_run(resolver, profiles, system_prompt, user_prompt):
+        return [
+            {
+                "label": profiles[0].label,
+                "model": profiles[0].model,
+                "status": "Sukses",
+                "duration_seconds": 1.0,
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "usage_is_estimated": False,
+                "cost_usd": 0.001,
+                "cost_idr": 18,
+                "pricing_note": "Estimasi harga publik per 1M token",
+                "content": "Ini hasil generate AI pertama, bukan prompt.",
+                "error": "",
+            },
+            {
+                "label": profiles[1].label,
+                "model": profiles[1].model,
+                "status": "Sukses",
+                "duration_seconds": 1.1,
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "usage_is_estimated": False,
+                "cost_usd": 0.001,
+                "cost_idr": 18,
+                "pricing_note": "Estimasi harga publik per 1M token",
+                "content": "Ini hasil generate AI kedua, bukan prompt.",
+                "error": "",
+            },
+        ]
+
+    monkeypatch.setattr(admin_module, "run_ai_compare", fake_run)
+    csrf = login(client)
+    response = client.post(
+        "/admin/ai-compare",
+        data={
+            "csrf_token": csrf,
+            "mode": "module",
+            "module_value": f"{module.company_id}|{module.module_id}",
+            "prompt": "Prompt yang tidak boleh muncul sebagai jawaban penuh.",
+            "ai_selection_1": first,
+            "ai_selection_2": second,
+        },
+    )
+    assert response.status_code == 200
+    assert '<pre class="compare-answer-output">Ini hasil generate AI pertama' in response.text
+    assert '<textarea readonly>' not in response.text
+
+
+def test_prompt_echo_detection():
+    prompt = "Tolong buatkan caption panjang untuk promosi produk baru Malang Strudel hari ini."
+    assert _looks_like_prompt_echo(prompt, prompt)
+    assert _looks_like_prompt_echo(prompt + "\n", prompt)
+    assert not _looks_like_prompt_echo("Caption: Hari ini waktunya coba Malang Strudel.", prompt)
 
 
 def test_ai_compare_can_use_shared_module(client, db, monkeypatch):

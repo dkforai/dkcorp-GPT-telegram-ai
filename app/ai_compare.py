@@ -224,6 +224,8 @@ async def _run_one_compare(
         result: AICompletion = await resolver.generate_once_with_usage(
             profile, system_prompt, [], user_prompt, timeout_seconds=COMPARE_TIMEOUT_SECONDS
         )
+        if _looks_like_prompt_echo(result.content, user_prompt):
+            return _failed_result(profile, started, "PromptEcho")
         price = estimate_completion_cost(
             profile.provider, profile.model, result.input_tokens, result.output_tokens
         )
@@ -291,6 +293,7 @@ def _build_judge_prompt(module_name: str, user_prompt: str, results: list[dict[s
 
 def _failed_result(profile: AIRuntimeProfile, started: float, error_type: str) -> dict[str, object]:
     status = "Timeout" if error_type in {"TimeoutError", "Timeout"} else "Error"
+    display_error = "Output AI mengulang prompt, bukan jawaban" if error_type == "PromptEcho" else error_type
     return {
         "profile_id": profile.profile_id,
         "provider": profile.provider,
@@ -305,8 +308,18 @@ def _failed_result(profile: AIRuntimeProfile, started: float, error_type: str) -
         "cost_idr": None,
         "pricing_note": "Tidak dihitung karena request gagal",
         "content": "",
-        "error": error_type,
+        "error": display_error,
     }
+
+
+def _looks_like_prompt_echo(content: str, prompt: str) -> bool:
+    output = " ".join(str(content or "").casefold().split())
+    original = " ".join(str(prompt or "").casefold().split())
+    if not output or not original:
+        return False
+    if output == original:
+        return True
+    return len(original) >= 80 and output.startswith(original) and len(output) <= len(original) + 80
 
 
 def _company_content(

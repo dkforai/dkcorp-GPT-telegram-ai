@@ -121,7 +121,7 @@
         <section class="panel compare-answer">
           <h3>{{ result.label }}<small>{{ result.model }}</small></h3>
           {% if result.content %}
-            <textarea readonly>{{ result.content }}</textarea>
+            <pre class="compare-answer-output">{{ result.content }}</pre>
           {% else %}
             <p class="muted-text">Tidak ada jawaban. Status: {{ result.status }}{% if result.error %} · {{ result.error }}{% endif %}</p>
           {% endif %}
