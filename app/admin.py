@@ -23,9 +23,17 @@ from starlette.datastructures import UploadFile
 
 from app.config import Settings, load_settings
 from app.credentials import PROVIDERS, encryption_is_ready
-from app.database import AIRuntimeProfile, AdminUser, Database, Membership, User
+from app.ai_compare import (
+    MIN_COMPARE_AIS,
+    build_compare_prompt,
+    compare_module_options,
+    compare_profile_from_selection,
+    compare_totals,
+    run_ai_compare,
+)
+from app.database import AIModule, AIRuntimeProfile, AdminUser, Database, Membership, User
 from app.document_ingestion import MAX_UPLOAD_BYTES, extract_uploaded_document
-from app.providers import runtime_profile_is_configured
+from app.providers import ModuleProviderResolver, runtime_profile_is_configured
 from app.model_catalog import CATALOG_MESSAGES, discover_models
 from app.role_profiles import load_role_profiles, profile_id_for_role
 from app.user_import import MAX_USER_IMPORT_BYTES, UserImportValidationError, read_user_import
@@ -83,6 +91,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
     limiter = LoginLimiter()
     ai_test_limiter = LoginLimiter(max_attempts=3, window_seconds=60)
     ai_tests_running: set[str] = set()
+    ai_compare_limiter = LoginLimiter(max_attempts=8, window_seconds=60)
     role_profiles = load_role_profiles(settings.role_profiles_file)
     database.ensure_communication_styles(role_profiles)
     profile_options = [
@@ -1291,6 +1300,96 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
     async def settings_page(request: Request):
         return _login_redirect(request, settings) or RedirectResponse("/admin/settings/ai", status_code=303)
 
+    @app.get("/admin/ai-compare", response_class=HTMLResponse)
+    async def ai_compare(request: Request):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/ai_compare.html",
+            context=_ai_compare_context(request, settings, database),
+        )
+
+    @app.post("/admin/ai-compare", response_class=HTMLResponse)
+    async def run_ai_compare_page(request: Request):
+        redirect = _login_redirect(request, settings)
+        if redirect:
+            return redirect
+        if ai_compare_limiter.blocked(_admin_actor(request, settings)):
+            return HTMLResponse("Batas test AI Compare tercapai. Coba lagi satu menit lagi.", status_code=429)
+        form = await request.form(max_files=0, max_fields=24)
+        if not _valid_csrf(str(form.get("csrf_token", "")), request, settings):
+            return HTMLResponse("Permintaan tidak valid. Muat ulang halaman.", status_code=403)
+        values = _ai_compare_form_values(form)
+        try:
+            selected_ai = _unique_selections(values["ai_selections"])
+            if len(selected_ai) < MIN_COMPARE_AIS:
+                raise ValueError("Pilih minimal 2 AI untuk dibandingkan")
+            if values["mode"] == "module":
+                values["use_instruction"] = "1"
+                values["use_knowledge"] = "1"
+            profiles = [
+                compare_profile_from_selection(database, selection)
+                for selection in selected_ai
+            ]
+            module, system_prompt, user_prompt = build_compare_prompt(
+                database,
+                settings.project_root,
+                settings.knowledge_max_chars,
+                values["module_value"],
+                values["prompt"],
+                mode=values["mode"],
+                use_instruction=values["use_instruction"] == "1",
+                use_knowledge=values["use_knowledge"] == "1",
+                communication_profile=role_profiles.by_id.get("owner", role_profiles.default),
+            )
+            ai_compare_limiter.failure(_admin_actor(request, settings))
+            results = await run_ai_compare(
+                ModuleProviderResolver(),
+                profiles,
+                system_prompt,
+                user_prompt,
+            )
+            database.write_admin_event(
+                _admin_actor(request, settings),
+                "ai_compare.ran",
+                "ai_compare",
+                f"{module.company_id}:{module.module_id}",
+                {
+                    "module": module.module_id,
+                    "model_count": len(profiles),
+                    "mode": values["mode"],
+                },
+            )
+            return templates.TemplateResponse(
+                request=request,
+                name="admin/ai_compare.html",
+                context=_ai_compare_context(
+                    request,
+                    settings,
+                    database,
+                    values=values,
+                    results=results,
+                    totals=compare_totals(results),
+                    tested_module=module,
+                    notice="AI Compare selesai. Hasil tidak disimpan permanen.",
+                ),
+            )
+        except ValueError as exc:
+            return templates.TemplateResponse(
+                request=request,
+                name="admin/ai_compare.html",
+                context=_ai_compare_context(
+                    request,
+                    settings,
+                    database,
+                    values=values,
+                    error=str(exc),
+                ),
+                status_code=400,
+            )
+
     @app.get("/admin/settings/ai", response_class=HTMLResponse)
     async def ai_settings(request: Request):
         redirect = _login_redirect(request, settings)
@@ -2330,6 +2429,70 @@ def _module_model_options(database: Database) -> list[dict[str, object]]:
     return options
 
 
+def _ai_compare_form_values(form) -> dict[str, object]:
+    return {
+        "mode": str(form.get("mode", "module")).strip().casefold(),
+        "module_value": str(form.get("module_value", "")).strip(),
+        "prompt": str(form.get("prompt", "")).strip(),
+        "use_instruction": "1" if form.get("use_instruction") == "1" else "0",
+        "use_knowledge": "1" if form.get("use_knowledge") == "1" else "0",
+        "ai_selections": [
+            str(form.get(f"ai_selection_{index}", "")).strip()
+            for index in range(1, 5)
+        ],
+    }
+
+
+def _unique_selections(values: list[str]) -> list[str]:
+    selections: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not value:
+            continue
+        if value in seen:
+            raise ValueError("Pilihan AI pembanding tidak boleh sama")
+        seen.add(value)
+        selections.append(value)
+    return selections
+
+
+def _ai_compare_context(
+    request: Request,
+    settings: Settings,
+    database: Database,
+    *,
+    values: dict[str, object] | None = None,
+    results: list[dict[str, object]] | None = None,
+    totals: dict[str, object] | None = None,
+    tested_module: AIModule | None = None,
+    notice: str = "",
+    error: str = "",
+) -> dict[str, object]:
+    defaults: dict[str, object] = {
+        "mode": "module",
+        "module_value": "",
+        "prompt": "",
+        "use_instruction": "1",
+        "use_knowledge": "1",
+        "ai_selections": ["", "", "", ""],
+    }
+    if values:
+        defaults.update(values)
+    return {
+        "active_page": "ai_compare",
+        "admin_username": settings.admin_username,
+        "csrf_token": _csrf_token(request, settings),
+        "modules": compare_module_options(database),
+        "runtime_profiles": _module_model_options(database),
+        "values": defaults,
+        "results": results or [],
+        "totals": totals or {},
+        "tested_module": tested_module,
+        "notice": notice or request.query_params.get("notice", ""),
+        "error": error or request.query_params.get("error", ""),
+    }
+
+
 async def _credential_form(request: Request):
     # Bound the complete body before parsing; never persist or echo this body.
     data = bytearray()
@@ -2459,6 +2622,7 @@ _ACTIVITY_ACTION_LABELS = {
     "ai_runtime_profile.updated": "API credential diperbarui",
     "ai_runtime_profile.activated": "API credential diaktifkan",
     "ai_runtime_profile.deactivated": "API credential dinonaktifkan",
+    "ai_compare.ran": "AI Compare dijalankan",
 }
 
 _ACTIVITY_DETAIL_LABELS = {
@@ -2509,6 +2673,8 @@ _ACTIVITY_DETAIL_LABELS = {
     "model": "Model",
     "model_before": "Model sebelumnya",
     "model_after": "Model baru",
+    "model_count": "Jumlah model",
+    "mode": "Mode",
 }
 
 
@@ -2531,6 +2697,7 @@ def _activity_event_view(row: dict[str, object]) -> dict[str, object]:
         "learning_source": "module",
         "communication_style": "admin",
         "ai_runtime_profile": "credential",
+        "ai_compare": "credential",
     }.get(entity_type, "all")
     try:
         raw_details = json.loads(str(row.get("details_json", "{}")))

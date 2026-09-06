@@ -7,6 +7,7 @@ import time
 from contextvars import ContextVar
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import httpx
@@ -39,6 +40,38 @@ class AIProvider(ABC):
         self, system_prompt: str, history: list[dict[str, str]], user_text: str
     ) -> str:
         raise NotImplementedError
+
+    async def generate_with_usage(
+        self, system_prompt: str, history: list[dict[str, str]], user_text: str
+    ) -> "AICompletion":
+        started = time.monotonic()
+        content = await self.generate(system_prompt, history, user_text)
+        return AICompletion(
+            content=content,
+            input_tokens=_estimate_tokens(system_prompt, history, user_text),
+            output_tokens=_estimate_tokens(content),
+            usage_is_estimated=True,
+            duration_seconds=time.monotonic() - started,
+        )
+
+
+@dataclass(frozen=True)
+class AICompletion:
+    content: str
+    input_tokens: int
+    output_tokens: int
+    usage_is_estimated: bool
+    duration_seconds: float
+
+
+def _estimate_tokens(*parts: object) -> int:
+    text = ""
+    for part in parts:
+        if isinstance(part, list):
+            text += "".join(str(item.get("content", "")) for item in part if isinstance(item, dict))
+        else:
+            text += str(part or "")
+    return max(1, int(len(text) / 4))
 
 
 class OpenAICompatibleProvider(AIProvider):
@@ -78,6 +111,12 @@ class OpenAICompatibleProvider(AIProvider):
     async def generate(
         self, system_prompt: str, history: list[dict[str, str]], user_text: str
     ) -> str:
+        return (await self.generate_with_usage(system_prompt, history, user_text)).content
+
+    async def generate_with_usage(
+        self, system_prompt: str, history: list[dict[str, str]], user_text: str
+    ) -> AICompletion:
+        started = time.monotonic()
         messages = [
             {"role": "system", "content": system_prompt},
             *history,
@@ -91,7 +130,17 @@ class OpenAICompatibleProvider(AIProvider):
         content = response.choices[0].message.content
         if not content or not content.strip():
             raise RuntimeError("AI provider mengembalikan jawaban kosong")
-        return content.strip()
+        usage = getattr(response, "usage", None)
+        input_tokens = getattr(usage, "prompt_tokens", None)
+        output_tokens = getattr(usage, "completion_tokens", None)
+        estimated = not isinstance(input_tokens, int) or not isinstance(output_tokens, int)
+        return AICompletion(
+            content=content.strip(),
+            input_tokens=input_tokens if isinstance(input_tokens, int) else _estimate_tokens(system_prompt, history, user_text),
+            output_tokens=output_tokens if isinstance(output_tokens, int) else _estimate_tokens(content),
+            usage_is_estimated=estimated,
+            duration_seconds=time.monotonic() - started,
+        )
 
 
 def create_provider(
@@ -147,6 +196,12 @@ class AnthropicProvider(AIProvider):
     async def generate(
         self, system_prompt: str, history: list[dict[str, str]], user_text: str
     ) -> str:
+        return (await self.generate_with_usage(system_prompt, history, user_text)).content
+
+    async def generate_with_usage(
+        self, system_prompt: str, history: list[dict[str, str]], user_text: str
+    ) -> AICompletion:
+        started = time.monotonic()
         data = await self._request(
             system_prompt, [*history, {"role": "user", "content": user_text}], 4096
         )
@@ -158,7 +213,17 @@ class AnthropicProvider(AIProvider):
         ).strip()
         if not content:
             raise ModuleGenerationError("AI provider mengembalikan jawaban kosong")
-        return content
+        usage = data.get("usage")
+        input_tokens = usage.get("input_tokens") if isinstance(usage, dict) else None
+        output_tokens = usage.get("output_tokens") if isinstance(usage, dict) else None
+        estimated = not isinstance(input_tokens, int) or not isinstance(output_tokens, int)
+        return AICompletion(
+            content=content,
+            input_tokens=input_tokens if isinstance(input_tokens, int) else _estimate_tokens(system_prompt, history, user_text),
+            output_tokens=output_tokens if isinstance(output_tokens, int) else _estimate_tokens(content),
+            usage_is_estimated=estimated,
+            duration_seconds=time.monotonic() - started,
+        )
 
     async def probe(self) -> None:
         await self._request("", [{"role": "user", "content": "Reply OK."}], 64)
@@ -252,6 +317,25 @@ class ModuleProviderResolver:
             primary, backup_loader, system_prompt, history, user_text,
             total_timeout=total_timeout,
         )
+
+    async def generate_once_with_usage(
+        self,
+        profile: AIRuntimeProfile | None,
+        system_prompt: str,
+        history: list[dict[str, str]],
+        user_text: str,
+        *, timeout_seconds: float | None = None,
+    ) -> AICompletion:
+        total_timeout = MODULE_AI_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
+        if total_timeout <= 0 or total_timeout > MODULE_AI_TIMEOUT_SECONDS:
+            raise ValueError("Unsupported module timeout")
+        provider = self.resolve(profile)
+        token = _request_timeout.set(total_timeout)
+        try:
+            async with asyncio.timeout(total_timeout):
+                return await provider.generate_with_usage(system_prompt, history, user_text)
+        finally:
+            _request_timeout.reset(token)
 
     async def _generate(
         self, primary: AIRuntimeProfile | None,

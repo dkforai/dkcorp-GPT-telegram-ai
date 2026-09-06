@@ -5,12 +5,14 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 1.25 |
-| Terakhir diperbarui | 5 September 2026 |
+| Versi | 1.26 |
+| Terakhir diperbarui | 6 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
 
 Dokumen ini wajib diperbarui bersama perubahan fitur, aturan, data model, alur, keamanan, atau deployment. PDF bukan source of truth selama aplikasi masih aktif dikembangkan.
+
+Panduan operasional pembuatan modul berada di [`docs/panduan-pembuatan-modul.md`](panduan-pembuatan-modul.md). Panduan tersebut menjelaskan pemakaian fitur yang sudah ada; source of truth arsitektur tetap dokumen ini.
 
 ## 1. Tujuan aplikasi
 
@@ -38,6 +40,7 @@ Tujuan utama:
 10. Akses module perusahaan bersifat default-deny per membership. Modul bersama/Learning memakai whitelist aktif lintas perusahaan; mode konteks perusahaan tetap memerlukan membership aktif. Semua runtime memerlukan module aktif, published, dan pilihan AI valid.
 11. Draft module playbook tidak boleh memengaruhi bot. History General dan setiap module dipisahkan agar perpindahan pekerjaan tidak mencampur konteks.
 12. API key Module tidak boleh disimpan sebagai plaintext di SQLite, audit, log, atau HTML respons. Key baru di Settings AI memakai authenticated encryption dengan master key terpisah di environment; named environment credential lama tetap didukung. Module memilih utama/cadangan dari registry. Cadangan hanya untuk kegagalan operasional yang diizinkan, bukan melewati akses atau salah konfigurasi.
+13. Admin dapat membandingkan beberapa AI pada module yang sama melalui AI Compare, tetapi hasil compare tidak menjadi history user, tidak mengubah pilihan AI module, dan tidak disimpan permanen.
 
 ## 3. Arsitektur logis
 
@@ -104,7 +107,7 @@ Jawaban ke user
 | Authentication | Sudah | Whitelist Telegram ID |
 | User Context | Sudah | Identity global dan membership per perusahaan |
 | Import user Excel | Sudah | `.xls`/`.xlsx`, lima kolom, insert-only untuk ID baru, validasi atomik dan skip total ID lama melalui `/admin/users/import` |
-| Communication Profile | v1.23 deployed, 369 tes lokal lulus | Lima level komunikasi otomatis dari Role level; isi gaya dapat diubah super admin melalui Settings → Communication dan disimpan di SQLite |
+| Communication Profile | v1.23 deployed, 376 tes lokal lulus | Lima level komunikasi otomatis dari Role level; isi gaya dapat diubah super admin melalui Settings → Communication dan disimpan di SQLite |
 | Penyederhanaan form user/membership | v1.15 deployed, form produksi terverifikasi | Divisi/profile tidak lagi diinput, runtime berbasis Role level, import empat kolom dengan kompatibilitas lima kolom lama. Data legacy dipertahankan; 198 tes lokal lulus |
 | Custom Instruction | Sudah | Field global user dan field per membership |
 | Knowledge Loader | Sudah | Published document aktif dari SQLite; folder Markdown menjadi fallback sampai publish pertama |
@@ -126,13 +129,28 @@ Jawaban ke user
 | AI Module Playbook | Sudah | Registry per company, draft, preview, immutable publish, restore-to-draft, status, dan runtime prompt |
 | Authorization per knowledge | Sebagian | Sudah company-scoped; knowledge khusus module, division, dan clearance belum |
 | Response Validator | Sebagian | Pemisahan blok siap salin, normalisasi selektif, pemeriksaan jawaban kosong, batas panjang, dan split; belum ada policy classifier |
-| Admin Panel | v1.23 deployed, 369 tes lokal lulus | Multi-admin berbasis database: super admin dan operator; session tujuh hari; Log Admin singkat dan read-only |
+| Admin Panel | v1.23 deployed, 376 tes lokal lulus | Multi-admin berbasis database: super admin dan operator; session tujuh hari; Log Admin singkat dan read-only |
 | Modul bersama | v1.21 deployed bersama v1.22; HTTP admin terverifikasi | Registry global terpisah; independent tanpa konteks perusahaan atau company-context dengan membership aktif; published snapshot, kode global unik, private history |
-| Modul Learning | v1.23 deployed, 369 tes lokal lulus | AI utama/cadangan per buku, keterangan pembuka, custom instruction, persentase ekstraksi, readiness, PDF terindeks sekali, jadwal WIB, review sebelum publish |
-| Retrieval/RAG | v1.25 deployed; 373 tes lokal dan smoke produksi lulus | Hybrid FTS5 + embedding multilingual lokal + cuplikan tetangga + struktur buku dan recent chat; hanya hasil terpilih dikirim ke AI |
-| Timeout, progress, dan retry | v1.23 deployed, 369 tes lokal lulus | Budget total AI 300 detik, primary maksimal 180 detik dan backup memakai sisa; pesan proses lokal setelah 60 detik; retry manual artikel tetap tersedia |
+| Modul Learning | v1.23 deployed, 376 tes lokal lulus | AI utama/cadangan per buku, keterangan pembuka, custom instruction, persentase ekstraksi, readiness, PDF terindeks sekali, jadwal WIB, review sebelum publish |
+| Retrieval/RAG | v1.25 deployed; 376 tes lokal dan smoke produksi lulus | Hybrid FTS5 + embedding multilingual lokal + cuplikan tetangga + struktur buku dan recent chat; hanya hasil terpilih dikirim ke AI |
+| Timeout, progress, dan retry | v1.23 deployed, 376 tes lokal lulus | Budget total AI 300 detik, primary maksimal 180 detik dan backup memakai sisa; pesan proses lokal setelah 60 detik; retry manual artikel tetap tersedia |
+| AI Compare | v1.26 lokal lulus test | Admin memilih satu module perusahaan atau modul bersama, mode Dari module atau Prompt custom, 2-4 model AI, lalu melihat status, durasi, token, estimasi cost Rupiah, preview, dan jawaban penuh berdampingan |
 
-### 4.1 Modul bersama dan Learning (v1.21)
+### 4.1 AI Compare (v1.26)
+
+AI Compare adalah halaman admin `/admin/ai-compare` untuk menguji kualitas beberapa model terhadap satu prompt dan satu konteks module perusahaan atau modul bersama. Tujuannya membantu admin memilih AI utama/cadangan berdasarkan jawaban nyata, bukan tebakan dari nama model.
+
+Mode **Dari module** memakai published playbook module. Untuk module perusahaan, company instruction dan company knowledge ikut dipakai seperti runtime Telegram, tetapi tanpa history chat. Untuk modul bersama independen, konteks perusahaan tidak dipakai. Mode **Prompt custom** tetap wajib memilih module referensi, lalu admin dapat mematikan instruction/playbook atau knowledge untuk mengetes sebagian konteks. Prompt test dibatasi 10.000 karakter. Minimal dua dan maksimal empat pasangan provider+model dapat dipilih; pilihan duplikat ditolak.
+
+Eksekusi memakai pola hybrid paralel: semua model terpilih dipanggil bersamaan dengan budget maksimal 300 detik per model. Hasil parsial tetap ditampilkan bila salah satu AI gagal atau timeout. Tidak ada failover antar model compare karena tujuan fitur adalah perbandingan langsung, bukan menyembunyikan kegagalan. Compare tidak menulis history Telegram, tidak mengubah active module user, tidak mengubah pilihan AI module, dan tidak menyimpan jawaban permanen. Log Admin hanya mencatat actor, module, mode, dan jumlah model.
+
+Learning tidak dimasukkan ke AI Compare generik v1.26 karena kualitas jawaban buku bergantung pada retrieval chunk PDF aktif. Tes Learning yang valid perlu form khusus yang menampilkan buku aktif, query retrieval, cuplikan yang dikirim ke AI, lalu hasil 2-4 AI. Ini sengaja dipisahkan agar compare tidak memberi rasa aman palsu dari prompt-only test.
+
+Tabel hasil menggunakan model sebagai kolom dan metrik sebagai baris: status, durasi, token, cost, dan hasil. Jawaban panjang ditampilkan penuh di panel read-only di bawah tabel. Token memakai usage resmi provider bila tersedia; jika provider tidak mengembalikan usage, aplikasi memakai estimasi lokal dari panjang teks dan memberi label estimasi. Cost dihitung dengan tabel harga internal per keluarga model dan kurs tetap `1 USD = Rp 17.500`; angka ini estimasi aplikasi, bukan invoice resmi provider. Harga provider berubah dari waktu ke waktu, sehingga billing final tetap harus diperiksa di dashboard provider.
+
+Penghematan token: compare default tanpa history chat, konteks mengikuti module saja, dan mode custom dapat mematikan knowledge saat admin hanya ingin mengetes gaya jawaban. Risiko: hasil tanpa history tidak selalu identik dengan percakapan user panjang; cost estimasi bisa berbeda dari tagihan provider karena tokenisasi, cached input, reasoning token, diskon, dan harga aktual akun.
+
+### 4.2 Modul bersama dan Learning (v1.21)
 
 Tiga menu admin terpisah adalah **Modul perusahaan** (`/admin/modules`, perilaku existing dipertahankan), **Modul bersama** (`/admin/shared-modules`), dan **Modul Learning** (`/admin/learning`). Tidak ada migrasi otomatis module perusahaan menjadi global maupun perluasan ACL lama.
 
@@ -156,7 +174,7 @@ Pencarian tetap mempertimbangkan recent chat untuk pertanyaan lanjutan. Router l
 
 Batas input source 16.000 karakter dan recent history maksimum konfigurasi `HISTORY_LIMIT` dengan batas 24.000 karakter khusus flow baru. Ini bukan pengukuran token exact atau jaminan persentase penghematan. Biaya output/custom instruction tetap ada. PDF/indeks bersama tidak berarti history user dibagikan. Pengujian biaya/relevansi pada buku nyata belum dilakukan. Instruksi DK agar opsi penghematan mendatang dijelaskan metode/risikonya dan diputuskan DK dicatat juga di `AGENTS.md`.
 
-### 4.2 Timeout dan pengulangan modul artikel (v1.22)
+### 4.3 Timeout dan pengulangan modul artikel (v1.22)
 
 Log produksi yang dikirim DK membuktikan Claude primary dan DeepSeek backup gagal dengan `TimeoutError`; backup berhenti sekitar 30 detik setelah failover. Log tersebut tidak membuktikan pembatasan dua pertanyaan, key salah, ataupun akar latensi provider/jaringan. DK menyetujui opsi 120 detik khusus pasangan ID `ms/artikel-web-generator`, tanpa mengganti model, mengurangi konteks, atau mengubah playbook produksi.
 
@@ -390,6 +408,7 @@ Versi admin saat ini menyediakan:
 - halaman Modules untuk membuat registry per company, mengubah identitas, status, draft, preview, publish, dan riwayat versi playbook;
 - form buat/edit Module menyediakan pilihan **AI utama** dan **AI cadangan** dari daftar AI aktif; halaman **Tambah AI** mendaftarkan koneksi sekali untuk dipakai ulang;
 - Settings AI mengelola API key terenkripsi, empat provider, status aktif dan tes koneksi manual; form Module tetap dua pilihan nama, bukan input secret;
+- halaman AI Compare untuk membandingkan 2-4 model AI pada satu module perusahaan atau modul bersama, tanpa menyimpan jawaban sebagai history atau mengubah konfigurasi module;
 - akses module default-deny dikelola pada form edit membership;
 - halaman Log Admin read-only menampilkan actor dan ringkasan tindakan; metadata minimum tetap disimpan internal untuk traceability tanpa menampilkan detail teknis/isi sensitif;
 - super admin dapat membuat/nonaktifkan operator dan mengubah lima gaya komunikasi; operator tidak dapat mengelola akun admin, Settings AI, atau Settings Communication;
@@ -1010,6 +1029,9 @@ Paket form/backend/runtime/import telah diterapkan, diuji lokal, dan dideploy. C
 | ADR-076 | AI Learning dipilih per buku dan konfigurasi global Learning ditutup dari editor | Buku berbeda dapat memakai model berbeda; snapshot published menentukan runtime, dengan fallback legacy terbatas untuk migrasi |
 | ADR-077 | Multi-admin dua peran, session tujuh hari, dan Log Admin ringkas | Sekretaris dapat mengoperasikan konten tanpa akses credential/admin; metadata minimum tetap internal untuk traceability |
 | ADR-078 | Lima gaya komunikasi tersimpan di SQLite dan diturunkan otomatis dari Role level | Owner, Executive/GM, Manager/Head, Supervisor/Coordinator, dan Staff/Operational dapat diubah terpusat tanpa field profile per membership |
+| ADR-079 | Learning memakai hybrid retrieval lokal FTS5 + embedding | Buku diproses sekali, pertanyaan hanya mengirim cuplikan relevan, biaya token turun dibanding mengirim seluruh buku, dan embedding tidak memakai layanan eksternal |
+| ADR-080 | Pertanyaan umum Learning memakai sampel tersebar, bukan strict keyword search | Pertanyaan seperti daftar isi/manfaat/fungsi buku membutuhkan cakupan luas dan tidak boleh gagal hanya karena tidak ada istilah spesifik |
+| ADR-081 | AI Compare menjalankan 2-4 model secara paralel tanpa history dan tanpa persist jawaban | Admin dapat memilih model utama/cadangan berdasarkan output nyata, sementara biaya dan data sensitif tetap terkendali |
 
 ### Kode singkat module
 
@@ -1044,6 +1066,20 @@ Urutan startup adalah initialize schema, migrasi jika diminta, bootstrap, lalu a
 Restart dengan mapping yang sama menjadi no-op hanya jika target lengkap, sumber tidak tersisa, dan audit cocok. Setelah migrasi terverifikasi, hapus `COMPANY_ID_MIGRATION` dari environment. ID lama bukan alias dan URL admin lama perlu dibuka ulang dari menu. Backup berisi data privat dan ciphertext credential, bukan master encryption key; jangan commit atau membagikannya. Pemulihan harus dilakukan saat semua writer berhenti menggunakan SQLite backup API, bukan menimpa file database hidup atau mengabaikan WAL.
 
 ## 16. Changelog dokumen
+
+### 1.26 — 6 September 2026
+
+- Menambahkan halaman admin `/admin/ai-compare` untuk membandingkan 2-4 model AI pada satu module perusahaan atau modul bersama dengan mode Dari module atau Prompt custom.
+- Hasil compare ditampilkan berdampingan sebagai status, durasi, token, estimasi cost USD/Rupiah dengan kurs Rp 17.500, preview, dan jawaban penuh.
+- Compare berjalan paralel dengan hasil parsial, tidak memakai history chat, tidak melakukan failover antar model, tidak mengubah pilihan AI module, dan tidak menyimpan jawaban permanen.
+- Menambahkan pengukuran usage provider bila tersedia, estimasi token lokal bila usage tidak tersedia, tabel estimasi harga model, audit metadata ringkas, serta regresi lokal untuk form, modul bersama, dan hasil compare.
+- Seluruh 376 tes lulus lokal; satu warning deprecation Starlette/httpx existing.
+
+### 1.25.1 — 6 September 2026
+
+- Menambahkan panduan operasional pembuatan Modul perusahaan, Modul bersama, dan Learning berdasarkan perilaku aplikasi versi 1.25.
+- Mendokumentasikan struktur playbook, syarat runtime, format naskah siap salin, prosedur publish, checklist uji, budget timeout/failover, serta metode penghematan token beserta manfaat dan risikonya.
+- Perubahan ini hanya dokumentasi; tidak mengubah kode runtime, schema, konfigurasi, credential, data produksi, atau deployment.
 
 ### 1.25 — 5 September 2026
 

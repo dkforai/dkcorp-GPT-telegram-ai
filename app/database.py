@@ -3176,10 +3176,15 @@ class Database:
         return [dict(row) for row in rows]
 
     def write_admin_event(
-        self, actor: str, action: str, entity_type: str = "admin", entity_id: str = ""
+        self,
+        actor: str,
+        action: str,
+        entity_type: str = "admin",
+        entity_id: str = "",
+        details: dict[str, object] | None = None,
     ) -> None:
         with self._connect() as connection:
-            _write_audit(connection, actor, action, entity_type, entity_id, {})
+            _write_audit(connection, actor, action, entity_type, entity_id, details or {})
 
     def list_memberships(self, telegram_id: int) -> list[Membership]:
         with self._connect() as connection:

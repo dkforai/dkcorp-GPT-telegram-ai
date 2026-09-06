@@ -142,6 +142,7 @@ tbody tr:hover { background: #fcfcfe; }
 .status-badge.active { color: #16835a; background: var(--green-soft); }
 .status-badge.default { color: #6651c7; background: var(--purple-soft); }
 .status-badge.warning { color: #9a5b12; background: #fff1da; }
+.status-badge.danger { color: #9b3941; background: #fff0f1; }
 .empty-state { padding: 30px; color: #9098a7; text-align: center; }
 .muted-text { color: #9299a7; }
 
@@ -301,6 +302,20 @@ tbody tr:hover { background: #fcfcfe; }
 }
 .model-catalog-list li { margin: 8px 0; }
 
+.compare-form { max-width: 980px; }
+.compare-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 20px; }
+.checkbox-row.compact { margin-top: 0; }
+.compare-panel { overflow: hidden; }
+.compare-table th, .compare-table td { min-width: 220px; vertical-align: top; }
+.compare-table th:first-child, .compare-table td:first-child { min-width: 120px; width: 120px; }
+.compare-total { padding: 14px 18px; color: #60697a; border-top: 1px solid var(--line); font-size: 11px; }
+.compare-total strong { color: var(--ink); }
+.compare-answer-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 18px; }
+.compare-answer { padding: 18px; }
+.compare-answer h3 { margin: 0 0 12px; font-size: 13px; }
+.compare-answer h3 small { display: block; margin-top: 3px; color: #8c94a3; font-size: 10px; font-weight: 500; overflow-wrap: anywhere; }
+.compare-answer textarea { width: 100%; min-height: 320px; padding: 12px 13px; color: var(--ink); background: #fbfbfd; border: 1px solid #dfe2e9; border-radius: 9px; font: inherit; line-height: 1.6; resize: vertical; }
+
 @media (max-width: 960px) {
   .shell { grid-template-columns: 205px 1fr; }
   .stats-grid { grid-template-columns: repeat(2, 1fr); }
@@ -335,6 +350,7 @@ tbody tr:hover { background: #fcfcfe; }
   .split-actions > div { justify-content: flex-end; }
   .activity-heading { align-items: flex-start; flex-direction: column; gap: 6px; }
   .module-access-grid { grid-template-columns: 1fr; }
+  .compare-options, .compare-answer-grid { grid-template-columns: 1fr; }
 }
 /* Learning source text must wrap, including long words from PDF extraction. */
 .learning-extracted { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.7; }

@@ -4,6 +4,8 @@ MVP bot Telegram internal multi-company dengan whitelist user, membership per pe
 
 Dokumen arsitektur dan konsep aplikasi dipelihara di `docs/architecture.md`. Dokumen Markdown tersebut adalah source of truth selama pengembangan dan akan dibuat menjadi PDF setelah konsep stabil.
 
+Panduan operasional untuk memilih jenis modul, menulis playbook, menghemat token, dan mengurangi timeout tersedia di [`docs/panduan-pembuatan-modul.md`](docs/panduan-pembuatan-modul.md).
+
 ## Cara kerja
 
 ```text
@@ -43,6 +45,7 @@ Pemrosesan update memakai controlled concurrency. User berbeda dapat diproses pa
 - Upload PDF, DOCX, TXT, atau Markdown menjadi draft Knowledge yang dapat diperiksa sebelum publish
 - Module Management per company dengan draft, preview, publish, status, dan riwayat versi playbook
 - Settings AI dengan API key terenkripsi, empat provider, tes koneksi, serta pilihan AI utama/cadangan per Module; legacy environment tetap didukung
+- AI Compare admin untuk menguji satu module dengan 2-4 model AI sekaligus, melihat status, durasi, token, cost Rupiah, dan hasil berdampingan
 - Akses module bersifat default-deny dan diberikan per membership
 - Module aktif dapat dilihat atau diganti melalui `/module`; mode General tetap tersedia
 - History chat dipisahkan per user, perusahaan, dan module aktif
@@ -196,7 +199,9 @@ Module dikelola melalui admin dengan alur **Draft → Preview → Publish** untu
 
 Modul Learning tersedia lintas perusahaan melalui `/learning`. Setiap buku menyimpan PDF privat, hasil ekstraksi dan indeks lokal sekali, keterangan pembuka, custom instruction, jadwal WIB, serta AI utama/cadangan sendiri. Form menampilkan persentase halaman yang mempunyai teks; angka ini tidak menjamin tabel atau gambar terbaca. Sebelum publish, admin wajib meninjau ekstraksi. Pertanyaan umum seperti daftar isi, fungsi/manfaat buku, atau apa yang dapat dipelajari memakai sampel buku tersebar. Singkatan percakapan umum seperti `utk`, `dg`, dan `dgn` dinormalisasi lokal hanya untuk retrieval; pesan asli tetap masuk prompt/history. Pertanyaan spesifik memakai hybrid FTS5 dan embedding multilingual lokal, ditambah recent chat. Seluruh buku tidak dikirim pada setiap pertanyaan; hanya cuplikan terpilih yang memakai token AI. Buku tidak dikirim ke layanan embedding eksternal.
 
-Setiap Module memilih **AI utama** dan **AI cadangan** dari **AI terdaftar**. AI utama wajib, cadangan opsional dan harus berbeda. Daftarkan AI melalui **Settings → AI → Tambah AI**, dengan nama, provider, ID model, dan API key. OpenAI/GPT, Anthropic/Claude, DeepSeek, dan Gemini didukung. Key baru disimpan terenkripsi di SQLite, bukan plaintext; credential environment lama tetap didukung. Pilihan AI langsung berlaku pada pesan berikutnya tanpa publish ulang playbook. Module lama mempertahankan pilihan AI-nya.
+Setiap Module memilih **AI utama** dan **AI cadangan** dari **AI terdaftar**. AI utama wajib, cadangan opsional dan harus berbeda. Daftarkan AI melalui **Settings → AI → Tambah AI** dengan Provider dan API Key. OpenAI/GPT, Anthropic/Claude, DeepSeek, dan Gemini didukung. Key baru disimpan terenkripsi di SQLite, bukan plaintext; credential environment lama tetap didukung. Pilihan AI langsung berlaku pada pesan berikutnya tanpa publish ulang playbook. Module lama mempertahankan pilihan AI-nya.
+
+**AI Compare** tersedia di admin untuk membandingkan 2-4 model pada satu module perusahaan atau modul bersama. Mode **Dari module** memakai playbook module yang published; untuk module perusahaan, knowledge dan instruction company ikut dipakai tanpa history chat. Mode **Prompt custom** tetap memakai module referensi dengan pilihan instruction/playbook dan knowledge. Hasil tampil berdampingan per model: status, durasi, token, estimasi cost USD/Rupiah dengan kurs tetap Rp 17.500, preview hasil, dan jawaban penuh. Hasil compare tidak disimpan permanen; Log Admin hanya mencatat metadata singkat. Modul Learning diuji lewat alur khusus buku aktif karena kualitasnya bergantung pada retrieval isi PDF, bukan hanya prompt module.
 
 AI utama dicoba terlebih dahulu. Satu pesan mendapat budget total maksimal 5 menit: primary maksimal 3 menit, lalu cadangan memakai sisa waktu bila terjadi masalah koneksi, timeout, HTTP 408/429 atau 5xx. Setelah satu menit bot mengirim satu pesan bahwa proses masih berjalan; variasinya berasal dari teks lokal sehingga tidak memakai token AI atau masuk history. SDK tidak melakukan retry tersembunyi. Key salah/kosong, AI nonaktif, error request/izin akses, atau refusal tidak memicu cadangan. History ditulis sekali setelah jawaban sukses. Mode `/module general` tetap memakai `AI_PROVIDER`, `AI_API_KEY`, `AI_MODEL`, dan `AI_BASE_URL` global; tidak digunakan sebagai cadangan kegagalan request Module.
 
@@ -270,6 +275,7 @@ Halaman yang tersedia:
 - `/admin/knowledge/<company-id>` untuk dokumen, draft, publish, status, dan riwayat versi;
 - `/admin/modules` untuk registry module semua company;
 - `/admin/settings/ai` untuk registry AI, status, dan tes koneksi;
+- `/admin/ai-compare` untuk membandingkan 2-4 model AI pada satu module perusahaan atau modul bersama dan satu prompt test;
 - `/admin/runtime-profiles/new` untuk mendaftarkan AI dengan API key terenkripsi;
 - `/admin/settings/admins` untuk akun super admin/operator; hanya super admin;
 - `/admin/settings/communication` untuk mengubah lima gaya komunikasi; hanya super admin;

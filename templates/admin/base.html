@@ -42,16 +42,17 @@
         </a>
         <a class="nav-item {% if active_page == 'shared' %}active{% endif %}" href="/admin/shared-modules"><span class="nav-icon">07</span> Modul bersama</a>
         <a class="nav-item {% if active_page == 'learning' %}active{% endif %}" href="/admin/learning"><span class="nav-icon">08</span> Modul Learning</a>
+        <a class="nav-item {% if active_page == 'ai_compare' %}active{% endif %}" href="/admin/ai-compare"><span class="nav-icon">09</span> AI Compare</a>
         <a class="nav-item {% if active_page == 'activity' %}active{% endif %}" href="/admin/activity">
-          <span class="nav-icon">09</span> Log Admin
+          <span class="nav-icon">10</span> Log Admin
         </a>
         {% if is_super_admin %}
         <p class="nav-label nav-section">Administration</p>
         <a class="nav-item {% if active_page == 'settings' %}active{% endif %}" href="/admin/settings/ai">
-          <span class="nav-icon">10</span> Settings
+          <span class="nav-icon">11</span> Settings
         </a>
-        <a class="nav-item" href="/admin/settings/admins"><span class="nav-icon">11</span> Akun Admin</a>
-        <a class="nav-item" href="/admin/settings/communication"><span class="nav-icon">12</span> Communication</a>
+        <a class="nav-item" href="/admin/settings/admins"><span class="nav-icon">12</span> Akun Admin</a>
+        <a class="nav-item" href="/admin/settings/communication"><span class="nav-icon">13</span> Communication</a>
         {% endif %}
       </nav>
 

@@ -1,0 +1,103 @@
+{% extends "admin/base.html" %}
+{% block title %}AI Compare · DK Corp AI Admin{% endblock %}
+{% block page_title %}AI Compare{% endblock %}
+{% block content %}
+  <div class="page-lead">
+    <div><h2>AI Compare Lab</h2><p>Bandingkan jawaban beberapa AI dengan konteks module yang sama.</p></div>
+    <a class="secondary-link back-link" href="/admin/modules">Kembali</a>
+  </div>
+  {% if notice %}<div class="notice success" role="status">{{ notice }}</div>{% endif %}
+  {% if error %}<div class="notice error" role="alert">{{ error }}</div>{% endif %}
+
+  <form class="panel form-panel compare-form" method="post" action="/admin/ai-compare">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    {% if not modules %}
+      <div class="notice error">Belum ada module aktif untuk diuji.</div>
+    {% elif not runtime_profiles %}
+      <div class="notice error">Belum ada model AI aktif. Buka Settings AI lalu Tes &amp; ambil model.</div>
+    {% else %}
+      <div class="form-grid">
+        <label>Mode test
+          <select name="mode" required>
+            <option value="module" {% if values.mode == 'module' %}selected{% endif %}>Dari module</option>
+            <option value="custom" {% if values.mode == 'custom' %}selected{% endif %}>Prompt custom</option>
+          </select>
+          <small>Dari module memakai playbook dan knowledge. Prompt custom tetap memakai module sebagai referensi.</small>
+        </label>
+        <label>Module
+          <select name="module_value" required>
+            <option value="" disabled {% if not values.module_value %}selected{% endif %}>Pilih module</option>
+            {% for module in modules %}
+              <option value="{{ module.value }}" {% if values.module_value == module.value %}selected{% endif %}>{{ module.label }}</option>
+            {% endfor %}
+          </select>
+          <small>Module harus aktif. Untuk test nyata, gunakan module yang sudah published.</small>
+        </label>
+      </div>
+
+      <div class="compare-options">
+        <label class="checkbox-row compact"><input type="checkbox" name="use_instruction" value="1" {% if values.use_instruction == '1' %}checked{% endif %}><span><strong>Gunakan instruction dan playbook module</strong><small>Aktif otomatis saat mode Dari module.</small></span></label>
+        <label class="checkbox-row compact"><input type="checkbox" name="use_knowledge" value="1" {% if values.use_knowledge == '1' %}checked{% endif %}><span><strong>Gunakan knowledge company</strong><small>Matikan untuk test gaya jawaban tanpa data perusahaan.</small></span></label>
+      </div>
+
+      <label class="full-field">Pertanyaan test
+        <textarea name="prompt" maxlength="10000" rows="5" required placeholder="Contoh: Buatkan 3 ide threads untuk produk baru ini...">{{ values.prompt }}</textarea>
+        <small>Maksimal 10.000 karakter. History chat tidak ikut dipakai agar hasil antar AI adil dan biaya lebih terkendali.</small>
+      </label>
+
+      <div class="form-section-title separated"><h3>AI pembanding</h3><p>Pilih minimal 2 dan maksimal 4 model AI.</p></div>
+      <div class="form-grid">
+        {% for index in [0, 1, 2, 3] %}
+          <label>Model AI {{ index + 1 }}{% if index > 1 %} <span class="optional">Opsional</span>{% endif %}
+            <select name="ai_selection_{{ index + 1 }}" {% if index < 2 %}required{% endif %}>
+              <option value="" {% if not values.ai_selections[index] %}selected{% endif %}>Pilih provider dan model</option>
+              {% for option in runtime_profiles %}
+                <option value="{{ option.value }}" {% if values.ai_selections[index] == option.value %}selected{% endif %} {% if option.disabled %}disabled{% endif %}>{{ option.label }} · {{ option.model }} · {{ option.profile_id }}{% if option.reason %} · {{ option.reason }}{% endif %}</option>
+              {% endfor %}
+            </select>
+          </label>
+        {% endfor %}
+      </div>
+
+      <p class="muted-text">Cost memakai kurs tetap 1 USD = Rp 17.500. Jika provider tidak mengirim token resmi, token dan cost diberi label estimasi.</p>
+    {% endif %}
+    <div class="form-actions"><button class="primary-button" type="submit" {% if not modules or not runtime_profiles %}disabled{% endif %}>Jalankan perbandingan</button></div>
+  </form>
+
+  {% if results %}
+    <div class="subsection-lead"><h2>Hasil perbandingan</h2><p>{% if tested_module %}{{ tested_module.company_name }} · {{ tested_module.name }}{% endif %}</p></div>
+    <div class="panel table-panel compare-panel">
+      <div class="table-wrap"><table class="compare-table">
+        <thead>
+          <tr>
+            <th>Pembanding</th>
+            {% for result in results %}
+              <th>{{ result.label }}<small class="block">{{ result.model }}</small></th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Status</strong></td>{% for result in results %}<td><span class="status-badge {% if result.status == 'Sukses' %}active{% else %}danger{% endif %}">{{ result.status }}</span>{% if result.error %}<small class="block">{{ result.error }}</small>{% endif %}</td>{% endfor %}</tr>
+          <tr><td><strong>Durasi</strong></td>{% for result in results %}<td>{{ "%.1f"|format(result.duration_seconds) }} detik</td>{% endfor %}</tr>
+          <tr><td><strong>Token</strong></td>{% for result in results %}<td>{% if result.input_tokens is not none %}Input {{ result.input_tokens }}<small class="block">Output {{ result.output_tokens }}{% if result.usage_is_estimated %} · estimasi{% endif %}</small>{% else %}-{% endif %}</td>{% endfor %}</tr>
+          <tr><td><strong>Cost</strong></td>{% for result in results %}<td>{% if result.cost_idr is not none %}Rp {{ result.cost_idr }}<small class="block">${{ "%.6f"|format(result.cost_usd) }} · {{ result.pricing_note }}</small>{% else %}-<small class="block">{{ result.pricing_note }}</small>{% endif %}</td>{% endfor %}</tr>
+          <tr><td><strong>Hasil</strong></td>{% for result in results %}<td>{% if result.content %}{{ result.content | truncate(360, true) }}{% else %}Tidak ada jawaban{% endif %}</td>{% endfor %}</tr>
+        </tbody>
+      </table></div>
+      <div class="compare-total">Total cost yang bisa dihitung: <strong>Rp {{ totals.known_cost_idr }}</strong>{% if totals.has_unknown_cost %}<span> · Ada model yang cost-nya belum bisa dihitung.</span>{% endif %}</div>
+    </div>
+
+    <div class="compare-answer-grid">
+      {% for result in results %}
+        <section class="panel compare-answer">
+          <h3>{{ result.label }}<small>{{ result.model }}</small></h3>
+          {% if result.content %}
+            <textarea readonly>{{ result.content }}</textarea>
+          {% else %}
+            <p class="muted-text">Tidak ada jawaban. Status: {{ result.status }}{% if result.error %} · {{ result.error }}{% endif %}</p>
+          {% endif %}
+        </section>
+      {% endfor %}
+    </div>
+  {% endif %}
+{% endblock %}
