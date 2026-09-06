@@ -26,6 +26,8 @@
         {% for option in runtime_profiles %}<option value="{{ option.value }}" {% if backup_ai_selection == option.value %}selected{% endif %} {% if option.disabled %}disabled{% endif %}>{{ option.label }} · {{ option.model }} · {{ option.profile_id }}{% if option.reason %} · {{ option.reason }}{% endif %}</option>{% endfor %}
       </select><small>Pilih koneksi atau model berbeda. Model lain pada key yang sama dapat terkena gangguan atau limit yang sama.</small></label>
       <p class="muted-text">Cadangan menerima konteks percakapan yang sama jika diperlukan. Key salah, konfigurasi kosong, dan AI nonaktif tidak memicu perpindahan. Perubahan pilihan AI berlaku pada pesan berikutnya, tanpa publish ulang playbook.</p>
+      <input type="hidden" name="use_company_knowledge" value="0">
+      <label class="checkbox-row"><input name="use_company_knowledge" type="checkbox" value="1" {% if state.use_company_knowledge %}checked{% endif %}><span><strong>Gunakan Knowledge perusahaan</strong><small>Matikan jika module tidak perlu membaca fakta, SOP, harga, produk, atau dokumen perusahaan. Perubahan berlaku pada pesan berikutnya, tanpa publish ulang playbook.</small></span></label>
       <div class="form-actions"><button class="primary-button" type="submit">Simpan pengaturan</button></div>
     </form>
 
@@ -37,6 +39,7 @@
         <li>Playbook live: {% if state.published_version_number %}v{{ state.published_version_number }}{% else %}belum ada{% endif %}.</li>
         <li>AI utama: {{ state.ai_runtime_profile_label or 'belum dipilih' }} · {{ state.ai_model or 'model belum dipilih' }}{% if not state.ai_runtime_profile_active %} (nonaktif / belum tersedia){% endif %}.</li>
         <li>AI cadangan: {{ state.backup_ai_label or 'belum dipilih' }}{% if state.backup_ai_runtime_profile_id %} · {{ state.backup_ai_model }}{% if not state.backup_ai_active %} (nonaktif / belum tersedia){% endif %}{% endif %}.</li>
+        <li>Knowledge perusahaan: {% if state.use_company_knowledge %}ON{% else %}OFF{% endif %}.</li>
         <li>Akses diberikan melalui edit membership user.</li>
         <li>Draft tidak digunakan bot sampai publish.</li>
       </ul>

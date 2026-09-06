@@ -13,7 +13,7 @@
   <div class="panel table-panel">
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Module</th><th>Company</th><th>AI utama</th><th>AI cadangan</th><th>Playbook</th><th>Akses</th><th>Status</th><th>Action</th></tr></thead>
+        <thead><tr><th>Module</th><th>Company</th><th>AI utama</th><th>AI cadangan</th><th>Knowledge</th><th>Playbook</th><th>Akses</th><th>Status</th><th>Action</th></tr></thead>
         <tbody>
           {% for module in modules %}
             <tr>
@@ -21,6 +21,7 @@
               <td><strong>{{ module.company_name }}</strong><small class="block">{{ module.company_id }}</small></td>
               <td>{% if module.ai_runtime_profile_label %}<strong>{{ module.ai_runtime_profile_label }}</strong><small class="block">{{ module.ai_model }}{% if not module.ai_runtime_profile_active %} · Nonaktif{% endif %}</small>{% else %}<span class="status-badge danger">Belum dipilih</span>{% endif %}</td>
               <td>{{ module.backup_ai_label or 'Belum dipilih' }}{% if module.backup_ai_runtime_profile_id %}<small class="block">{{ module.backup_ai_model }}{% if not module.backup_ai_active %} · Nonaktif / belum tersedia{% endif %}</small>{% endif %}</td>
+              <td>{% if module.use_company_knowledge %}<span class="status-badge active">ON</span>{% else %}<span class="status-badge">OFF</span>{% endif %}</td>
               <td>
                 {% if module.published_version_number %}<span class="status-badge active">v{{ module.published_version_number }} Live</span>{% else %}<span class="muted-text">Belum publish</span>{% endif %}
                 {% if module.has_unpublished_draft %}<small class="block">Ada perubahan draft</small>{% endif %}
@@ -36,7 +37,7 @@
                 </form>
               </div></td>
             </tr>
-          {% else %}<tr><td colspan="8" class="empty-state">Belum ada module. Tambahkan module untuk memulai.</td></tr>{% endfor %}
+          {% else %}<tr><td colspan="9" class="empty-state">Belum ada module. Tambahkan module untuk memulai.</td></tr>{% endfor %}
         </tbody>
       </table>
     </div>

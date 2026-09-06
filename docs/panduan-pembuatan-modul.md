@@ -2,7 +2,7 @@
 
 ## 1. Tujuan panduan
 
-Panduan ini membantu admin memilih jenis modul, menulis playbook, menentukan AI, menguji akses, dan mengurangi risiko timeout. Isinya mengikuti perilaku aplikasi yang sudah berjalan pada versi arsitektur 1.26.
+Panduan ini membantu admin memilih jenis modul, menulis playbook, menentukan AI, menguji akses, dan mengurangi risiko timeout. Isinya mengikuti perilaku aplikasi yang sudah berjalan pada versi arsitektur 1.27.
 
 Panduan ini tidak berisi API key. API key hanya dikelola melalui **Settings → AI** dan tidak boleh ditulis di deskripsi, playbook, instruction, knowledge, atau percakapan Telegram.
 
@@ -127,6 +127,7 @@ Learning hanya tersedia bila buku aktif, sudah published, hasil ekstraksi sudah 
 | Module ID | Dibuat otomatis dan dikunci; dipakai sebagai identitas internal |
 | Kode singkat | Perintah 2–3 karakter, misalnya `TG`; user memanggil `/TG` |
 | Deskripsi | Jelaskan kegunaan, kapan dipakai, dan hasil yang diterima user; teks ini tampil setelah modul dipilih |
+| Gunakan Knowledge perusahaan | Default aktif. Matikan hanya bila module cukup mandiri dan tidak perlu fakta, SOP, harga, produk, atau dokumen perusahaan |
 | AI utama | Provider dan model pertama yang mengerjakan permintaan |
 | AI cadangan | Provider/model kedua saat kegagalan operasional tertentu terjadi |
 | Aktif | Sakelar operasional; tetap membutuhkan playbook published dan akses user |
@@ -353,11 +354,12 @@ Jangan langsung menaikkan timeout lagi. Timeout lebih panjang hanya menambah wak
 3. Buka **Modul perusahaan → Tambah module**.
 4. Pilih company.
 5. Isi nama, kode singkat, deskripsi, AI utama, dan AI cadangan bila diperlukan.
-6. Aktifkan modul lalu simpan.
-7. Isi draft playbook dengan struktur pada panduan ini.
-8. Pilih **Review untuk publish**, periksa isi, lalu publish.
-9. Buka **Users & Access**, edit membership user pada company tersebut, lalu berikan akses modul.
-10. Uji melalui Telegram dengan `/?`, pilih kode modul, lalu cek `/whoami`.
+6. Biarkan **Gunakan Knowledge perusahaan** aktif bila module perlu fakta/SOP/harga/produk company. Matikan hanya untuk module mandiri agar prompt lebih kecil dan risiko timeout turun.
+7. Aktifkan modul lalu simpan.
+8. Isi draft playbook dengan struktur pada panduan ini.
+9. Pilih **Review untuk publish**, periksa isi, lalu publish.
+10. Buka **Users & Access**, edit membership user pada company tersebut, lalu berikan akses modul.
+11. Uji melalui Telegram dengan `/?`, pilih kode modul, lalu cek `/whoami`.
 
 Draft tidak dipakai bot. User selalu memakai versi published terakhir. Memulihkan versi lama hanya menyalinnya kembali ke draft; admin tetap harus melakukan review dan publish.
 

@@ -5,8 +5,8 @@
 | Atribut | Nilai |
 |---|---|
 | Status | Living document |
-| Versi | 1.26 |
-| Terakhir diperbarui | 6 September 2026 |
+| Versi | 1.27 |
+| Terakhir diperbarui | 7 September 2026 |
 | Source of truth | Repository `dkcorp-GPT-telegram-ai` |
 | Format akhir | Markdown selama pengembangan, PDF setelah konsep stabil |
 
@@ -41,6 +41,7 @@ Tujuan utama:
 11. Draft module playbook tidak boleh memengaruhi bot. History General dan setiap module dipisahkan agar perpindahan pekerjaan tidak mencampur konteks.
 12. API key Module tidak boleh disimpan sebagai plaintext di SQLite, audit, log, atau HTML respons. Key baru di Settings AI memakai authenticated encryption dengan master key terpisah di environment; named environment credential lama tetap didukung. Module memilih utama/cadangan dari registry. Cadangan hanya untuk kegagalan operasional yang diizinkan, bukan melewati akses atau salah konfigurasi.
 13. Admin dapat membandingkan beberapa AI pada module yang sama melalui AI Compare, termasuk memakai AI penilai opsional untuk rekomendasi akhir, tetapi hasil compare tidak menjadi history user, tidak mengubah pilihan AI module, dan tidak disimpan permanen.
+14. Module perusahaan boleh mematikan pemakaian Knowledge perusahaan ketika playbook cukup mandiri. Pengaturan ini hanya mengurangi konteks Knowledge; Company Instruction, role profile, custom instruction, playbook, history, otorisasi, dan pilihan AI tetap berlaku.
 
 ## 3. Arsitektur logis
 
@@ -62,7 +63,7 @@ Company Context
 company instruction + business knowledge
     ↓
 Active Module
-AI Module Playbook + module-scoped knowledge
+AI Module Playbook + optional company knowledge
     ↓
 Communication Profile
     ├── owner      → governance/ownership
@@ -80,7 +81,7 @@ published knowledge database atau file Markdown transisi
 Prompt Composer
 global policy + user context + company instruction
 + optional module playbook + communication profile
-+ custom instruction + company knowledge
++ custom instruction + optional company knowledge
     ↓
 Chat History SQLite
     ↓
@@ -107,7 +108,7 @@ Jawaban ke user
 | Authentication | Sudah | Whitelist Telegram ID |
 | User Context | Sudah | Identity global dan membership per perusahaan |
 | Import user Excel | Sudah | `.xls`/`.xlsx`, lima kolom, insert-only untuk ID baru, validasi atomik dan skip total ID lama melalui `/admin/users/import` |
-| Communication Profile | v1.23 deployed, 380 tes lokal lulus | Lima level komunikasi otomatis dari Role level; isi gaya dapat diubah super admin melalui Settings → Communication dan disimpan di SQLite |
+| Communication Profile | v1.27 lokal lulus test | Lima level komunikasi otomatis dari Role level; isi gaya dan field Cara komunikasi dapat diubah super admin melalui Settings → Communication dan disimpan di SQLite |
 | Penyederhanaan form user/membership | v1.15 deployed, form produksi terverifikasi | Divisi/profile tidak lagi diinput, runtime berbasis Role level, import empat kolom dengan kompatibilitas lima kolom lama. Data legacy dipertahankan; 198 tes lokal lulus |
 | Custom Instruction | Sudah | Field global user dan field per membership |
 | Knowledge Loader | Sudah | Published document aktif dari SQLite; folder Markdown menjadi fallback sampai publish pertama |
@@ -126,7 +127,7 @@ Jawaban ke user
 | Kode singkat module | v1.19 deployed; 304 tes lulus; TG tersimpan dan form produksi terverifikasi | Alias opsional 2–3 karakter per company; `/TG`, `/tg`, dan `/module TG` memilih ID canonical yang sama; menu sesuai akses |
 | Konfirmasi perpindahan module | v1.20 deployed; 317 tes lulus; Railway dan HTTP produksi terverifikasi | Konfirmasi diikuti satu baris kosong dan deskripsi terkini dari form module; deskripsi kosong tidak ditampilkan |
 | Company-scoped instruction | Sudah | Draft dan versi publish tersimpan di SQLite; file company menjadi fallback transisi |
-| AI Module Playbook | Sudah | Registry per company, draft, preview, immutable publish, restore-to-draft, status, dan runtime prompt |
+| AI Module Playbook | v1.27 lokal lulus test | Registry per company, draft, preview, immutable publish, restore-to-draft, status, runtime prompt, serta checkbox pemakaian Knowledge perusahaan |
 | Authorization per knowledge | Sebagian | Sudah company-scoped; knowledge khusus module, division, dan clearance belum |
 | Response Validator | Sebagian | Pemisahan blok siap salin, normalisasi selektif, pemeriksaan jawaban kosong, batas panjang, dan split; belum ada policy classifier |
 | Admin Panel | v1.23 deployed, 380 tes lokal lulus | Multi-admin berbasis database: super admin dan operator; session tujuh hari; Log Admin singkat dan read-only |
@@ -140,7 +141,7 @@ Jawaban ke user
 
 AI Compare adalah halaman admin `/admin/ai-compare` untuk menguji kualitas beberapa model terhadap satu prompt. Tujuannya membantu admin memilih AI utama/cadangan berdasarkan jawaban nyata, bukan tebakan dari nama model.
 
-Mode **Pilih modul** memakai published playbook module perusahaan atau modul bersama. Untuk module perusahaan, company instruction dan company knowledge ikut dipakai seperti runtime Telegram, tetapi tanpa history chat. Untuk modul bersama independen, konteks perusahaan tidak dipakai. Mode **Prompt sendiri** tidak memakai module, company instruction, company knowledge, maupun history; isi textbox menjadi satu-satunya input user yang diuji. Karena itu, pilihan module serta checkbox instruction/knowledge diabaikan saat mode Prompt sendiri. Prompt test dibatasi 10.000 karakter. Minimal dua dan maksimal empat pasangan provider+model dapat dipilih; pilihan duplikat ditolak.
+Mode **Pilih modul** memakai published playbook module perusahaan atau modul bersama. Untuk module perusahaan, company instruction ikut dipakai seperti runtime Telegram. Company knowledge hanya ikut bila module mengaktifkan checkbox **Gunakan Knowledge perusahaan**; history chat tidak ikut. Untuk modul bersama independen, konteks perusahaan tidak dipakai. Mode **Prompt sendiri** tidak memakai module, company instruction, company knowledge, maupun history; isi textbox menjadi satu-satunya input user yang diuji. Karena itu, pilihan module serta checkbox instruction/knowledge diabaikan saat mode Prompt sendiri. Prompt test dibatasi 10.000 karakter. Minimal dua dan maksimal empat pasangan provider+model dapat dipilih; pilihan duplikat ditolak.
 
 Eksekusi memakai pola hybrid paralel: semua model terpilih dipanggil bersamaan dengan budget maksimal 300 detik per model. Hasil parsial tetap ditampilkan bila salah satu AI gagal atau timeout. Tidak ada failover antar model compare karena tujuan fitur adalah perbandingan langsung, bukan menyembunyikan kegagalan. Setelah hasil pembanding selesai, admin dapat memilih satu AI penilai opsional. AI penilai membaca ringkasan hasil, durasi, token, dan biaya, lalu memberi rekomendasi dua paragraf tentang model terbaik berdasarkan biaya terkecil dan hasil maksimal. Compare tidak menulis history Telegram, tidak mengubah active module user, tidak mengubah pilihan AI module, dan tidak menyimpan jawaban permanen. Log Admin hanya mencatat actor, module, mode, jumlah model, dan apakah AI penilai dipakai.
 
@@ -375,10 +376,10 @@ Folder adalah bentuk transisi yang mudah diaudit. Target produksi skala lanjut m
 | `user_sessions` | Active company dan active module per user |
 | `messages` | History percakapan dengan scope user, company, dan module |
 | `admin_users` | Akun admin, nama tampilan, hash password PBKDF2, peran super admin/operator, dan status |
-| `communication_styles` | Isi lima gaya komunikasi dan fallback default yang dapat dikelola super admin |
+| `communication_styles` | Isi lima gaya komunikasi, termasuk Cara komunikasi tambahan, dan fallback default yang dapat dikelola super admin |
 | `learning_books` | Draft/live buku termasuk jadwal, sumber, instruction, serta pasangan AI utama/cadangan per buku |
 
-Semua query knowledge wajib memiliki filter `company_id`. Filter `module_id` ditambahkan ketika modul mempunyai knowledge khusus.
+Semua query knowledge wajib memiliki filter `company_id`. Module perusahaan hanya memuat Knowledge perusahaan bila `use_company_knowledge` aktif. Filter `module_id` ditambahkan nanti ketika modul mempunyai knowledge khusus.
 
 ### 5.9 Target admin control plane
 
@@ -481,10 +482,12 @@ Admin memberi akses pada membership
     ↓ module_access default-deny
 User memilih /module <module-id>
     ↓ user_sessions.active_module_id
-Bot memakai playbook live dan history khusus module
+Bot memakai playbook live, history khusus module, dan optional company knowledge
 ```
 
 Module hanya dapat dipilih ketika company dan membership aktif, module aktif, playbook published tersedia, dan row `module_access` aktif. Module ID unik di dalam company dan dibuat otomatis dari nama dengan suffix numerik bila terjadi collision. Restore menyalin versi lama ke draft; runtime tetap memakai versi live sampai admin memublikasikan draft tersebut.
+
+Checkbox **Gunakan Knowledge perusahaan** tersimpan pada `modules.use_company_knowledge` dengan default aktif. Jika aktif, runtime Module memuat published Knowledge perusahaan seperti perilaku lama. Jika nonaktif, runtime Module tidak memuat Knowledge perusahaan, tetapi tetap memakai Company Instruction, role profile, custom instruction membership, playbook live, history module, serta AI utama/cadangan module. Pengaturan ini membantu module yang playbook-nya mandiri agar prompt lebih kecil dan mengurangi risiko timeout, tetapi admin harus menyalakannya kembali untuk module yang perlu fakta, SOP, harga, produk, atau dokumen perusahaan.
 
 Mode `/module general` mengosongkan `active_module_id` dan memakai history General. Perubahan `/company`, pencabutan module access, atau nonaktivasi module juga mengosongkan pointer module. Data history lama tidak dihapus dan tetap dapat digunakan kembali jika akses module diberikan lagi.
 
@@ -640,7 +643,7 @@ Dipakai ketika profile tidak dikenali. Jawaban bersifat seimbang, praktis, dan t
 
 Sejak v1.15, ADR-057 menjadi perilaku aktif. `profile_id_for_role` pada `app/role_profiles.py` menjadi pemetaan terpusat bagi form, import, dan runtime bot.
 
-Isi profile awal berasal dari `config/role_profiles.json`, lalu di-bootstrap ke `communication_styles`. Runtime membaca SQLite agar perubahan **Settings → Communication** langsung berlaku. Pemilihan profile:
+Isi profile awal berasal dari `config/role_profiles.json`, lalu di-bootstrap ke `communication_styles`. Setiap profile menyimpan `response_level`, `focus`, `structure`, `avoid`, dan `communication_guide`. Field **Cara komunikasi** (`communication_guide`) adalah instruksi tambahan gaya penyampaian untuk level tersebut, misalnya staff diminta lebih singkat atau manager diminta lebih taktis. Runtime membaca SQLite agar perubahan **Settings → Communication** langsung berlaku. Pemilihan profile:
 
 1. Ambil `role_level` membership company aktif: `owner` → `owner`, `gm` → `executive`, `manager` → `manager`, `supervisor` → `supervisor`, `staff` → `staff`.
 2. Ambil isi profile dari `config/role_profiles.json`. Role legacy kosong/tidak dikenal atau ID profile tidak tersedia memakai profile default, tanpa fallback jabatan/override global.
@@ -867,6 +870,7 @@ Sudah diterapkan:
 - file upload tidak menjadi instruction dan tidak langsung live; hanya teks draft yang telah dipublish yang dibaca runtime.
 - module access bersifat default-deny dan divalidasi terhadap membership serta company yang sama;
 - module draft tidak masuk ke prompt; runtime hanya membaca published playbook dari module aktif yang diizinkan;
+- module dapat mematikan pemakaian Knowledge perusahaan tanpa mematikan Company Instruction, playbook, role profile, history, atau otorisasi;
 - query dan restore playbook selalu divalidasi dengan pasangan `company_id + module_id`;
 - pergantian company, pencabutan akses, dan nonaktivasi module menghapus pointer module aktif;
 - history General dan module dipisahkan dengan `module_id`, tanpa menghapus history scope lain;
@@ -886,10 +890,10 @@ Communication Profile bukan mekanisme keamanan. Profile hanya mengubah cara jawa
 - text-only;
 - satu credential global untuk General dan AI terdaftar yang dapat dipakai ulang sebagai utama/cadangan pada Module;
 - satu instance Railway;
-- seluruh knowledge company aktif dimuat sampai `KNOWLEDGE_MAX_CHARS`;
+- General memuat seluruh knowledge company aktif sampai `KNOWLEDGE_MAX_CHARS`; Module perusahaan dapat memilih memakai atau melewati Knowledge perusahaan;
 - upload knowledge mendukung PDF text layer, DOCX, TXT, dan Markdown; OCR serta `.doc` lama belum;
 - Company, user, membership, lima communication profile, Company Instruction, Knowledge, Module, Learning, dan module access dikelola melalui admin;
-- module-scoped knowledge belum diimplementasikan; module masih memakai Knowledge company ditambah playbook;
+- module-scoped knowledge belum diimplementasikan; module memakai playbook dan dapat memilih apakah ikut memuat Knowledge company;
 - combined legacy Funnel Coach masih dipakai sebagai instruction DK Corp Group sampai dokumen dipisahkan;
 - Company Instruction, Knowledge, dan Module Playbook sudah writable dan versioned; Log Admin menampilkan ringkasan tindakan administratif.
 - concurrency masih berada dalam satu process dan belum memakai durable application queue terpisah.
@@ -1033,6 +1037,8 @@ Paket form/backend/runtime/import telah diterapkan, diuji lokal, dan dideploy. C
 | ADR-080 | Pertanyaan umum Learning memakai sampel tersebar, bukan strict keyword search | Pertanyaan seperti daftar isi/manfaat/fungsi buku membutuhkan cakupan luas dan tidak boleh gagal hanya karena tidak ada istilah spesifik |
 | ADR-081 | AI Compare menjalankan 2-4 model secara paralel tanpa history dan tanpa persist jawaban | Admin dapat memilih model utama/cadangan berdasarkan output nyata, sementara biaya dan data sensitif tetap terkendali |
 | ADR-082 | AI penilai AI Compare bersifat opsional dan hanya membaca ringkasan hasil | Rekomendasi biaya/kualitas tersedia tanpa selalu menambah biaya; risiko bias dan token tetap dibatasi karena tidak membaca seluruh konteks awal |
+| ADR-083 | Pemakaian Knowledge perusahaan pada Module menjadi pilihan admin | Module mandiri dapat menghemat token dan mengurangi timeout tanpa kehilangan playbook, instruction, role profile, history, atau kontrol akses |
+| ADR-084 | Cara komunikasi disimpan per communication style | Gaya jawaban dapat diatur per level jabatan tanpa menambah field di membership dan tanpa menjadi mekanisme otorisasi |
 
 ### Kode singkat module
 
@@ -1067,6 +1073,14 @@ Urutan startup adalah initialize schema, migrasi jika diminta, bootstrap, lalu a
 Restart dengan mapping yang sama menjadi no-op hanya jika target lengkap, sumber tidak tersisa, dan audit cocok. Setelah migrasi terverifikasi, hapus `COMPANY_ID_MIGRATION` dari environment. ID lama bukan alias dan URL admin lama perlu dibuka ulang dari menu. Backup berisi data privat dan ciphertext credential, bukan master encryption key; jangan commit atau membagikannya. Pemulihan harus dilakukan saat semua writer berhenti menggunakan SQLite backup API, bukan menimpa file database hidup atau mengabaikan WAL.
 
 ## 16. Changelog dokumen
+
+### 1.27 — 7 September 2026
+
+- Menambahkan checkbox **Gunakan Knowledge perusahaan** pada tambah/edit Module perusahaan, default aktif untuk menjaga kompatibilitas perilaku lama.
+- Runtime Telegram dan AI Compare mode Pilih modul hanya memuat published Knowledge perusahaan bila checkbox module aktif; Company Instruction, playbook, role profile, custom instruction, history, otorisasi, dan AI module tetap berlaku.
+- Menambahkan kolom `modules.use_company_knowledge` dengan migrasi additive/idempotent, UI registry ON/OFF, audit metadata, serta regresi agar module yang menonaktifkan Knowledge tidak membawa isi Knowledge ke prompt.
+- Menambahkan field **Cara komunikasi** pada **Settings → Communication**, kolom `communication_styles.communication_guide`, bootstrap default dari `config/role_profiles.json`, dan penyisipan field tersebut ke prompt bila terisi.
+- Penghematan token: module mandiri dapat melewati Knowledge perusahaan sehingga prompt lebih kecil dan risiko timeout turun. Risiko: module yang tetap butuh fakta/SOP/harga harus menyalakan checkbox agar jawaban tidak kehilangan konteks bisnis.
 
 ### 1.26 — 6 September 2026
 

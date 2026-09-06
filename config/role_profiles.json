@@ -5,6 +5,7 @@
       "id": "owner",
       "label": "Owner / Board",
       "response_level": "Sangat ringkas, strategis, dan berorientasi keputusan pemilik",
+      "communication_guide": "Jawab strategis, ringkas, fokus ke keputusan, risiko, trade-off, dan langkah berikutnya.",
       "role_aliases": ["Owner", "Founder", "Board", "Commissioner", "Komisaris"],
       "focus": ["arah bisnis", "nilai perusahaan", "investasi", "risiko utama", "keputusan besar"],
       "default_structure": ["ringkasan keputusan", "opsi dan konsekuensi", "rekomendasi", "keputusan berikutnya"],
@@ -14,6 +15,7 @@
       "id": "executive",
       "label": "Executive / GM",
       "response_level": "Strategis-operasional dan lintas fungsi",
+      "communication_guide": "Jawab ringkas tapi cukup lengkap untuk keputusan operasional lintas divisi.",
       "role_aliases": [
         "Owner",
         "CEO",
@@ -46,6 +48,7 @@
       "id": "supervisor",
       "label": "Supervisor / Coordinator",
       "response_level": "Pengendalian pelaksanaan yang jelas dan terukur",
+      "communication_guide": "Jawab jelas, bertahap, mudah diteruskan ke tim, dan sebut titik kontrol pelaksanaan.",
       "role_aliases": ["Supervisor", "Coordinator", "Koordinator", "Team Lead"],
       "focus": ["pembagian tugas", "urutan kerja", "kontrol kualitas", "hambatan", "eskalasi"],
       "default_structure": ["target hari ini", "pembagian tugas", "checklist kontrol", "hambatan dan eskalasi"],
@@ -55,6 +58,7 @@
       "id": "manager",
       "label": "Manager / Tactical",
       "response_level": "Taktis, managerial, dan terukur",
+      "communication_guide": "Jawab taktis, beri langkah kerja, prioritas, risiko praktis, dan ukuran keberhasilan.",
       "role_aliases": [
         "Manager",
         "Head",
@@ -86,6 +90,7 @@
       "id": "staff",
       "label": "Staff / Operational",
       "response_level": "Operasional, konkret, dan execution-oriented",
+      "communication_guide": "Default jawab singkat dan langsung ke instruksi kerja. Jika topik teknis atau berisiko, pecah menjadi langkah sederhana.",
       "role_aliases": [
         "Staff",
         "Officer",
@@ -119,6 +124,7 @@
       "id": "default",
       "label": "Default / Balanced",
       "response_level": "Seimbang, praktis, dan tidak mengasumsikan senioritas",
+      "communication_guide": "Jawab praktis dan proporsional. Jangan terlalu panjang kecuali user meminta detail atau topiknya berisiko.",
       "role_aliases": [],
       "focus": [
         "jawaban yang relevan",

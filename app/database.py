@@ -100,6 +100,7 @@ class AIModule:
     ai_model: str = ""
     backup_ai_model: str = ""
     short_code: str = ""
+    use_company_knowledge: bool = True
 
 
 @dataclass(frozen=True)
@@ -209,6 +210,7 @@ class Database:
                     profile_id TEXT PRIMARY KEY,
                     label TEXT NOT NULL,
                     response_level TEXT NOT NULL,
+                    communication_guide TEXT NOT NULL DEFAULT '',
                     focus_json TEXT NOT NULL,
                     structure_json TEXT NOT NULL,
                     avoid_json TEXT NOT NULL,
@@ -424,10 +426,23 @@ class Database:
             for column in ("ai_model", "backup_ai_model", "short_code"):
                 if column not in module_columns:
                     connection.execute(f"ALTER TABLE modules ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
+            if "use_company_knowledge" not in module_columns:
+                connection.execute(
+                    "ALTER TABLE modules ADD COLUMN use_company_knowledge INTEGER NOT NULL DEFAULT 1"
+                )
             connection.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS modules_short_code_unique "
                 "ON modules(company_id, short_code COLLATE NOCASE) WHERE short_code != ''"
             )
+
+            communication_columns = {
+                row["name"]
+                for row in connection.execute("PRAGMA table_info(communication_styles)").fetchall()
+            }
+            if "communication_guide" not in communication_columns:
+                connection.execute(
+                    "ALTER TABLE communication_styles ADD COLUMN communication_guide TEXT NOT NULL DEFAULT ''"
+                )
 
             knowledge_columns = {
                 row["name"]
@@ -522,11 +537,12 @@ class Database:
             for profile in profiles.by_id.values():
                 connection.execute(
                     """INSERT OR IGNORE INTO communication_styles(
-                        profile_id, label, response_level, focus_json,
-                        structure_json, avoid_json, updated_at
-                    ) VALUES(?,?,?,?,?,?,?)""",
+                        profile_id, label, response_level, communication_guide,
+                        focus_json, structure_json, avoid_json, updated_at
+                    ) VALUES(?,?,?,?,?,?,?,?)""",
                     (
                         profile.profile_id, profile.label, profile.response_level,
+                        profile.communication_guide,
                         json.dumps(profile.focus, ensure_ascii=False),
                         json.dumps(profile.default_structure, ensure_ascii=False),
                         json.dumps(profile.avoid, ensure_ascii=False), _now(),
@@ -544,7 +560,7 @@ class Database:
 
     def update_communication_style(
         self, profile_id: str, response_level: str, focus: str,
-        structure: str, avoid: str, actor: str,
+        structure: str, avoid: str, actor: str, communication_guide: str = "",
     ) -> None:
         profile_id = str(profile_id).strip().casefold()
         if profile_id not in {"owner", "executive", "manager", "supervisor", "staff", "default"}:
@@ -552,6 +568,9 @@ class Database:
         level = str(response_level).strip()
         if not level or len(level) > 500:
             raise ValueError("Kedalaman jawaban wajib diisi dan maksimal 500 karakter")
+        guide = str(communication_guide).strip()
+        if len(guide) > 1000:
+            raise ValueError("Cara komunikasi maksimal 1.000 karakter")
 
         def lines(value: str) -> list[str]:
             result = [item.strip() for item in str(value).splitlines() if item.strip()]
@@ -565,10 +584,10 @@ class Database:
             ).fetchone():
                 raise ValueError("Communication style tidak ditemukan")
             connection.execute(
-                """UPDATE communication_styles SET response_level=?, focus_json=?,
+                """UPDATE communication_styles SET response_level=?, communication_guide=?, focus_json=?,
                     structure_json=?, avoid_json=?, updated_at=? WHERE profile_id=?""",
                 (
-                    level, json.dumps(lines(focus), ensure_ascii=False),
+                    level, guide, json.dumps(lines(focus), ensure_ascii=False),
                     json.dumps(lines(structure), ensure_ascii=False),
                     json.dumps(lines(avoid), ensure_ascii=False), _now(), profile_id,
                 ),
@@ -1719,6 +1738,7 @@ class Database:
                     m.short_code,
                     m.name,
                     m.description,
+                    m.use_company_knowledge,
                     m.ai_runtime_profile_id,
                     m.backup_ai_runtime_profile_id,
                     backup.label AS backup_ai_label,
@@ -1770,7 +1790,8 @@ class Database:
                 """
                 SELECT m.company_id, c.name AS company_name, m.module_id,
                        m.name, m.description, m.ai_runtime_profile_id, m.active,
-                       m.backup_ai_runtime_profile_id, m.ai_model, m.backup_ai_model, m.short_code
+                       m.backup_ai_runtime_profile_id, m.ai_model, m.backup_ai_model,
+                       m.short_code, m.use_company_knowledge
                 FROM modules m
                 JOIN companies c ON c.company_id = m.company_id
                 WHERE m.company_id = ? AND m.module_id = ?
@@ -1792,6 +1813,7 @@ class Database:
         ai_model: object = "",
         backup_ai_model: object = "",
         short_code: object = "",
+        use_company_knowledge: bool = True,
     ) -> AIModule:
         normalized_company = _validate_company_id(company_id)
         normalized_name = _validate_module_name(name)
@@ -1831,8 +1853,9 @@ class Database:
                     INSERT INTO modules (
                         company_id, module_id, name, description,
                         ai_runtime_profile_id, backup_ai_runtime_profile_id, active,
-                        created_at, updated_at, ai_model, backup_ai_model, short_code
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        created_at, updated_at, ai_model, backup_ai_model, short_code,
+                        use_company_knowledge
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         normalized_company,
@@ -1847,6 +1870,7 @@ class Database:
                         selected_model,
                         selected_backup_model,
                         normalized_code,
+                        int(use_company_knowledge),
                     ),
                 )
                 _write_audit(
@@ -1863,6 +1887,7 @@ class Database:
                         "ai_model": selected_model,
                         "backup_ai_model": selected_backup_model,
                         "short_code": normalized_code,
+                        "use_company_knowledge": bool(use_company_knowledge),
                         "active": active,
                     },
                 )
@@ -1885,6 +1910,7 @@ class Database:
         ai_model: object = None,
         backup_ai_model: object = None,
         short_code: object = None,
+        use_company_knowledge: bool | None = None,
     ) -> AIModule:
         normalized_company = _validate_company_id(company_id)
         normalized_module = _validate_module_id(module_id)
@@ -1897,7 +1923,8 @@ class Database:
             current = connection.execute(
                 """
                 SELECT name, description, ai_runtime_profile_id,
-                       backup_ai_runtime_profile_id, ai_model, backup_ai_model, short_code FROM modules
+                       backup_ai_runtime_profile_id, ai_model, backup_ai_model,
+                       short_code, use_company_knowledge FROM modules
                 WHERE company_id = ? AND module_id = ?
                 """,
                 (normalized_company, normalized_module),
@@ -1929,7 +1956,8 @@ class Database:
                 """
                 UPDATE modules
                 SET name = ?, description = ?, ai_runtime_profile_id = ?,
-                    backup_ai_runtime_profile_id = ?, updated_at = ?, ai_model = ?, backup_ai_model = ?, short_code = ?
+                    backup_ai_runtime_profile_id = ?, updated_at = ?, ai_model = ?,
+                    backup_ai_model = ?, short_code = ?, use_company_knowledge = ?
                 WHERE company_id = ? AND module_id = ?
                 """,
                 (
@@ -1941,6 +1969,7 @@ class Database:
                     selected_model,
                     selected_backup_model,
                     normalized_code,
+                    int(current["use_company_knowledge"] if use_company_knowledge is None else use_company_knowledge),
                     normalized_company,
                     normalized_module,
                 ),
@@ -1964,6 +1993,10 @@ class Database:
                     "ai_model_after": selected_model,
                     "backup_ai_model_before": current["backup_ai_model"],
                     "backup_ai_model_after": selected_backup_model,
+                    "use_company_knowledge_before": bool(current["use_company_knowledge"]),
+                    "use_company_knowledge_after": bool(
+                        current["use_company_knowledge"] if use_company_knowledge is None else use_company_knowledge
+                    ),
                 },
             )
         module = self.get_module_admin(normalized_company, normalized_module)
@@ -2043,6 +2076,7 @@ class Database:
                     m.short_code,
                     m.name,
                     m.description,
+                    m.use_company_knowledge,
                     m.ai_runtime_profile_id,
                     m.backup_ai_runtime_profile_id,
                     backup.label AS backup_ai_label,
@@ -2393,7 +2427,8 @@ class Database:
                 """
                 SELECT m.company_id, c.name AS company_name, m.module_id,
                        m.name, m.description, m.ai_runtime_profile_id, m.active,
-                       m.backup_ai_runtime_profile_id, m.ai_model, m.backup_ai_model, m.short_code
+                       m.backup_ai_runtime_profile_id, m.ai_model, m.backup_ai_model,
+                       m.short_code, m.use_company_knowledge
                 FROM module_access a
                 JOIN modules m
                     ON m.company_id = a.company_id
@@ -3748,6 +3783,7 @@ def _module_from_row(row: sqlite3.Row) -> AIModule:
         ai_model=row["ai_model"],
         backup_ai_model=row["backup_ai_model"],
         active=bool(row["active"]),
+        use_company_knowledge=bool(row["use_company_knowledge"]),
     )
 
 

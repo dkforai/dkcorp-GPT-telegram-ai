@@ -109,7 +109,14 @@ def build_compare_prompt(
     playbook = database.get_published_module_playbook(company_id, module_id) or ""
     if mode == "module" and not playbook:
         raise ValueError("Module belum punya playbook published")
-    content = _company_content(database, company, project_root, knowledge_max_chars, use_instruction, use_knowledge)
+    content = _company_content(
+        database,
+        company,
+        project_root,
+        knowledge_max_chars,
+        use_instruction,
+        use_knowledge and module.use_company_knowledge,
+    )
     system = build_system_prompt(
         _compare_user(),
         _compare_membership(company),

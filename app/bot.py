@@ -452,7 +452,7 @@ class InternalBot:
             self.database.get_published_company_instruction(company.company_id),
             self.database.get_published_company_knowledge(
                 company.company_id, self.settings.knowledge_max_chars
-            ),
+            ) if active_module is None or active_module.use_company_knowledge else "",
         )
         communication_profile = self._communication_profile(user, membership)
         system_prompt = build_system_prompt(

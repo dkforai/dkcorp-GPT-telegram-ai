@@ -23,6 +23,8 @@
       </div>
       <p class="muted-text">Dengan memilih cadangan, Anda mengizinkan konteks percakapan yang sama dikirim ke AI tersebut saat diperlukan. Key salah, konfigurasi kosong, dan AI nonaktif tidak memicu perpindahan.</p>
       <label class="full-field">Deskripsi <span class="optional">Opsional</span><textarea name="description" maxlength="500" rows="4">{{ values.description }}</textarea><small>Jelaskan kapan module dipakai dan hasil yang diharapkan.</small></label>
+      <input type="hidden" name="use_company_knowledge" value="0">
+      <label class="checkbox-row"><input name="use_company_knowledge" type="checkbox" value="1" {% if values.use_company_knowledge == '1' %}checked{% endif %}><span><strong>Gunakan Knowledge perusahaan</strong><small>Matikan jika module tidak perlu membaca fakta, SOP, harga, produk, atau dokumen perusahaan. User tetap bisa memberi data langsung lewat chat.</small></span></label>
       <label class="checkbox-row"><input name="active" type="checkbox" value="1" {% if values.active == '1' %}checked{% endif %}><span><strong>Aktifkan module</strong><small>User tetap memerlukan akses membership dan playbook published.</small></span></label>
     {% endif %}
     <div class="form-actions"><a class="secondary-button" href="/admin/modules">Batal</a><button class="primary-button" type="submit" {% if not companies or not runtime_profiles %}disabled{% endif %}>Simpan module</button></div>

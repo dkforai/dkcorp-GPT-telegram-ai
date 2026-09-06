@@ -10,6 +10,7 @@
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <h3>{{ style.label }}</h3><p class="muted-text">Role ID: <code>{{ style.profile_id }}</code></p>
     <label class="full-field">Kedalaman jawaban<input name="response_level" maxlength="500" value="{{ style.response_level }}" required></label>
+    <label class="full-field">Cara komunikasi<textarea name="communication_guide" maxlength="1000" rows="3" placeholder="Contoh: Default jawab singkat. Jika topik teknis atau berisiko, pecah menjadi langkah sederhana.">{{ style.communication_guide }}</textarea><small>Instruksi tambahan cara bot menyampaikan jawaban untuk level ini. Maksimal 1.000 karakter.</small></label>
     <div class="form-grid">
       <label>Fokus<textarea name="focus" rows="6">{{ style.focus }}</textarea><small>Satu aturan per baris.</small></label>
       <label>Struktur jawaban<textarea name="structure" rows="6">{{ style.structure }}</textarea><small>Satu bagian per baris.</small></label>

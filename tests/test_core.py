@@ -177,13 +177,14 @@ def test_knowledge_limit_and_prompt(tmp_path):
             {
                 "default_profile": "default",
                 "profiles": [
-                    {
-                        "id": "staff",
-                        "label": "Staff",
-                        "response_level": "Operasional",
-                        "role_aliases": ["Creator"],
-                        "focus": ["langkah"],
-                        "default_structure": ["tujuan", "checklist"],
+                        {
+                            "id": "staff",
+                            "label": "Staff",
+                            "response_level": "Operasional",
+                            "communication_guide": "Jawab singkat untuk eksekusi.",
+                            "role_aliases": ["Creator"],
+                            "focus": ["langkah"],
+                            "default_structure": ["tujuan", "checklist"],
                         "avoid": ["abstrak"],
                     },
                     {
@@ -245,6 +246,7 @@ def test_knowledge_limit_and_prompt(tmp_path):
     assert "Utamakan akurasi lokasi" in prompt
     assert "Communication profile: Staff" in prompt
     assert "tujuan → checklist" in prompt
+    assert "Cara komunikasi:" in prompt
     assert '<knowledge company_id="amazing-malang">' in prompt
 
     module = AIModule(
@@ -1702,11 +1704,13 @@ def test_communication_styles_can_be_managed_by_super_admin(tmp_path):
                 "focus": "risiko\nreturn",
                 "structure": "ringkasan\nkeputusan",
                 "avoid": "detail rutin",
+                "communication_guide": "Jawab singkat untuk pemilik.",
             },
             follow_redirects=False,
         ).status_code == 303
     owner = next(row for row in database.list_communication_styles() if row["profile_id"] == "owner")
     assert owner["response_level"] == "Jawaban keputusan pemilik"
+    assert owner["communication_guide"] == "Jawab singkat untuk pemilik."
 
 
 def test_admin_user_and_membership_management(tmp_path):
@@ -3014,6 +3018,75 @@ def test_bot_failover_keeps_tenant_history_and_authorization(tmp_path, monkeypat
     else:
         assert after == before + [{"role": "user", "content": "new-question"}, {"role": "assistant", "content": "module-answer"}]
         assert replies == ["module-answer"]
+
+
+def test_company_module_can_skip_company_knowledge(tmp_path, monkeypatch):
+    database, primary, _backup = _database_with_ai_pair(tmp_path)
+    monkeypatch.setenv(primary.api_key_env, "private-primary")
+    database.create_user_with_membership(
+        42, "DK", "company-a", "Owner", "Management", "gm", "executive", "", "admin"
+    )
+    database.create_module(
+        "company-a",
+        "independent",
+        "Independent",
+        "",
+        "admin",
+        primary.profile_id,
+        use_company_knowledge=False,
+    )
+    database.save_module_playbook_draft(
+        "company-a", "independent", "playbook-independent", "admin"
+    )
+    database.publish_module_playbook("company-a", "independent", "admin")
+    database.set_membership_module_access(42, "company-a", ["independent"], "admin")
+    database.set_active_module(42, "independent")
+    database.create_knowledge_document(
+        "company-a", "facts", "Facts A", "knowledge-company-a", "admin"
+    )
+    database.publish_knowledge_document("company-a", "facts", "admin")
+    calls = []
+
+    def factory(_provider, _key, model, _url):
+        async def generate(prompt, history, user_text):
+            calls.append((model, prompt, list(history), user_text))
+            return "module-answer"
+
+        return SimpleNamespace(generate=generate)
+
+    async def global_generate(*_args):
+        return "general-answer"
+
+    async def reply_text(*_args, **_kwargs):
+        pass
+
+    async def send_chat_action(*_args, **_kwargs):
+        pass
+
+    settings = _test_settings(
+        tmp_path,
+        tmp_path / "users.json",
+        tmp_path / "companies.json",
+        database_path=database.path,
+        project_root=tmp_path,
+    )
+    bot = InternalBot(
+        settings,
+        database,
+        SimpleNamespace(generate=global_generate),
+        ModuleProviderResolver(factory),
+    )
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=42),
+        effective_chat=SimpleNamespace(id=42),
+        effective_message=SimpleNamespace(text="new-question", reply_text=reply_text),
+    )
+    context = SimpleNamespace(bot=SimpleNamespace(send_chat_action=send_chat_action))
+    asyncio.run(bot.chat(update, context))
+
+    assert len(calls) == 1
+    assert "playbook-independent" in calls[0][1]
+    assert "knowledge-company-a" not in calls[0][1]
 
 
 @pytest.mark.parametrize("response_kind", ["retryable", "empty", "refusal"])

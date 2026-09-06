@@ -25,6 +25,7 @@ class CommunicationProfile:
     profile_id: str
     label: str
     response_level: str
+    communication_guide: str
     focus: tuple[str, ...]
     default_structure: tuple[str, ...]
     avoid: tuple[str, ...]
@@ -36,6 +37,8 @@ class CommunicationProfile:
         ]
         if self.focus:
             lines.append("Fokus: " + "; ".join(self.focus))
+        if self.communication_guide:
+            lines.append("Cara komunikasi: " + self.communication_guide)
         if self.default_structure:
             lines.append("Struktur default: " + " → ".join(self.default_structure))
         if self.avoid:
@@ -70,6 +73,7 @@ def load_role_profiles(path: Path) -> RoleProfiles:
             profile_id=profile_id,
             label=str(item.get("label", profile_id)).strip(),
             response_level=str(item.get("response_level", "balanced")).strip(),
+            communication_guide=str(item.get("communication_guide", "")).strip(),
             focus=_string_tuple(item.get("focus", [])),
             default_structure=_string_tuple(item.get("default_structure", [])),
             avoid=_string_tuple(item.get("avoid", [])),
@@ -91,6 +95,7 @@ def role_profiles_from_rows(rows: list[dict[str, object]]) -> RoleProfiles:
             profile_id=str(row["profile_id"]),
             label=str(row["label"]),
             response_level=str(row["response_level"]),
+            communication_guide=str(row.get("communication_guide", "")),
             focus=tuple(json.loads(str(row["focus_json"]))),
             default_structure=tuple(json.loads(str(row["structure_json"]))),
             avoid=tuple(json.loads(str(row["avoid_json"]))),

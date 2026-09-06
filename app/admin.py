@@ -1634,6 +1634,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 backup_ai_model=values["backup_ai_model"],
                 active=values["active"] == "1",
                 short_code=values["short_code"],
+                use_company_knowledge=values["use_company_knowledge"] == "1",
             )
         except ValueError as exc:
             return templates.TemplateResponse(
@@ -1702,6 +1703,11 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 ai_model=values["ai_model"],
                 backup_ai_model=values["backup_ai_model"],
                 short_code=values["short_code"] if "short_code" in form else None,
+                use_company_knowledge=(
+                    values["use_company_knowledge"] == "1"
+                    if "use_company_knowledge" in form
+                    else None
+                ),
             )
         except ValueError as exc:
             return _module_redirect(company_id, module_id, error=str(exc))
@@ -1951,6 +1957,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
         for row in database.list_communication_styles():
             styles.append({
                 **row,
+                "communication_guide": str(row.get("communication_guide", "")),
                 "focus": "\n".join(json.loads(str(row["focus_json"]))),
                 "structure": "\n".join(json.loads(str(row["structure_json"]))),
                 "avoid": "\n".join(json.loads(str(row["avoid_json"]))),
@@ -1979,6 +1986,7 @@ def create_admin_app(settings: Settings, database: Database) -> FastAPI:
                 profile_id, str(form.get("response_level", "")),
                 str(form.get("focus", "")), str(form.get("structure", "")),
                 str(form.get("avoid", "")), _admin_actor(request, settings),
+                communication_guide=str(form.get("communication_guide", "")),
             )
         except ValueError as exc:
             return RedirectResponse(
@@ -2317,6 +2325,7 @@ def _module_form_values(form) -> dict[str, str | None]:
         "ai_selection": str(form.get("ai_selection", form.get("ai_runtime_profile_id", ""))),
         "backup_ai_selection": str(form.get("backup_ai_selection", form.get("backup_ai_runtime_profile_id", ""))),
         "active": "1" if form.get("active") == "1" else "0",
+        "use_company_knowledge": "0" if form.get("use_company_knowledge") == "0" else "1",
     }
 
 
@@ -2339,6 +2348,7 @@ def _module_form_context(
         "backup_ai_selection": "",
         "short_code": "",
         "active": "1",
+        "use_company_knowledge": "1",
     }
     defaults.update({key: value for key, value in (values or {}).items() if value})
     return {
